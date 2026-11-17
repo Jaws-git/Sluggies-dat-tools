@@ -78,6 +78,11 @@ def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False, inpu
     """Turn options on / off. A change that breaks Gecko code compatibility (``gecko_compat``), or a lower player
     memory level some character no longer fits (``memory_guard``), asks first; cancelled, it raises
     GameOptionsRunError and writes nothing."""
+    return _run(output_dir, on, off, dry_run, input_dir)[2]
+
+
+def _run(output_dir, on, off, dry_run, input_dir=None) -> tuple[bytes, bytes, list[str]]:
+    """:func:`run`, returning :func:`build`'s ``(current, new, log)`` (a dry run records from it)."""
     current, data, log = build(output_dir, on, off, input_dir)
     if not dry_run and gecko_compat.breaks(current, data) and not gecko_compat.confirm('the game options'):
         raise GameOptionsRunError('cancelled: the game options would break Gecko code compatibility; '
@@ -89,10 +94,15 @@ def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False, inpu
     if data != current and not dry_run:
         dol_path = os.path.join(output_dir, 'main.dol')
         tmp = dol_path + '.options_tmp'
-        with open(tmp, 'wb') as f:
-            f.write(data)
-        os.replace(tmp, dol_path)
-    return log
+        try:
+            with open(tmp, 'wb') as f:
+                f.write(data)
+            os.replace(tmp, dol_path)
+        except OSError:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+    return current, data, log
 
 
 def main(argv=None) -> int:
@@ -104,16 +114,15 @@ def main(argv=None) -> int:
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        log = run(args.output_dir, args.on, args.off, args.dry_run)
+        current, data, log = _run(args.output_dir, args.on, args.off, args.dry_run)
         if args.dry_run:
             root = os.path.dirname(os.path.abspath(args.output_dir))
-            current, data = build(args.output_dir, args.on, args.off)[:2]
             if gecko_compat.breaks(current, data):
                 gecko_compat.record(root, 'the game options')
             over = memory_problems(args.output_dir, current, data)
             if over:
                 memory_guard.record(root, 'the player memory level', [{'text': line} for line in over])
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         slogger.error(str(exc), source=SOURCE)
         return 1
     for line in log:

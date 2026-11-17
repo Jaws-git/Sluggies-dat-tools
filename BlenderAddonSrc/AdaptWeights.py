@@ -110,11 +110,16 @@ def _modifier_groups(obj):
     return used
 
 
-def _read_weights(obj):
-    """Per vertex: {group name: weight} of its positive weights."""
+def read_weights(obj):
+    """Per vertex: {group name: weight} of its positive weights. A full
+    Python pass: a caller that surveys and then maps reads once and passes
+    the result to both."""
     names = {g.index: g.name for g in obj.vertex_groups}
     return [{names[g.group]: g.weight for g in v.groups if g.weight > 0.0 and g.group in names}
             for v in obj.data.vertices]
+
+
+_read_weights = read_weights
 
 
 def _source_groups(obj, bone_names, weights):
@@ -126,12 +131,13 @@ def _source_groups(obj, bone_names, weights):
             if g.name in weighted and g.name not in bone_names and g.name not in used]
 
 
-def survey(obj, arm_obj):
+def survey(obj, arm_obj, weights=None):
     """What the body *obj* holds: dict with vertices, open (vertices without a
     weight on a bone of the armature), sources (old rig groups), covered
-    (open vertices weighted by one) and mappable."""
+    (open vertices weighted by one) and mappable. *weights*: read_weights(obj)
+    when the caller has it."""
     bone_names = _bone_names(arm_obj)
-    weights = _read_weights(obj)
+    weights = _read_weights(obj) if weights is None else weights
     sources = _source_groups(obj, bone_names, weights)
     source_set = set(sources)
     open_vertices = [w for w in weights if not any(name in bone_names for name in w)]
@@ -164,6 +170,25 @@ def _segment_distances(points, arm_obj, bones):
         t = np.clip(rel @ axis / length2, 0.0, 1.0) if length2 > 0.0 else np.zeros(len(points))
         distances[:, column] = np.linalg.norm(rel - t[:, None] * axis, axis=1)
     return distances
+
+
+# Rows of points per _nearest_columns step: 50,000 x 90 bones is 36 MB of
+# float64 distances, where all of a downloaded body at once can be 200+ MB.
+_DISTANCE_CHUNK = 50000
+
+
+def _nearest_columns(points, arm_obj, bones, middle):
+    """(nearest bone column, nearest column among *middle*) per point, from
+    _segment_distances worked out in row chunks."""
+    nearest = np.empty(len(points), dtype=np.int64)
+    nearest_middle = np.empty(len(points) if len(middle) else 0, dtype=np.int64)
+    for start in range(0, len(points), _DISTANCE_CHUNK):
+        stop = start + _DISTANCE_CHUNK
+        distances = _segment_distances(points[start:stop], arm_obj, bones)
+        nearest[start:stop] = distances.argmin(axis=1)
+        if len(middle):
+            nearest_middle[start:stop] = middle[distances[:, middle].argmin(axis=1)]
+    return nearest, nearest_middle
 
 
 def _set_weights(obj, vertex, new, bone_names):
@@ -319,14 +344,15 @@ def _fit(arm_obj, bones, mapping, centroids, members, skip=()):
     return weighted / total / height if total > 0.0 and height > 0.0 else 0.0
 
 
-def map_groups(obj, arm_obj):
+def map_groups(obj, arm_obj, weights=None):
     """Map the old rig's vertex groups of *obj* onto the weight bones
-    (module docstring). Returns a result dict for summary_lines."""
+    (module docstring). *weights*: read_weights(obj) when the caller has it.
+    Returns a result dict for summary_lines."""
     bones = weight_bones(arm_obj)
     if not bones:
         raise ValueError(f"{arm_obj.name} has no bones to weight to")
     bone_names = _bone_names(arm_obj)
-    weights = _read_weights(obj)
+    weights = _read_weights(obj) if weights is None else weights
     sources = _source_groups(obj, bone_names, weights)
     members = {name: {} for name in sources}
     for vertex, vertex_weights in enumerate(weights):
@@ -340,10 +366,7 @@ def map_groups(obj, arm_obj):
     points = _world_points(obj)
     nearest = nearest_middle = np.empty(0, dtype=np.int64)
     if involved:
-        distances = _segment_distances(points[involved], arm_obj, bones)
-        nearest = distances.argmin(axis=1)
-        if len(middle):
-            nearest_middle = middle[distances[:, middle].argmin(axis=1)]
+        nearest, nearest_middle = _nearest_columns(points[involved], arm_obj, bones, middle)
     nearest_of = dict(zip(involved, nearest.tolist()))
     middle_of = dict(zip(involved, nearest_middle.tolist()))
 

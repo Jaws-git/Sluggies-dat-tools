@@ -63,6 +63,7 @@ def load(path: str = INVENTORY_PATH) -> dict:
         return json.load(f)
 
 
+@lru_cache(maxsize=None)
 def group(name: str, path: str = INVENTORY_PATH) -> tuple[Site, ...]:
     groups = load(path)['groups']
     if name not in groups:
@@ -71,10 +72,18 @@ def group(name: str, path: str = INVENTORY_PATH) -> tuple[Site, ...]:
                       s.get('note', '')) for s in groups[name])
 
 
-def site(group_name: str, address: int, path: str = INVENTORY_PATH) -> Site:
+@lru_cache(maxsize=None)
+def _sites_by_address(group_name: str, path: str) -> dict[int, Site]:
+    by_address: dict[int, Site] = {}
     for entry in group(group_name, path):
-        if entry.address == address:
-            return entry
+        by_address.setdefault(entry.address, entry)
+    return by_address
+
+
+def site(group_name: str, address: int, path: str = INVENTORY_PATH) -> Site:
+    entry = _sites_by_address(group_name, path).get(address)
+    if entry is not None:
+        return entry
     raise InventoryError(f'0x{address:08X} is not in site group {group_name!r}')
 
 

@@ -66,12 +66,16 @@ def ask_volume(app, name, status, tag, on_done=None):
 
 
 # ------------------------------------------------------------------ the Volume column
-def read_volumes(root_dir):
-    """``volumes.game_volumes`` for a tab's worker thread: ``{}`` when it cannot be read."""
+def read_volumes(root_dir, problems=None):
+    """``volumes.game_volumes`` for a tab's worker thread: ``{}`` when it cannot be read. The reason is then
+    appended to ``problems`` (a list), for the tab's status line: an empty Volume column says nothing."""
     try:
         from Sound import volumes
         return volumes.game_volumes(root_dir)
-    except Exception:
+    except Exception as exc:
+        if problems is not None:
+            problems.append(f'The volumes could not be read, so the Volume column is empty ({type(exc).__name__}: '
+                            f'{exc})')
         return {}
 
 

@@ -75,6 +75,11 @@ def parse_anm(data):
                 time_val = struct.unpack_from('>f', data, kf_off)[0]
                 bank_pos = struct.unpack_from('>I', data, kf_off + 4)[0]
 
+                if bank_pos == 0:
+                    # A null setting pointer (some stock keys have one): the key has no values. Reading
+                    # at offset 0 would decode the file header as a pose.
+                    continue
+
                 settings = {}
                 for ch in active_channels:
                     if ch == 3:

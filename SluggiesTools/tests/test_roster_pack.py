@@ -187,6 +187,44 @@ class PackFileTests(PackTestCase):
         with self.assertRaisesRegex(pack.PackError, 'portrait front_0_0.png is missing'):
             pack.read_pack(self.rewrite(lambda f: f.pop('icons/front_0_0.png')))
 
+    def test_wrong_shapes_are_refused_as_pack_errors(self):
+        def state(change):
+            def apply(files):
+                config = json.loads(files['state.json'])
+                change(config)
+                files['state.json'] = json.dumps(config).encode()
+            return apply
+
+        def put(name, value):
+            return lambda files: files.__setitem__(name, json.dumps(value).encode())
+
+        cases = [
+            (put('pack.json', [1]), 'not a roster pack'),
+            (put('pack.json', {'format': pack.FORMAT, 'blocks': [1]}), 'blocks'),
+            (put('pack.json', {'format': pack.FORMAT, 'blocks': {'0x0D': 'x'}}), 'blocks'),
+            (put('fingerprints.json', {'0x0D': 'x'}), 'fingerprint'),
+            (state(lambda c: c.__setitem__('ids', 5)), '"ids" is not a list'),
+            (state(lambda c: c.__setitem__('ids', ['x'])), '"ids" is not a list'),
+            (state(lambda c: c['ids'][0].__setitem__('model', 'x')), '"model" without "from"'),
+            (state(lambda c: c['ids'][0].__setitem__('model', {'routes': []})), '"model" without "from"'),
+            (state(lambda c: c['ids'][0].__setitem__('icon', {'model': 'C:/somewhere'})), 'unexpected keys: model'),
+            (state(lambda c: c['ids'][0]['icon'].__setitem__('other', 1)), 'unexpected keys: other'),
+        ]
+        for change, text in cases:
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(pack.PackError, text):
+                    pack.read_pack(self.rewrite(change))
+
+    def test_routes_a_pack_names_never_reach_the_rebuild(self):
+        def routes(files):
+            config = json.loads(files['state.json'])
+            config['ids'][0]['model']['routes'] = [[0x2000000, 100]]
+            files['state.json'] = json.dumps(config).encode()
+        game = Game()
+        game.blocks[(0x66, 'high')] = b'koopa-hp-other-edit'           # the own directory is copied afresh
+        plan = self.plan(game, path=self.rewrite(routes))
+        self.assertEqual(plan.config['ids'][0]['model'], {'from': '0x09'})
+
     def test_names_that_are_paths_on_windows_are_refused(self):
         """``icons/..\\..\\x.png`` is a plain name to posixpath and a way out of the folder to Windows."""
         for name in ('icons/..\\..\\evil.png', 'icons/C:evil.png', 'icons/sub\\evil.png',

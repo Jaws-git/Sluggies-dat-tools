@@ -112,15 +112,28 @@ def vertex_bone_problem(object_name: str, vertex_bone_ids: Sequence[Iterable[int
     )
 
 
-def quantized_positions(positions: Sequence[Sequence[float]], quantize_info: int) -> List[Tuple[int, int, int]]:
+def quantized_positions(
+    positions: Sequence[Sequence[float]], quantize_info: int, object_name: str = '',
+) -> List[Tuple[int, int, int]]:
+    """Raises ValueError (with *object_name*) for a coordinate that is not a
+    finite number: ``round`` gives a bare ValueError for NaN and an
+    OverflowError for infinity."""
     divisor = rc.int16_divisor(quantize_info)
-    return [tuple(int(round(float(v) * divisor)) for v in position) for position in positions]
+    try:
+        return [tuple(int(round(float(v) * divisor)) for v in position) for position in positions]
+    except (ValueError, OverflowError):
+        raise ValueError(
+            f'{object_name or "mesh"}: a vertex position is not a finite number (NaN or infinity)'
+        ) from None
 
 
 FLOAT_POSITION_TOLERANCE = 1e-4  # relative; float32 storage, matrix round trip noise is ~1e-6
 
 
-def positions_moved(mesh_local: Sequence[Sequence[float]], geometry: cse.BoneLocalGeometry, quantize_info: int) -> bool:
+def positions_moved(
+    mesh_local: Sequence[Sequence[float]], geometry: cse.BoneLocalGeometry, quantize_info: int,
+    object_name: str = '',
+) -> bool:
     """Whether the bone-local positions differ from the mesh-local ones once
     both are quantized in the donor format. The importer places a rigid mesh
     at its owner bone's bind matrix, so an untouched object round-trips to
@@ -133,8 +146,8 @@ def positions_moved(mesh_local: Sequence[Sequence[float]], geometry: cse.BoneLoc
             abs(float(a) - float(b)) > FLOAT_POSITION_TOLERANCE * max(1.0, abs(float(a)))
             for local_v, bone_v in pairs for a, b in zip(local_v, bone_v)
         )
-    local = quantized_positions([mesh_local[i] for i in geometry.source_vertices], quantize_info)
-    bone = quantized_positions(geometry.positions, quantize_info)
+    local = quantized_positions([mesh_local[i] for i in geometry.source_vertices], quantize_info, object_name)
+    bone = quantized_positions(geometry.positions, quantize_info, object_name)
     return local != bone
 
 
@@ -212,6 +225,11 @@ def build_rigid_rebuild_entry(
     widened = rc.widened_position_info(object_name, donor.position_quantize, position_quantize)
     if widened:
         infos.append(widened)
+    # The vertex and face counts are checked here, before the facial poses pack vertex indices as uint16.
+    positions = cse.encode_positions(object_name, geometry, position_format)
+    faces_data, faces_count = cse.encode_faces(object_name, geometry.faces)
+    if len(routing.indices) != faces_count:
+        raise ValueError(f'{object_name}: {len(routing.indices)} surface indices for {faces_count} faces')
     facial_entries = None
     pinned_normal_data = None
     if facial_keys is not None:
@@ -220,10 +238,6 @@ def build_rigid_rebuild_entry(
             donor.normal_format if loop_normals is not None else None, loop_normals,
             use_compression, warnings, infos,
         )
-    positions = cse.encode_positions(object_name, geometry, position_format)
-    faces_data, faces_count = cse.encode_faces(object_name, geometry.faces)
-    if len(routing.indices) != faces_count:
-        raise ValueError(f'{object_name}: {len(routing.indices)} surface indices for {faces_count} faces')
 
     entry = {
         'HostBoneId': int(host_bone_id),
@@ -278,8 +292,13 @@ def encode_facial_loop_normals(
     *pinned_vertices* (exported indices) pooled per vertex: two loops share
     an entry only when they hold the same normal and belong to the same
     pinned vertex, or to no pinned vertex at all. A facial pose then gives
-    every entry one delta."""
-    return rc.encode_loop_normals(object_name, geometry, loop_normals, normal_format, set(pinned_vertices))
+    every entry one delta. The entry count is checked here: the facial
+    poses pack entry indices as uint16."""
+    normal_data, normal_indices = rc.encode_loop_normals(
+        object_name, geometry, loop_normals, normal_format, set(pinned_vertices),
+    )
+    rc.check_u16(object_name, 'normals', len(normal_indices) and max(normal_indices) + 1)
+    return normal_data, normal_indices
 
 
 def encode_rigid_facial_poses(
@@ -372,6 +391,7 @@ def encode_rigid_facial_poses(
     if normal_divisor is not None:
         normal_arrays = encode_facial_loop_normals(object_name, geometry, loop_normals, normal_format, tilted)
     entries = []
+    vertex_of_loop = rc.loop_vertices(geometry) if normal_arrays is not None else []
     for facial_object, position_rows, normal_rows in per_object:
         later = facial_object.pose_count - 1
         moved = [vertex for vertex, rows in enumerate(position_rows) if any(any(row) for row in rows)]
@@ -393,7 +413,7 @@ def encode_rigid_facial_poses(
         if normal_arrays is not None:
             _data, normal_indices = normal_arrays
             entry_vertex: Dict[int, int] = {}
-            for index, vertex in zip(normal_indices, rc.loop_vertices(geometry)):
+            for index, vertex in zip(normal_indices, vertex_of_loop):
                 if vertex in tilted and any(any(row) for row in normal_rows[vertex]):
                     entry_vertex[index] = vertex
             normal_entries = sorted(entry_vertex)

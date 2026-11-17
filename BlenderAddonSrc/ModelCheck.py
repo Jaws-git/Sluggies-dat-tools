@@ -1226,7 +1226,24 @@ def check_stray_objects(context, scopes):
                           f"{MAKE_SUBMESH_HINT[0].lower()}{MAKE_SUBMESH_HINT[1:]}.")
 
 
+# (path, mtime) -> ModelLength of a LOD partner's .sluggie that is not loaded
+# in the scene. Keyed by the file's version, so a changed or repaired file is
+# read again; only the length is kept, not the parsed model.
 _PARTNER_MODELS = {}
+
+
+def _partner_model_length(path):
+    """``ModelLength`` of the .sluggie at *path*, 0 when it is missing or unreadable."""
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return 0
+    if key not in _PARTNER_MODELS:
+        for old in [k for k in _PARTNER_MODELS if k[0] == path]:
+            del _PARTNER_MODELS[old]
+        model, _error = _load_model(path, {})
+        _PARTNER_MODELS[key] = int((model or {}).get("ModelLength") or 0)
+    return _PARTNER_MODELS[key]
 
 
 def _partner_on_disk(scope, low):
@@ -1311,8 +1328,7 @@ def check_player_memory(scopes):
         missing = "High" if low else "Low"
         if missing not in sizes:
             path = _partner_on_disk(scope, not low)
-            model, _error = _load_model(path, _PARTNER_MODELS) if path else (None, "")
-            length = int((model or {}).get("ModelLength") or 0)
+            length = _partner_model_length(path) if path else 0
             if not length:
                 continue   # no partner: not a character (a bat, a glove, an object)
             sizes[missing] = length
@@ -1644,6 +1660,13 @@ def run_fixes(context, requests):
     """Run ``(fix_id, fix_args)`` pairs in FIX_ORDER; one call per distinct
     pair. Returns (requests fixed, requests failed, failure messages)."""
     _FIX_MODELS.clear()
+    try:
+        return _run_fixes(context, requests)
+    finally:
+        _FIX_MODELS.clear()     # the parsed models are not kept after the run
+
+
+def _run_fixes(context, requests):
     calls = {}
     for fix_id, args in requests:
         if fix_id == "remove_slots":

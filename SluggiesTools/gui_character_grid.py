@@ -236,6 +236,8 @@ class CharacterGridTab:
         self.mercy_rule_shown = None       # the mercy rule lead the input was last set to (Extras tab)
         self.copied = None                 # the character Copy earmarked (session only), or None
         self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
+        self._menu_prune_at = 128          # size of _menu_targets at which deleted buttons are dropped from it
+        self._badge_fonts = {}             # scale -> the badge font, loaded once
         self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
         self.on_state_read = []            # callbacks run after every successful read
         self._package = None               # (path, slot_zip.Staged) of the package being checked, until staged / closed
@@ -245,7 +247,7 @@ class CharacterGridTab:
     def build(self):
         with dpg.tab(label='Character grid', tag='grid_tab'):
             with dpg.group(horizontal=True):
-                self.refresh_button = dpg.add_button(label='Refresh', callback=lambda: self.request_read())
+                dpg.add_button(label='Refresh', callback=lambda: self.request_read())
                 deploy = bool(self.app.settings.get(gui_grid.DEPLOY_SETTING, False))
                 dpg.add_button(label=gui_grid.patch_label(0, deploy), tag='grid_patch_game', enabled=False,
                                width=PATCH_W, callback=lambda: self._on_patch_game())
@@ -681,11 +683,9 @@ class CharacterGridTab:
             self.nav.refresh(self.loader.state)
             if self.copied is not None and self.copied not in gui_grid.characters(self.loader.state):
                 self.copied = None
-        self._clear_popups()
-        dpg.delete_item('grid_cells', children_only=True)
         self._retire_textures()
         self._show_status()
-        self._draw_grid()
+        self._draw_grid()                    # both redraws delete what they drew before
         self._draw_popups()
         self._drop_retired_textures()
         for callback in self.on_state_read:
@@ -934,11 +934,14 @@ class CharacterGridTab:
     def _draw_badge(self, image, text, scale):
         """A small light number on a dark rounded box in the image's bottom right corner."""
         from PIL import ImageDraw, ImageFont
-        try:
-            font = ImageFont.truetype(os.path.join(self.app.root_dir, FONT_REL), BADGE_FONT * scale)
-            font.set_variation_by_axes([700, 100])
-        except (OSError, ValueError, AttributeError):
-            font = ImageFont.load_default()
+        font = self._badge_fonts.get(scale)
+        if font is None:
+            try:
+                font = ImageFont.truetype(os.path.join(self.app.root_dir, FONT_REL), BADGE_FONT * scale)
+                font.set_variation_by_axes([700, 100])
+            except (OSError, ValueError, AttributeError):
+                font = ImageFont.load_default()
+            self._badge_fonts[scale] = font
         draw = ImageDraw.Draw(image)
         left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
         pad = scale
@@ -949,10 +952,9 @@ class CharacterGridTab:
 
     @_draws
     def _retire_textures(self):
-        """Before a redraw after a read (every item showing a texture is deleted by then): the textures made
-        so far are set aside. The redraw takes back the ones it still shows (same file, time, size and
-        decoration), so an unchanged portrait is not opened and uploaded again; ``_drop_retired_textures``
-        deletes the rest."""
+        """Before a redraw after a read: the textures made so far are set aside. The redraw deletes every item
+        that showed one and takes back the ones it still shows (same file, time, size and decoration), so an
+        unchanged portrait is not opened and uploaded again; ``_drop_retired_textures`` deletes the rest."""
         self._retired.update(self.textures)
         self.textures = {}
 
@@ -965,7 +967,8 @@ class CharacterGridTab:
 
     def _portrait_texture(self, cid, view, scale, badge=None, split=None, gecko=False):
         state = self.loader.state
-        path = gui_grid.icon_file(state, self.loader.state_path, cid, view) if state else None
+        # _texture stats the file itself (its key) and gives None for a missing one: no second look here
+        path = gui_grid.icon_file(state, self.loader.state_path, cid, view, check=False) if state else None
         return self._texture(path, scale, badge, split, gecko) if path else None
 
     def _portrait_button(self, cid, view, scale, cell_w, user_data, callback, badge=None, both=False, gecko=False):
@@ -1373,7 +1376,7 @@ class CharacterGridTab:
         def slot_button(label, theme='primary_theme'):
             # a staged pack load replaces the roster: slot edits wait until it is written or discarded
             usable = (self.pending.has(cid) if label == DISCARD else self.pending.pack is None
-                      and (label != SIZE or gui_grid.size_of(state, cid) is not None))
+                      and (label != SIZE or gui_grid.size_factor(gui_grid.size_of(state, cid)) is not None))
             button = dpg.add_button(label=label, width=SLOT_BUTTON_W, height=BUTTON_H, callback=actions[label],
                                     enabled=not self._locked() and usable)
             dpg.bind_item_theme(button, theme)
@@ -1655,12 +1658,7 @@ class CharacterGridTab:
         if self._locked() or self.pending.pack is not None:
             return
         if self.pending.equip_edit(cid, file) is not None:
-            self.pending.edits = [e for e in self.pending.edits
-                                  if not (int(e['id'], 16) == cid and e['op'] in gui_grid.EQUIP_OPS
-                                          and e.get('file') == file)]
-            self.pending.sections = [sec for sec in self.pending.sections
-                                     if not (int(sec['target'], 16) == cid and sec['action'] in gui_grid.EQUIP_OPS
-                                             and (sec.get('edit') or {}).get('file') == file)]
+            self.pending.drop_equip(cid, file)
             self._pending_changed()
             return
         self._start_preview(cid, None, equip=(file, None))
@@ -1777,7 +1775,7 @@ class CharacterGridTab:
 
     def _on_rename(self, cid):
         """The rename dialog: a text box with a live "fits / too long" line; OK runs the staging check."""
-        if self._locked():
+        if self._locked() or self.pending.pack is not None:      # the name's click handler has no disabled state
             return
         state = self.nav.state or self.loader.state
         font = os.path.join(self.app.root_dir, FONT_REL)
@@ -1891,10 +1889,10 @@ class CharacterGridTab:
         """The Set size... dialog: a factor (1 = the character's normal size; a refused one gets a red line); OK writes a one-character stat edit file (``gui_grid.size_doc``) and runs its staging check."""
         state = self.nav.state or self.loader.state
         sizes = gui_grid.size_of(state, cid)
-        if self._locked() or sizes is None:
+        current = gui_grid.size_factor(sizes)
+        if self._locked() or current is None:        # no sizes, or no base size to take a factor of
             return
         pending = gui_grid.pending_size(self.pending, cid)
-        current = gui_grid.size_factor(sizes)
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         self.action = (cid, 'size')
         win = self.confirm = dpg.add_window(label=f'Size of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})',
@@ -2045,7 +2043,10 @@ class CharacterGridTab:
     # ------------------------------------------------------------------ copy / paste
     def _add_menu(self, button, members):
         """Give a portrait button the right-click menu (``_on_context``) for ``members`` (its square's, or one)."""
-        self._menu_targets = {b: m for b, m in self._menu_targets.items() if dpg.does_item_exist(b)}
+        if len(self._menu_targets) >= self._menu_prune_at:
+            # Deleted buttons are dropped now and then, not on every button added (item ids are never reused).
+            self._menu_targets = {b: m for b, m in self._menu_targets.items() if dpg.does_item_exist(b)}
+            self._menu_prune_at = 2 * len(self._menu_targets) + 128
         self._menu_targets[button] = list(members)
         dpg.bind_item_handler_registry(button, 'grid_context_handlers')
 
@@ -2112,12 +2113,13 @@ class CharacterGridTab:
             toast = gui_grid.export_toast(code, result)
             if toast is None:
                 self.app.log_line(f'[character grid] {who} was not exported: see the log above.', _WARN)
+                self.action = 'ask'          # holds the levels: a click on its Close must not close one too
                 self._dialog(gui_grid.export_failed_dialog(self.loader.state, cid, result), self._end_action)
                 return
             self.app.log_line(f'[character grid] {who} exported to {result["folder"]}', _OK)
             self._end_action()
             self.app.toast.ok(toast)
-        self._run([gui_grid.export_command(cid)], f'Exporting {who}...', done)
+        self._run_or_say([gui_grid.export_command(cid)], f'Exporting {who}...', done)
 
     # ------------------------------------------------------------------ character packages (.sluggiezip)
     def _on_export_package(self, cid):
@@ -2161,7 +2163,7 @@ class CharacterGridTab:
                 return
             self.app.log_line(f'[character grid] {who} exported to {written}', _OK)
             self.app.toast.ok(f'{os.path.basename(written)} has been created')
-        self._run([gui_grid.package_export_command(cid, path)], f'Exporting {who}...', done)
+        self._run_or_say([gui_grid.package_export_command(cid, path)], f'Exporting {who}...', done)
 
     def _on_load_package(self, cid):
         """Import .sluggiezip package...: pick a package; every aspect it holds is staged for the slot at once."""
@@ -2227,6 +2229,11 @@ class CharacterGridTab:
         if self.copied is None:
             return
         self.copied = None
+        if self._locked():
+            # A staging check or its dialog is up: only redraw. _pending_changed prunes the staged files down to
+            # the pending list, and the edit being checked (its portrait, its clip) is not in that list yet.
+            self._refresh_markers()
+            return
         self._show_status()
         self._pending_changed()
 
@@ -2490,7 +2497,7 @@ class CharacterGridTab:
                 self.app.log_line('[character grid] the roster switch stopped at a failed step: see the log above; '
                                   'the re-read shows what landed.', _WARN)
             self.set_busy(self.app.busy)
-        self._run([gui_grid.switch_command(path, accept_gecko=accept_gecko)], 'Injecting the roster...', done)
+        self._run_or_say([gui_grid.switch_command(path, accept_gecko=accept_gecko)], 'Injecting the roster...', done)
 
     def _on_discard_all(self):
         if self._locked() or not len(self.pending):
@@ -2553,8 +2560,7 @@ class CharacterGridTab:
         def done(code, _output):
             if code == 0:
                 self.pending.clear()
-                self._prune_staged_icons()
-                self._prune_staged_clips()
+                self._pending_changed()      # prunes the staged files and tells the other tabs
                 self.app.log_line('[character grid] Patch Game done: every pending edit is written.', _OK)
                 if deploy:
                     self._deploy(patched=True)          # its toast says how the copy went
@@ -2566,7 +2572,8 @@ class CharacterGridTab:
                                   _WARN)
                 self.app.toast.error('Patch Game failed: the pending edits are kept.')
             self.set_busy(self.app.busy)
-        self._run([gui_grid.apply_command(self.edits_path, accept_gecko, accept_memory)], 'Patching the game...', done)
+        self._run_or_say([gui_grid.apply_command(self.edits_path, accept_gecko, accept_memory)],
+                         'Patching the game...', done)
 
     # ------------------------------------------------------------------ roster packs
     def _on_save_pack(self):
@@ -2593,7 +2600,10 @@ class CharacterGridTab:
         self._after_save = after
         self.set_busy(self.app.busy)
         if save:
-            os.makedirs(self.pack_dir, exist_ok=True)
+            try:
+                os.makedirs(self.pack_dir, exist_ok=True)
+            except OSError as exc:           # the dialog then starts elsewhere; the tab must not stay locked
+                self.app.log_line(f'[character grid] could not create {self.pack_dir}: {exc}', _WARN)
         filters = [('Roster packs', '*' + gui_grid.PACK_EXTENSION), ('All files', '*.*')]
         on_paths = self._on_pack_save_paths if save else self._on_pack_load_paths
         if not self.app.pick_files('grid_pack_save_dialog' if save else 'grid_pack_load_dialog',
@@ -2620,7 +2630,7 @@ class CharacterGridTab:
             self._refresh_markers()
             if after is not None:
                 after()
-        self._run([gui_grid.save_command(path)], 'Saving the roster pack...', done)
+        self._run_or_say([gui_grid.save_command(path)], 'Saving the roster pack...', done)
 
     def _on_pack_load_paths(self, paths):
         path = next((p for p in paths if p and os.path.isfile(p)), None)
@@ -2680,6 +2690,8 @@ class CharacterGridTab:
                 self.pending.clear()
                 self.reference = gui_grid.Reference(f'loaded ({os.path.basename(path)})',
                                                     (plan or {}).get('pack_fingerprints') or {})
+                self._show_status()          # the reference line
+                self._pending_changed()      # redraws the markers; the other tabs show the pending list too
                 self.app.log_line(f'[character grid] Patch Game done: roster pack {os.path.basename(path)} '
                                   'loaded.', _OK)
                 if deploy:
@@ -2691,10 +2703,10 @@ class CharacterGridTab:
                                   'pending; the re-read shows what landed. Run Patch Game again once the cause is '
                                   'fixed.', _WARN)
                 self.app.toast.error('Patch Game failed: the roster pack load stays pending.')
-            self._refresh_markers()
+                self._refresh_markers()
             self.set_busy(self.app.busy)
-        self._run([gui_grid.load_command(path, accept_gecko=accept_gecko, accept_memory=accept_memory)],
-                  'Loading the roster pack...', done)
+        self._run_or_say([gui_grid.load_command(path, accept_gecko=accept_gecko, accept_memory=accept_memory)],
+                         'Loading the roster pack...', done)
 
     # ------------------------------------------------------------------ deploy
     def _deploying(self):
@@ -2766,7 +2778,7 @@ class CharacterGridTab:
                 self.app.toast.error('Game patched, but copying the files to the game directory failed.' if patched
                                      else 'Copying the files to the game directory failed.')
             self.set_busy(self.app.busy)
-        self._run([gui_grid.DEPLOY_ARGS], 'Copying the files to the game directory...', done)
+        self._run_or_say([gui_grid.DEPLOY_ARGS], 'Copying the files to the game directory...', done)
 
     def _on_cpu_vs_cpu(self):
         """Stage CPU vs CPU on or off ("Patch Game" writes it); turning it off stages management off too."""
@@ -2903,7 +2915,8 @@ class CharacterGridTab:
             if code != 0:
                 self.app.log_line(f'[character grid] {verb} {name} failed (see the log above).', _WARN)
             self.set_busy(self.app.busy)
-        self._run([command], f'{verb.capitalize()} {name}...', done)
+        if not self._run_or_say([command], f'{verb.capitalize()} {name}...', done):
+            self._show_status()              # the controls go back to what the game holds
 
     def _refresh_markers(self):
         self._show_status()
@@ -2923,6 +2936,18 @@ class CharacterGridTab:
             return False
         self._show_status()
         return True
+
+    def _run_or_say(self, steps, work, on_done):
+        """``_run`` for the callers that have nothing to undo when the command cannot start: the refusal goes to
+        the log and a toast (the console is hidden by default, so a click would seem to do nothing)."""
+        if self._run(steps, work, on_done):
+            return True
+        text = (f'Not started ({work.rstrip(".")}): another command or a sound write is running. Try again when it '
+                'is done.')
+        self.app.log_line(f'[character grid] {text}', _WARN)
+        self.app.toast.warn(text)
+        self.set_busy(self.app.busy)
+        return False
 
     def _dialog(self, dialog, on_ok, ok_label='OK', rebuild=None, toggle=None, extra=None):
         """A modal dialog: its lines, then ``ok_label`` / Cancel (``dialog.can_apply``) or Close. ``toggle``: a
@@ -3005,6 +3030,8 @@ def _source_thumbnail(preview):
 
 def swatches_per_row(count: int, viewport_width: int) -> int:
     """Swatches per row so the box fits the window (40 px margin), rows balanced (10 -> 5 + 5)."""
+    if count <= 0:
+        return 1                         # a square with no members: one (empty) row, no division by zero
     fit = max(1, (viewport_width - 40 - 2 * PAD + GAP) // (SWATCH[0] + GAP))
     rows = -(-count // fit)
     return -(-count // rows)

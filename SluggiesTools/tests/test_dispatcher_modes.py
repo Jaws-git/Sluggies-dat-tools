@@ -953,6 +953,26 @@ class ModeTableTests(unittest.TestCase):
             with self.subTest(argv=argv), mock.patch('sys.stderr'), self.assertRaises(SystemExit):
                 self.parse(*argv)
 
+    def test_an_empty_value_still_selects_its_command(self):
+        self.assertEqual(start.selected_mode(self.parse('--clear-slot', '')).attr, 'clear_slot')
+        self.assertEqual(start.selected_mode(self.parse('--save-roster', '')).attr, 'save_roster')
+
+    def test_options_without_a_command_are_an_error(self):
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit) as raised:
+            self.parse('--accept-gecko-break')
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_a_failed_child_script_fails_the_command_without_a_traceback(self):
+        failed = mock.Mock(returncode=1)
+        with (mock.patch.object(start.subprocess, 'run', return_value=failed),
+              mock.patch.object(start.slogger, 'error') as error):
+            self.assertFalse(start.run_resplit_unused())
+            self.assertFalse(start.run_export_icons())
+        self.assertEqual(error.call_count, 2)
+        with mock.patch.object(start.subprocess, 'run', return_value=mock.Mock(returncode=0)):
+            self.assertTrue(start.run_resplit_unused())
+            self.assertTrue(start.run_export_icons())
+
     def test_changes_game_memory(self):
         self.assertTrue(start._changes_game_memory(self.parse('--patch', 'a.sluggie')))
         self.assertTrue(start._changes_game_memory(self.parse('--unpatch', '--target-id', '0x13')))

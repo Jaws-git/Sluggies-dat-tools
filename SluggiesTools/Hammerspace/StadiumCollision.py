@@ -52,7 +52,17 @@ class Strip:
 
 
 def parse(data: bytes) -> tuple[list[tuple], list[list[Strip]]]:
-    """Return ``(boxes, regions)``: boxes in file space, ``regions[i]`` a list of Strip."""
+    """Return ``(boxes, regions)``: boxes in file space, ``regions[i]`` a list of Strip. ``ValueError`` for
+    anything that is not a readable collision file."""
+    try:
+        return _parse(data)
+    except struct.error as exc:         # a count or offset that points past the data
+        raise ValueError(f'not a readable stadium collision file ({exc})') from exc
+
+
+def _parse(data: bytes) -> tuple[list[tuple], list[list[Strip]]]:
+    if len(data) < 4:
+        raise ValueError(f'not a stadium collision file ({len(data)} bytes)')
     n, version, _relocated = struct.unpack_from('>HBB', data, 0)
     if version != VERSION:
         raise ValueError(f'not a stadium collision file (version byte {version:#x})')
@@ -245,10 +255,12 @@ def entry_triangles(entry: dict) -> list:
     return triangles
 
 
-def collision_files_for_model(chunk_number: int, model_file: int, dol_path: str = hh.INPUT_DOL) -> list[int]:
+def collision_files_for_model(chunk_number: int, model_file: int, dol_path: str | None = None) -> list[int]:
     """The collision files loaded with stadium model *model_file* of dir *chunk_number*
-    (every variant whose model is that file; day and night usually share one)."""
+    (every variant whose model is that file; day and night usually share one). *dol_path*: the input
+    ``main.dol`` (``hh.INPUT_DOL`` as it is at the call) when not given."""
     from Dol import dolfile
+    dol_path = dol_path or hh.INPUT_DOL
     if chunk_number == TOY_FIELD_DIR:
         raise ValueError('Toy Field (dir 16) collision is not supported: its tiles have their own '
                          'collision objects')
@@ -396,9 +408,11 @@ def apply_model(model: dict, restore: bool = False, dry_run: bool = False, name:
 
 # --- routes -----------------------------------------------------------------
 
-def collision_routes(dol_path: str = hh.INPUT_DOL) -> list[tuple[int, tuple[int, int, int]]]:
-    """``[(dir, (file_variant0, file_variant1, file_variant2)), ...]`` per stadium id."""
+def collision_routes(dol_path: str | None = None) -> list[tuple[int, tuple[int, int, int]]]:
+    """``[(dir, (file_variant0, file_variant1, file_variant2)), ...]`` per stadium id. *dol_path*: the input
+    ``main.dol`` (``hh.INPUT_DOL`` as it is at the call) when not given."""
     from Dol import dolfile
+    dol_path = dol_path or hh.INPUT_DOL
     with open(dol_path, 'rb') as f:
         image = dolfile.DolImage(f.read())
     raw = image.read(COLLISION_TABLE, 8 * STADIUM_COUNT)

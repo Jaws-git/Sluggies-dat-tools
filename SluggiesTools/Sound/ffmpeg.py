@@ -12,6 +12,7 @@ import shutil
 import subprocess
 
 WINGET_ID = 'Gyan.FFmpeg'
+WINGET_TIMEOUT = 1800       # seconds: a download of about 200 MB, and a prompt nobody sees must not block forever
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
@@ -57,7 +58,9 @@ def winget_install():
                '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity']
     try:
         done = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace',
-                              creationflags=_NO_WINDOW)
+                              timeout=WINGET_TIMEOUT, creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return False, f'winget did not finish within {WINGET_TIMEOUT // 60} minutes and was stopped'
     except OSError as exc:
         return False, str(exc)
     return done.returncode == 0, (done.stdout + done.stderr).strip()

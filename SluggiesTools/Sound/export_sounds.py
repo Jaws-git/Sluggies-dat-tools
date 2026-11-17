@@ -134,6 +134,15 @@ def export_waves(archive, out_dir):
     return [record for record, _, _ in everything], written
 
 
+def _inside(folder, path):
+    """Whether ``path`` lies in ``folder`` (no ``..`` or absolute part led out of it)."""
+    folder, path = os.path.abspath(folder), os.path.abspath(path)
+    try:
+        return os.path.commonpath((folder, path)) == folder
+    except ValueError:               # another drive
+        return False
+
+
 def export_streams(archive, sound_dir, out_dir):
     """Decode every stream sound's ``.brstm`` from ``sound_dir``; returns ``(index records, bytes written,
     missing stream files)``."""
@@ -154,6 +163,13 @@ def export_streams(archive, sound_dir, out_dir):
             _slogger.warning(f'{sound.name}: stream sound without an external file', source=SOURCE)
             continue
         source = os.path.join(sound_dir, *external.split('/'))
+        rel = os.path.join(os.path.dirname(external) or 'stream', _safe_name(sound.name) + '.wav')
+        path = os.path.join(out_dir, *rel.split('/'))
+        if not (_inside(sound_dir, source) and _inside(out_dir, path)):
+            # The path is the archive's own text: one that leaves the sound folder is not followed.
+            _slogger.warning(f'{sound.name}: stream path {external!r} leaves the sound folder; skipped',
+                             source=SOURCE)
+            continue
         if not os.path.isfile(source):
             missing.append(external)
             continue
@@ -161,8 +177,6 @@ def export_streams(archive, sound_dir, out_dir):
             stream = brstm.parse(handle.read())
         started = time.time()
         channels = brstm.decode(stream)
-        rel = os.path.join(os.path.dirname(external) or 'stream', _safe_name(sound.name) + '.wav')
-        path = os.path.join(out_dir, *rel.split('/'))
         wavfile.write_wav(path, stream.rate, channels, stream.loop)
         written += os.path.getsize(path)
         record.update(rate=stream.rate, channels=stream.channels, samples=stream.samples,

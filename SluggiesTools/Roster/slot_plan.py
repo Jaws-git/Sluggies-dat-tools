@@ -513,13 +513,14 @@ class Env:
                       high_as_low: bool = False) -> tuple[list[str], list[str]]:
         """(errors, warnings) for loading ``high`` / ``low`` in a slot whose vanilla files are ``directory``'s
         (validator, skeleton, High/Low pair rules: ``pack.LoadEnv.slot_problems``; ``high_as_low``: a second High
-        model may be the Low model, ``SlotTarget.slot_pair_problems``)."""
-        return [], []
+        model may be the Low model, ``SlotTarget.slot_pair_problems``). No default: "no problems" is an answer
+        only an environment that ran the checks may give."""
+        raise NotImplementedError
 
     def equipment_block_problems(self, directory: int, file: int, block: bytes) -> tuple[list[str], list[str]]:
         """(errors, warnings) for loading the equipment ``block`` as file ``file`` of a slot whose vanilla files are
-        ``directory``'s (``SlotTarget.equipment_block_problems``)."""
-        return [], []
+        ``directory``'s (``SlotTarget.equipment_block_problems``). No default, as ``slot_problems``."""
+        raise NotImplementedError
 
     def current_anim(self, char: dict, file: int) -> bytes | None:
         """The animation bank the slot loads now as file ``file`` (6-14), or None."""
@@ -579,6 +580,7 @@ class Plan:
     portraits: dict = field(default_factory=dict)        # {file name in the derived icon folder: RGBA image or PNG}
     pair: Pair | None = None        # patch: the picked file and its partner
     nothing: bool = False           # clear: the slot is at its baseline already, no commands
+    fresh_directory: bool = False   # patch: a new ID's model directory is copied afresh (its banks are reset)
     gear: dict | None = None        # equip / equip_clear: {'file', 'label', 'path', 'shared_with', 'origin'}
     anim: dict | None = None        # anim: {'file', 'label', 'path', 'size', 'stock_size', 'shared_with'}
     # The slot's stat edits that stay on top of a changed stats source or a clear (``Env.stat_edited``); the GUI
@@ -723,6 +725,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
             plan.notes.append(f'{target_name} keeps its own model directory (copies of {source_name}\'s files)')
         else:
             entry['model'] = {'from': _hex(source)}
+            plan.fresh_directory = True
             if char.get('own_model_dir'):
                 plan.notes.append(f'{target_name}\'s own model directory is copied afresh from {source_name} (it '
                                   f'held {_hex(char["model_source"])}\'s files; models patched into it are dropped)')
@@ -1075,6 +1078,13 @@ def plan_equip_clear(st: dict, config: dict, cid: int, file: int, env: Env, stat
     if env.equipment_at_baseline(char, file):
         plan.nothing = True
         plan.notes.append(f'nothing to reset: the {what} of {target_name} is at its baseline already')
+        return plan
+    if cid >= ids.FIRST_NEW and not char.get('own_model_dir') and (_entry(config, 'ids', cid) or {}).get('model') is None:
+        # no directory of its own to write into (the targeted write would refuse it in mid-chain): what it loads is
+        # its template's file, which only the template's slot resets
+        plan.nothing = True
+        plan.notes.append(f'nothing to reset: {target_name} has no model directory of its own, it loads its '
+                          f'template\'s {what}')
         return plan
     plan.commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(file)))
     plan.commands.append(('--roster-state',))
@@ -2685,6 +2695,7 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 continue
             merged.remove(earlier)
             edit = Edit('patch', edit.cid, p.high, edit.pair.low, index=edit.index,
+                        no_gear=earlier.no_gear or edit.no_gear,
                         pair=Pair(p.chunk, p.high, edit.pair.low, edit.pair.picked, p.stem))
             notes.append(f'{_hex(edit.cid)}: {low_name} joins the pending {os.path.basename(p.high)} as its Low '
                          'partner')
@@ -2861,7 +2872,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             for earlier in [(e, p) for e, p in batch.plans if e.op == 'stats' and e.cid == edit.cid]:
                 batch.plans.remove(earlier)
                 batch.notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later patch sets the stats')
-        if edit.op == 'patch' and 'fresh copy' in str(plan.effects.get('model')):   # the copy resets the banks
+        if edit.op == 'patch' and plan.fresh_directory:   # the copy resets the banks
             for earlier in [(e, p) for e, p in batch.plans if e.op == ANIM and e.cid == edit.cid]:
                 batch.plans.remove(earlier)
                 batch.notes.append(f'{_hex(edit.cid)}: the animation bank {earlier[0].bank} edit is dropped: the later '

@@ -71,6 +71,12 @@ def write_package(folder, doc, leave_out=(), extra=None):
     return path
 
 
+def mock_read(error):
+    """``ZipFile.read`` raising ``error`` (a member whose CRC does not match)."""
+    from unittest import mock
+    return mock.patch.object(zipfile.ZipFile, 'read', side_effect=error)
+
+
 def state(cid=0x66, voice=0x09, char_voice=None):
     return {'characters': [{'id': cid, 'voice': voice, 'char_voice': char_voice}],
             'sizes': {'main_dol_sha1': SHA1}}
@@ -261,6 +267,31 @@ class StageTests(unittest.TestCase):
             with self.assertRaisesRegex(slot_zip.PackageError, 'damaged'):
                 slot_zip.extract(path, staged)
         self.assertEqual(os.listdir(staged), [])
+
+    def test_a_manifest_of_the_wrong_shape_is_refused_and_leaves_nothing_staged(self):
+        from unittest import mock
+        staged = os.path.join(self.root, slot_zip.STAGED_REL)
+        for over in ({'equipment': {'bat': {'file': BAT}}}, {'model': 'x'}, {'portraits': [FRONT]},
+                     {'character': 5}, {'stats': 'x'}, {'animations': [1]}):
+            with self.subTest(over=over):
+                with self.assertRaisesRegex(slot_zip.PackageError, 'damaged'):
+                    self.stage(write_package(self.root, manifest(**over)))
+        self.assertFalse(os.path.exists(staged) and os.listdir(staged))
+        # null counts as "not in the package"
+        skipped = self.stage(write_package(self.root, manifest(equipment=None, portraits=None))).skipped
+        self.assertIn('Front portrait: not in the package', skipped)
+        # a failure after the unpack removes the folder again
+        before = os.listdir(staged)
+        with mock.patch.object(slot_zip, 'write_stat_file', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                self.stage(write_package(self.root, manifest()))
+        self.assertEqual(os.listdir(staged), before)
+
+    def test_a_manifest_with_a_bad_crc_is_refused(self):
+        path = write_package(self.root, manifest())
+        with mock_read(zipfile.BadZipFile('Bad CRC-32')):
+            with self.assertRaisesRegex(slot_zip.PackageError, 'damaged'):
+                self.stage(path)
 
     def test_prune_keeps_what_pending_edits_use(self):
         path = write_package(self.root, manifest())

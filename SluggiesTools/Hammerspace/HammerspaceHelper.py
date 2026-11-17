@@ -199,70 +199,51 @@ def findFreeMemoryChunk(dataLength: int, reserved_ranges=()) -> int:
         _slogger.info("No hammerspace region present (file is not larger than BASE_SIZE).", source="hammerspace.helper")
         return -1
 
-    reserved = _normalize_reserved_ranges(reserved_ranges)
-    reserved_index = 0
+    def align_up(value: int) -> int:
+        return (value + HS_ALIGN_BYTES - 1) // HS_ALIGN_BYTES * HS_ALIGN_BYTES
 
-    def overlaps_reserved(start: int, length: int) -> bool:
-        # Offsets are checked in ascending order, so the index only moves forward.
-        nonlocal reserved_index
-        while reserved_index < len(reserved) and reserved[reserved_index][1] <= start:
-            reserved_index += 1
-        return reserved_index < len(reserved) and reserved[reserved_index][0] < start + length
-
-    zero_block = b'\x00' * HS_ALIGN_BYTES
-    full_blocks, tail_bytes = divmod(dataLength, HS_ALIGN_BYTES)
-    scan_start = (BASE_SIZE + HS_ALIGN_BYTES - 1) & ~(HS_ALIGN_BYTES - 1)
-    run_start = -1
-    run_blocks = 0
+    # Only the gaps between the reserved ranges can hold the run, so only they are read.
+    gaps = []
+    cursor = align_up(BASE_SIZE)
+    for start, end in _normalize_reserved_ranges(reserved_ranges):
+        if start >= file_size:
+            break
+        if start > cursor:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < file_size:
+        gaps.append((cursor, file_size))
 
     with open(OUTPUT_DAT, 'rb') as f:
-        f.seek(scan_start)
-        read_offset = scan_start
+        for gap_start, gap_end in gaps:
+            candidate = align_up(gap_start)
+            while candidate + dataLength <= gap_end:
+                used_end = _nonZeroEnd(f, candidate, dataLength)
+                if used_end == -1:
+                    return candidate
+                # Every aligned offset up to the non-zero byte found would hold that byte too.
+                candidate = align_up(used_end)
 
-        while read_offset < file_size:
-            chunk = f.read(min(CHUNK_SIZE, file_size - read_offset))
-            if not chunk:
-                break
+    return -1
 
-            for chunk_offset in range(0, len(chunk), HS_ALIGN_BYTES):
-                block = chunk[chunk_offset:chunk_offset + HS_ALIGN_BYTES]
-                block_offset = read_offset + chunk_offset
 
-                if full_blocks == 0:
-                    if (
-                        len(block) >= tail_bytes
-                        and block[:tail_bytes] == zero_block[:tail_bytes]
-                        and not overlaps_reserved(block_offset, tail_bytes)
-                    ):
-                        return block_offset
-                    continue
-
-                if tail_bytes and run_blocks >= full_blocks:
-                    if (
-                        len(block) >= tail_bytes
-                        and block[:tail_bytes] == zero_block[:tail_bytes]
-                        and not overlaps_reserved(block_offset, tail_bytes)
-                    ):
-                        return run_start
-                    run_start = -1
-                    run_blocks = 0
-
-                if (
-                    len(block) == HS_ALIGN_BYTES
-                    and block == zero_block
-                    and not overlaps_reserved(block_offset, HS_ALIGN_BYTES)
-                ):
-                    if run_blocks == 0:
-                        run_start = block_offset
-                    run_blocks += 1
-                    if not tail_bytes and run_blocks >= full_blocks:
-                        return run_start
-                else:
-                    run_start = -1
-                    run_blocks = 0
-
-            read_offset += len(chunk)
-
+def _nonZeroEnd(f, offset: int, length: int) -> int:
+    """-1 when the ``length`` bytes of ``f`` at ``offset`` are all zero. Else the offset just past a non-zero byte
+    in that range: the last one of the first piece read that has any (a small first piece, so a used region
+    costs one short read per step)."""
+    f.seek(offset)
+    done = 0
+    piece_size = min(4096, CHUNK_SIZE)
+    while done < length:
+        want = min(piece_size, length - done)
+        piece = f.read(want)
+        used = len(piece.rstrip(b'\x00'))
+        if used:
+            return offset + done + used
+        if len(piece) < want:
+            return offset + length          # the file ends inside the range
+        done += want
+        piece_size = CHUNK_SIZE
     return -1
 
 
@@ -471,15 +452,22 @@ def _readDirPtrs() -> list[int]:
     """Read the directory pointer table from the INPUT main.dol.
 
     Returns a list of DOL file offsets (virtual address minus DOL base),
-    one per directory entry."""
+    one per directory entry. Kept while the file is unchanged: every
+    entry lookup asks for the table."""
 
-    ptrs = []
-    with open(INPUT_DOL, 'rb') as dol:
-        for addr in range(_DIRS_START, _DIRS_END, 4):
-            dol.seek(addr)
-            raw = struct.unpack('>I', dol.read(4))[0]
-            ptrs.append(raw - _DOL_BASE)
-    return ptrs
+    stat = os.stat(INPUT_DOL)
+    key = (os.path.abspath(INPUT_DOL), stat.st_mtime_ns, stat.st_size)
+    if key not in _DIR_PTRS_CACHE:
+        with open(INPUT_DOL, 'rb') as dol:
+            dol.seek(_DIRS_START)
+            raw = dol.read(_DIRS_END - _DIRS_START)
+        ptrs = [word - _DOL_BASE for word in struct.unpack(f'>{_DIRS_COUNT}I', raw)]
+        _DIR_PTRS_CACHE.clear()
+        _DIR_PTRS_CACHE[key] = ptrs
+    return list(_DIR_PTRS_CACHE[key])
+
+
+_DIR_PTRS_CACHE: dict = {}
 
 
 _EXTRA_DIRS_CACHE: dict = {}

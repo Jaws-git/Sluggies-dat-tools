@@ -1,4 +1,4 @@
-from base import FileChunk
+from base import ExpectedFormatSkip, FileChunk
 from helper import Object, prior_deletions
 from tpl import TEXPalette, decode_tpl
 from gpl import GPL
@@ -49,10 +49,6 @@ def _copy_texture_pngs(output_dir, temp_dir):
             os.path.join(temp_dir, filename),
             os.path.join(tex_dir, filename),
         )
-
-
-class ExpectedFormatSkip(Exception):
-    pass
 
 
 class UnexportableEntrySkip(ExpectedFormatSkip):
@@ -233,22 +229,12 @@ class Model0(FileChunk):
         self.bones = self.ACT.bones()
         # At this point we have the list of bones, time to get the influences for each
         self.bone_influences = self.boneInfluences()
-        vertex_weight_totals = {}
         for influence in self.bone_influences:
             self.bones[influence.boneID].addInfluence(influence)
         self.skinned = False
         for bone in self.bones.values():
             if bone.skinned:
                 self.skinned = True
-            for vertex_id in bone.vertexInfluences:
-                key = str(bone.GEOID) + '_' + str(vertex_id)
-                if key not in vertex_weight_totals:
-                    vertex_weight_totals[key] = 0
-                vertex_weight_totals[key] += bone.vertexInfluences[vertex_id][0]
-        # for bone in self.bones.values():
-        #     for vertex_id in bone.vertexInfluences:
-        #         key = str(bone.GEOID) + '_' + str(vertex_id)
-        #         bone.vertexInfluences[vertex_id][0] /= vertex_weight_totals[key]
 
     def boneInfluences(self):
         boneInfluences = []
@@ -376,6 +362,7 @@ class Model0(FileChunk):
         """The body of ``model_data``: geometry, bones and the texture names into one object."""
         geometries = []
         vertex_deletions = {}
+        deletion_keys = {}      # per descriptor: the sorted keys of its vertex_deletions table
         # vertex data/triangles are a little more complicated because of the multiple geodescriptors
         for descriptor_ind, descriptor in enumerate(self.GPL.geoDescriptors):
             vertex_deletions[descriptor_ind] = {0: 0}
@@ -384,28 +371,20 @@ class Model0(FileChunk):
             # Full rows: a skinned submesh interleaves its normals after each position.
             coords = np.array(layout.DOPositionHeader.data)
 
-            if self.skinned:
-                deletion_count = 0
-                vertex_ind = 0
-                while vertex_ind < len(coords):
-                    if coords[vertex_ind][0] != 0 or coords[vertex_ind][1] != 0 or coords[vertex_ind][2] != 0:
-                        vertex_ind += 1
-                        continue
-                    include = 0
-                    for bone in self.bones.values():
-                        influences = bone.vertexInfluences
-                        if vertex_ind + deletion_count in influences and bone.GEOID == descriptor_ind:
-                            include = 1
-                            break
-                    if include:
-                        vertex_ind += 1
-                    else:
-                        coords = np.delete(coords, vertex_ind, 0)
-                        deletion_count += 1
-                        vertex_deletions[descriptor_ind][vertex_ind + deletion_count] = deletion_count
-            # if descriptor_ind == 0:
-            #     print(vertex_deletions)
-            #     print(prior_deletions(vertex_deletions[0], 120))
+            if self.skinned and coords.ndim == 2 and len(coords):
+                # A vertex at the origin that no bone of this submesh influences is left out. The table maps
+                # "original index + 1" to the number of vertices left out up to there.
+                influenced = set()
+                for bone in self.bones.values():
+                    if bone.GEOID == descriptor_ind:
+                        influenced.update(bone.vertexInfluences)
+                at_origin = np.flatnonzero(~(coords[:, :3] != 0).any(axis=1))
+                removed = [int(ind) for ind in at_origin if int(ind) not in influenced]
+                for deletion_count, original_ind in enumerate(removed, 1):
+                    vertex_deletions[descriptor_ind][original_ind + 1] = deletion_count
+                if removed:
+                    coords = np.delete(coords, removed, 0)
+            deletion_keys[descriptor_ind] = sorted(vertex_deletions[descriptor_ind])
 
             geometry.position_normals = [coord[3:6] for coord in coords] if coords.ndim == 2 and coords.shape[1] >= 6 else None
             coords = [coord[:3] for coord in coords]
@@ -444,7 +423,8 @@ class Model0(FileChunk):
                     mesh_triangle = []
                     for vertex in triangle:
                         mesh_vertex = Object()
-                        mesh_vertex.position = vertex['position'] - prior_deletions(vertex_deletions[descriptor_ind], vertex['position'])
+                        mesh_vertex.position = vertex['position'] - prior_deletions(
+                            vertex_deletions[descriptor_ind], vertex['position'], deletion_keys[descriptor_ind])
                         # if mesh_vertex.position < 0 or mesh_vertex.position >= len(geometry.positions):
                         #     print(mesh_vertex.position)
                         #     print(len(geometry.positions))
@@ -491,7 +471,8 @@ class Model0(FileChunk):
             bone_copy.skinned = bone.skinned
             bone_copy.influences = {}
             for vertex_id in bone.vertexInfluences:
-                new_vertex_ind = vertex_id - prior_deletions(vertex_deletions[bone.GEOID], vertex_id)
+                new_vertex_ind = vertex_id - prior_deletions(vertex_deletions[bone.GEOID], vertex_id,
+                                                             deletion_keys.get(bone.GEOID))
                 bone_copy.influences[new_vertex_ind] = bone.vertexInfluences[vertex_id][0]
                 # if new_vertex_ind < 0 or new_vertex_ind >= len(geometries[bone.GEOID].positions):
                 #     print(new_vertex_ind)

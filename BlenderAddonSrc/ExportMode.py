@@ -52,9 +52,9 @@ _SUBMESH_HAMMERSPACE_FIELDS = ("FacesDataEdited", "FaceSurfaceIdsEdited", "Rigid
 _UV_HAMMERSPACE_FIELDS = ("UVFacesDataEdited",)
 _COLOR_HAMMERSPACE_FIELDS = ("ColorChannelDataEdited",)
 
-# Bytes per vertex-colour entry by quantize-format nibble; mirrors
-# SluggiesTools/binfmt.color_entry_size.
-_COLOR_ENTRY_SIZE = {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}
+# Bytes per vertex-colour entry by quantize-format nibble: the add-on's one
+# table (RebuildCommon), which mirrors SluggiesTools/binfmt.color_entry_size.
+_COLOR_ENTRY_SIZE = RigidRebuildExport.rc.COLOR_ENTRY_SIZE
 
 
 def _decode_field(value) -> bytes:
@@ -248,11 +248,8 @@ def colors_changed(edited_loop_data: bytes, color_channel: dict) -> bool:
     indices = struct.unpack(f">{len(faces) // 2}H", faces) if faces else ()
     if len(edited_loop_data) != len(indices) * size:
         return True
-    for loop, index in enumerate(indices):
-        expected = donor[index * size:(index + 1) * size]
-        if edited_loop_data[loop * size:(loop + 1) * size] != expected:
-            return True
-    return False
+    expected = b''.join(donor[index * size:(index + 1) * size] for index in indices)
+    return edited_loop_data != expected
 
 
 def donor_skin_bone_sets(skin_data: dict, vertex_size: int) -> dict:

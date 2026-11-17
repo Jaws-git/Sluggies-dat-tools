@@ -14,6 +14,7 @@ panel and the exporter import each other, and all of them import this.
 """
 
 import os
+import time
 
 import bpy
 from bpy.app.handlers import persistent
@@ -32,8 +33,54 @@ LOCATE_HINT = "Use 'Locate source .sluggie' in the Sluggies panel to point the m
 # stored path -> path found for it ('' when nothing was found), so a missing
 # file is searched once, not on every redraw or export step. A miss is
 # searched again by the tools that act on the file (relink), and after a
-# load or a save (the .blend's folder is part of the search).
+# load, or a save into another folder (the .blend's folder is part of the
+# search).
 _FOUND = {}
+_FOUND_BLEND_DIR = [None]     # the .blend's folder _FOUND was filled for
+
+# path -> time.monotonic() of its last positive os.path.isfile: draw-time
+# callers (relink off) trust it for _SEEN_SECONDS, so a sidebar redraw does
+# not stat the same file many times (slow on a synced or network folder).
+_SEEN = {}
+
+# normcase(abspath) -> (mtime_ns, size, SluggiesModel dict): one user action
+# reads the same .sluggie from several helpers (and once per material), each
+# read being xz plus JSON. Kept while the file is unchanged; a few entries.
+_MODELS = {}
+_MODELS_MAX = 4
+
+
+def load_model(path):
+    """The ``SluggiesModel`` dict of the ``.sluggie`` at *path*, read once
+    while the file is unchanged. Shared between callers: read it, do not
+    change it. Raises OSError / ValueError like ``FieldCodec.load_sluggie``;
+    a file without a model gives ``{}``."""
+    key = os.path.normcase(os.path.abspath(path))
+    stat = os.stat(path)
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _MODELS.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    model = FieldCodec.load_sluggie(path).get('SluggiesModel', {})
+    if not isinstance(model, dict):
+        raise ValueError(f"{os.path.basename(path)} is not a .sluggie model file")
+    _MODELS.pop(key, None)
+    while len(_MODELS) >= _MODELS_MAX:
+        _MODELS.pop(next(iter(_MODELS)))
+    _MODELS[key] = (stamp, model)
+    return model
+_SEEN_SECONDS = 2.0
+
+
+def _is_file(path, relink=True):
+    now = time.monotonic()
+    if not relink and now - _SEEN.get(path, -_SEEN_SECONDS) < _SEEN_SECONDS:
+        return True
+    if os.path.isfile(path):
+        _SEEN[path] = now
+        return True
+    _SEEN.pop(path, None)
+    return False
 
 
 def stored(arm_obj):
@@ -75,7 +122,7 @@ def chunk_matches(path, chunk):
     """Whether the ``.sluggie`` at *path* is of model directory *chunk*
     (True when the file does not say)."""
     try:
-        file_chunk = FieldCodec.load_sluggie(path).get('SluggiesModel', {}).get('ChunkNumber')
+        file_chunk = load_model(path).get('ChunkNumber')
     except (OSError, ValueError, KeyError, AttributeError):
         return False
     return file_chunk is None or int(file_chunk) == int(chunk)
@@ -92,7 +139,7 @@ def resolve(arm_obj, hint='', relink=True):
     if arm_obj is None:
         return ''
     path = stored(arm_obj)
-    if path and os.path.isfile(path):
+    if path and _is_file(path, relink):
         return path
     key = os.path.normcase(path)
     found = _FOUND.get(key)
@@ -236,23 +283,41 @@ def _refresh_relative_paths(filepath=None, *_args):
 
 @persistent
 def _forget_found(*_args):
-    """After a load or a save: search remembered misses again."""
+    """After a load: search remembered misses again."""
     _FOUND.clear()
+    _SEEN.clear()
+    _FOUND_BLEND_DIR[0] = _blend_dir()
+
+
+@persistent
+def _forget_found_after_save(*_args):
+    """After a save: search remembered misses again only when the .blend went
+    into another folder (Save As, the first save). A plain save changes
+    nothing the search looks at, and the search walks a folder tree and
+    parses every namesake file."""
+    if _blend_dir() != _FOUND_BLEND_DIR[0]:
+        _forget_found()
+
+
+_HANDLERS = (('load_post', _forget_found), ('save_post', _forget_found_after_save))
 
 
 def register():
     bpy.utils.register_class(SLUGGIES_OT_locate_sluggie)
     if _refresh_relative_paths not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(_refresh_relative_paths)
-    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
-        if _forget_found not in handlers:
-            handlers.append(_forget_found)
+    _FOUND_BLEND_DIR[0] = _blend_dir()
+    for name, handler in _HANDLERS:
+        handlers = getattr(bpy.app.handlers, name)
+        if handler not in handlers:
+            handlers.append(handler)
 
 
 def unregister():
-    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
-        if _forget_found in handlers:
-            handlers.remove(_forget_found)
+    for name, handler in _HANDLERS:
+        handlers = getattr(bpy.app.handlers, name)
+        if handler in handlers:
+            handlers.remove(handler)
     if _refresh_relative_paths in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.remove(_refresh_relative_paths)
     bpy.utils.unregister_class(SLUGGIES_OT_locate_sluggie)

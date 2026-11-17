@@ -85,16 +85,36 @@ class _OPENFILENAMEW(ctypes.Structure):
 
 def find_owner_window(title: str):
     """This process's top-level window with ``title`` (the GUI viewport), or None."""
+    # Every top-level window is asked, not FindWindowW(None, title): that returns one window, and with a
+    # second window of the same title (another copy of the GUI) it can be the other process's.
     try:
         user32 = ctypes.WinDLL('user32', use_last_error=True)
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
-        hwnd = user32.FindWindowW(None, title)
-        if not hwnd:
-            return None
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return hwnd if pid.value == os.getpid() else None
+        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.EnumWindows.argtypes = (enum_proc, wintypes.LPARAM)
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        own_pid = os.getpid()
+        found = []
+
+        def visit(hwnd, _lparam):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value != own_pid:
+                return True
+            buffer = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(hwnd) + 1)
+            user32.GetWindowTextW(hwnd, buffer, len(buffer))
+            if buffer.value != title:
+                return True
+            found.append(hwnd)
+            return False                                          # stop: this is the window
+
+        user32.EnumWindows(enum_proc(visit), 0)
+        return found[0] if found else None
     except (OSError, AttributeError):
         return None
 

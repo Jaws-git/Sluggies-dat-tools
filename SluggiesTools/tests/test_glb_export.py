@@ -14,7 +14,8 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import glb_export
-from helper import Object, quaternion_rotation_matrix, scaling_matrix, translation_matrix
+from helper import (Object, quaternion_rotation_matrix, quaternion_to_axis_angle, scaling_matrix,
+                    translation_matrix)
 
 
 def _pose(translation, quaternion_wxyz=(1.0, 0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0)):
@@ -245,6 +246,17 @@ class GlbExportTests(unittest.TestCase):
         _, gl, _ = _read(glb_export.model_data_to_glb(data))
         self.assertNotIn('skins', gl)
         self.assertEqual([gl['nodes'][i]['name'] for i in gl['scenes'][0]['nodes']], ['submesh0', 'submesh1'])
+
+
+class AxisAngleTests(unittest.TestCase):
+    def test_a_w_just_outside_the_unit_range_is_an_identity_rotation(self):
+        self.assertEqual(quaternion_to_axis_angle(1.0000001, 0.0, 0.0, 0.0), [1, 0, 0, 0])
+        self.assertEqual(quaternion_to_axis_angle(-1.0000001, 0.0, 0.0, 0.0)[:3], [1, 0, 0])
+
+    def test_a_quarter_turn(self):
+        x, y, z, angle = quaternion_to_axis_angle(2 ** -0.5, 0.0, 2 ** -0.5, 0.0)
+        self.assertAlmostEqual(angle, 90.0)
+        self.assertAlmostEqual(y, 1.0)
 
 
 if __name__ == '__main__':

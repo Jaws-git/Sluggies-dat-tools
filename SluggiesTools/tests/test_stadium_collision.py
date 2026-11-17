@@ -10,6 +10,7 @@ import os
 import struct
 import sys
 import unittest
+import unittest.mock
 
 TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 HAMMERSPACE_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
@@ -52,6 +53,12 @@ class FormatTests(unittest.TestCase):
     def test_refuses_other_files(self):
         with self.assertRaises(ValueError):
             sc.parse(b'\x00\x01\x42\x00' + b'\x00' * 12)
+
+    def test_a_cut_off_file_is_a_value_error(self):
+        data = _vanilla_like()
+        for cut in (2, 10, 40, len(data) - 6):              # callers catch ValueError, not struct.error
+            with self.assertRaises(ValueError):
+                sc.parse(data[:cut])
 
     def test_bad_strip_refused(self):
         with self.assertRaises(ValueError):
@@ -180,6 +187,16 @@ class SluggieEntryTests(unittest.TestCase):
 
     def test_no_field_does_nothing(self):
         self.assertEqual(sc.apply_model({'ChunkNumber': 10, 'FileIndex': 0}), [])
+
+
+class InputDolPathTests(unittest.TestCase):
+    def test_the_input_dol_is_looked_up_at_the_call(self):
+        missing = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'no_such_folder', 'main.dol')
+        with unittest.mock.patch.object(sc.hh, 'INPUT_DOL', missing):
+            for call in (sc.collision_routes, lambda: sc.collision_files_for_model(10, 0)):
+                with self.assertRaises(FileNotFoundError) as raised:
+                    call()
+                self.assertEqual(raised.exception.filename, missing)
 
 
 if __name__ == '__main__':

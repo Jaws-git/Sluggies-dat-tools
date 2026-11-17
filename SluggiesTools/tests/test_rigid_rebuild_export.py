@@ -9,6 +9,7 @@ import struct
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ADDON_DIR = ROOT / 'BlenderAddonSrc'
@@ -151,6 +152,15 @@ class PositionsMovedTests(unittest.TestCase):
     def _geometry(self, obj_world):
         return cse.bone_local_geometry(self.local, self.triangles, obj_world, self.arm_world, self.host)
 
+    def test_a_position_that_is_not_finite_is_refused_by_name(self):
+        for bad in (float('nan'), float('inf'), float('-inf')):
+            with self.subTest(bad), self.assertRaisesRegex(ValueError, 'head: a vertex position is not a finite'):
+                rre.quantized_positions([(0.0, bad, 0.0)], synthetic_donor.RIGID_QUANTIZE_INFO, 'head')
+        geometry = self._geometry(cse.mat4_mul(self.arm_world, self.host))
+        local = [(float('inf'), 0.0, 0.0)] * len(self.local)
+        with self.assertRaisesRegex(ValueError, 'head: a vertex position'):
+            rre.positions_moved(local, geometry, synthetic_donor.RIGID_QUANTIZE_INFO, 'head')
+
     def test_imported_placement_is_not_a_move(self):
         obj_world = cse.mat4_mul(self.arm_world, self.host)
         self.assertFalse(rre.positions_moved(self.local, self._geometry(obj_world), synthetic_donor.RIGID_QUANTIZE_INFO))
@@ -284,6 +294,21 @@ class BuildEntryTests(unittest.TestCase):
         )
         kwargs.update(overrides)
         return rre.build_rigid_rebuild_entry(**kwargs)
+
+    def test_counts_are_checked_before_the_facial_poses(self):
+        # The facial poses pack vertex indices as uint16: the count checks of the positions and faces run first.
+        with mock.patch.object(rre, 'encode_rigid_facial_poses', side_effect=AssertionError('packed first')), \
+                mock.patch.object(cse, 'encode_faces', side_effect=ValueError('face count')):
+            with self.assertRaisesRegex(ValueError, 'face count'):
+                self._entry(facial_keys=[])
+
+    def test_facial_normal_entries_past_uint16_are_refused(self):
+        indices = [0, 0x10000]
+        with mock.patch.object(rre.rc, 'encode_loop_normals', return_value=(b'', indices)):
+            with self.assertRaisesRegex(ValueError, 'head: 65537 distinct normals exceed the uint16 index range'):
+                rre.encode_facial_loop_normals('head', self.geometry, None, (3, 62), ())
+        with mock.patch.object(rre.rc, 'encode_loop_normals', return_value=(b'', [0, 0xFFFE])):
+            self.assertEqual(rre.encode_facial_loop_normals('head', self.geometry, None, (3, 62), ()), (b'', [0, 0xFFFE]))
 
     def test_entry_round_trips_through_the_patcher(self):
         entry = self._entry()

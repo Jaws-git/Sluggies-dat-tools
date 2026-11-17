@@ -41,6 +41,9 @@ PACK_DIR = os.path.join('_gui', 'Sound_Packs')  # user data in _gui, like Roster
 PACK_FILE = 'pack.json'
 PACK_EXTENSION = '.sluggiesvoice'
 FORMAT = 1
+# A member of a ``.sluggiesvoice`` file: a voice clip is at most ``clips.MAX_SECONDS`` long (well under 1 MB as
+# RWAV or WAV); anything near this is no clip.
+MAX_MEMBER_BYTES = 16 * 1024 * 1024
 NAME_RE = re.compile(r'^[^<>:"/\\|?*\x00-\x1f]{1,48}$')
 
 
@@ -229,11 +232,9 @@ def set_clip(pack, moment, rwav, wav=None, origin=None, seconds=None):
     clips.check_rwav(rwav, f'{moment} of {pack.name}')
     os.makedirs(pack.folder, exist_ok=True)
     rwav_name, wav_name = moment + clips.RWAV_EXTENSION, moment + '.wav'
-    with open(os.path.join(pack.folder, rwav_name), 'wb') as handle:
-        handle.write(rwav)
+    _write_file(os.path.join(pack.folder, rwav_name), rwav)
     if wav is not None:
-        with open(os.path.join(pack.folder, wav_name), 'wb') as handle:
-            handle.write(wav)
+        _write_file(os.path.join(pack.folder, wav_name), wav)
     elif os.path.isfile(os.path.join(pack.folder, wav_name)):
         os.remove(os.path.join(pack.folder, wav_name))
     if seconds is None:
@@ -241,6 +242,20 @@ def set_clip(pack, moment, rwav, wav=None, origin=None, seconds=None):
     pack.clips[moment] = Clip(moment, rwav_name, wav_name if wav is not None else None, origin, seconds)
     save_pack(pack)
     return pack.clips[moment]
+
+
+def _write_file(path, data):
+    """Write whole or not at all: a crash or a full disk must not leave a cut-off clip under the clip's name
+    (its header would still say the full length)."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'wb') as handle:
+            handle.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def remove_clip(pack, moment):
@@ -312,30 +327,50 @@ def read_pack_file(path):
         raise PackError(f'{os.path.basename(path)} is damaged: {exc}') from exc
 
 
+def _read_member(zf, name):
+    """A member's bytes; refused when it is larger than any clip (the size is the zip's own figure, checked
+    before anything is unpacked)."""
+    size = zf.getinfo(name).file_size
+    if size > MAX_MEMBER_BYTES:
+        raise PackError(f'{name} in the pack is {size:,} bytes: too large for a voice clip')
+    return zf.read(name)
+
+
 def _read_open_pack_file(zf, path):
+    """Only the members ``pack.json`` names are unpacked; the returned files are those."""
     names = zf.namelist()
     if PACK_FILE not in names:
         raise PackError(f'{os.path.basename(path)} is not a voice pack ({PACK_FILE} missing)')
+    raw = _read_member(zf, PACK_FILE)
     try:
-        doc = json.loads(zf.read(PACK_FILE).decode('utf-8'))
+        doc = json.loads(raw.decode('utf-8'))
     except (UnicodeDecodeError, ValueError) as exc:
         raise PackError(f'{PACK_FILE} in the pack is not valid JSON: {exc}') from exc
-    files = {}
     for name in names:
         if name == PACK_FILE or name.endswith('/'):
             continue
         if posixpath.dirname(name) or posixpath.basename(name) != name:
             raise PackError(f'unexpected file in the pack: {name}')
-        files[name] = zf.read(name)
     stem = os.path.basename(path)
     stem = stem[:-len(PACK_EXTENSION)] if stem.lower().endswith(PACK_EXTENSION) else os.path.splitext(stem)[0]
     pack = _parse(doc, stem, stem)
+    files = {}
     for moment, clip in pack.clips.items():
-        if clip.rwav not in files:
+        # The names end up as files of the pack folder: only clip files, by name and by content.
+        if not clip.rwav.lower().endswith(clips.RWAV_EXTENSION):
+            raise PackError(f'{pack.name}: clip {moment}: {clip.rwav!r} is not a {clips.RWAV_EXTENSION} file')
+        if clip.wav and not clip.wav.lower().endswith('.wav'):
+            raise PackError(f'{pack.name}: clip {moment}: {clip.wav!r} is not a .wav file')
+        if clip.rwav not in names:
             raise PackError(f'{pack.name}: clip {moment} ({clip.rwav}) is missing from the pack')
+        files[clip.rwav] = _read_member(zf, clip.rwav)
         clips.check_rwav(files[clip.rwav], f'{pack.name} {clip.rwav}')
-        if clip.wav and clip.wav not in files:
+        if clip.wav and clip.wav not in names:
             clip.wav = None
+        elif clip.wav:
+            files[clip.wav] = _read_member(zf, clip.wav)
+            if files[clip.wav][:4] != b'RIFF':
+                raise PackError(f'{pack.name}: clip {moment}: {clip.wav} is not a WAV file')
     return pack, files
 
 

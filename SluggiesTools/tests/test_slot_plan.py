@@ -97,6 +97,8 @@ class PatchNewIdTests(unittest.TestCase):
             ('--roster-state',)])
         entry = ids_entry(plan.config, 0x66)
         self.assertEqual(entry['model'], {'from': '0x09'})                   # fresh copy, no routes
+        self.assertTrue(plan.fresh_directory)
+        self.assertFalse(self.plan(0x0D).fresh_directory)                     # a stock slot has no directory copy
         self.assertEqual(entry['stats'], '0x09')
         self.assertEqual(entry['name'], NAMES_TEXT[0x09])
         self.assertEqual(entry['icon'], make_config()['ids'][0]['icon'])      # a patch keeps the portraits
@@ -553,6 +555,14 @@ class BatchTests(unittest.TestCase):
         # the staged pair comes back from the edits file as the same pair
         again = self.batch(slot_plan.parse_edits(batch.to_json()['merged']))
         self.assertEqual(again.commands, batch.commands)
+
+    def test_a_joining_low_pick_keeps_the_high_picks_gear_opt_out(self):
+        batch = self.batch(edits(('patch', '0x66', HP_ALONE, {'gear': False}), ('patch', '0x66', LONE_LOW)))
+        self.assertTrue(batch.ok, batch.refused)
+        (edit, _plan), = batch.plans
+        self.assertEqual((edit.file, edit.low), (HP_ALONE, LONE_LOW))
+        self.assertTrue(edit.no_gear)
+        self.assertIs(batch.to_json()['merged'][0]['gear'], False)
 
     def test_low_button_joins_the_pending_high_pick(self):
         # LOW has its own High beside it, but the Low button joins it to the pending High pick

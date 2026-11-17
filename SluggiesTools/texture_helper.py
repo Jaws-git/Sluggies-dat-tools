@@ -1724,6 +1724,8 @@ def encode_png_to_tpl(
             f"downscaled to {clamped_size[0]}x{clamped_size[1]} for encoding",
             source="texture_helper",
         )
+        if base_image.mode == "P":      # Pillow resizes a palette image with nearest neighbour, whatever the filter
+            base_image = base_image.convert("RGBA")
         base_image = base_image.resize(clamped_size, Image.LANCZOS)
 
     with tempfile.TemporaryDirectory(prefix="wimgt_encode_") as temp_dir:

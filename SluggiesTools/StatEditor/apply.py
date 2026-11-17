@@ -148,7 +148,7 @@ def _id(text, where: str) -> int:
         value = int(text, 16) if text.lower().startswith('0x') else None
     except ValueError:
         value = None
-    if value is None or not 0 <= value <= 0xFF:
+    if value is None or not 0 <= value <= 0xFE:           # 0xFF ends the game's ID lists (Roster/ids.MAX_ID)
         raise EditFileError(f'{where}: {text!r} is not a character ID (e.g. "0x66")')
     return value
 
@@ -227,7 +227,10 @@ def _parse_copy(step: Copy, placer: _Placer, label: str) -> dict[int, Change]:
     target = placer.character(doc.get('target'), label)
     source = _id(doc.get('source'), label)
     out: dict[int, Change] = {}
-    for group, values in (doc.get('fields') or {}).items():
+    groups = doc.get('fields') or {}
+    if not isinstance(groups, dict) or not all(isinstance(v, dict) or not v for v in groups.values()):
+        raise EditFileError(f'{label}: "fields" must be an object of field groups')
+    for group, values in groups.items():
         for name, text in (values or {}).items():
             try:
                 f = fields.character_field(group, name)

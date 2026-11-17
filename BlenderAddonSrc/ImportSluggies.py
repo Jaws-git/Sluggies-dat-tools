@@ -325,19 +325,23 @@ def decode_vertex_buffer(vb):
     stride = comp_count * comp_size
     num_verts = len(raw) // stride
 
-    positions = []
+    flat = _unpack_components(raw, num_verts, comp_count, comp_fmt, comp_size)
+    starts = range(0, len(flat), comp_count)
+    positions = [(flat[o] / divisor, flat[o + 1] / divisor, flat[o + 2] / divisor) for o in starts]
     normals = []
-    for i in range(num_verts):
-        off = i * stride
-        comps = [
-            struct.unpack_from(comp_fmt, raw, off + j * comp_size)[0] / divisor
-            for j in range(comp_count)
-        ]
-        positions.append((comps[0], comps[1], comps[2]))
-        if comp_count >= 6:
-            normals.append((comps[3], comps[4], comps[5]))
+    if comp_count >= 6:
+        normals = [(flat[o + 3] / divisor, flat[o + 4] / divisor, flat[o + 5] / divisor) for o in starts]
 
     return positions, normals
+
+
+def _unpack_components(raw, records, comp_count, comp_fmt, comp_size, minimum=3):
+    """The first *records* records of *raw* as one flat tuple of components
+    (one ``struct.unpack`` for the buffer, not one call per component)."""
+    if records and comp_count < minimum:
+        raise IndexError(f'{comp_count} components per record, at least {minimum} expected')
+    count = records * comp_count
+    return struct.unpack(f'>{count}{comp_fmt[-1]}', raw[:count * comp_size])
 
 
 def decode_normal_buffer(normal_buffer):
@@ -362,15 +366,9 @@ def decode_normal_buffer(normal_buffer):
     stride = comp_count * comp_size
     num_normals = len(raw) // stride
 
-    normals = []
-    for i in range(num_normals):
-        off = i * stride
-        comps = [
-            struct.unpack_from(comp_fmt, raw, off + j * comp_size)[0] / divisor
-            for j in range(comp_count)
-        ]
-        normals.append((comps[0], comps[1], comps[2]))
-    return normals
+    flat = _unpack_components(raw, num_normals, comp_count, comp_fmt, comp_size)
+    return [(flat[o] / divisor, flat[o + 1] / divisor, flat[o + 2] / divisor)
+            for o in range(0, len(flat), comp_count)]
 
 
 def _facial_vertex_indices(attribute):
@@ -558,12 +556,8 @@ def decode_uv_channel(uv_channel):
     stride = comp_count * comp_size
     num_coords = len(raw) // stride
 
-    coords = []
-    for i in range(num_coords):
-        off = i * stride
-        s = struct.unpack_from(comp_fmt, raw, off)[0] / divisor
-        t = struct.unpack_from(comp_fmt, raw, off + comp_size)[0] / divisor
-        coords.append((s, t))
+    flat = _unpack_components(raw, num_coords, comp_count, comp_fmt, comp_size, minimum=2)
+    coords = [(flat[o] / divisor, flat[o + 1] / divisor) for o in range(0, len(flat), comp_count)]
 
     # Decode per-face UV indices (uint16 BE triplets, same encoding as FacesData)
     uv_faces = []
@@ -2148,6 +2142,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
 
     @_undoes_failed_import
     def execute(self, context):
+        # Per import only: a PNG that was missing (or has since been deleted) is looked up again.
+        _resolve_texture_image_path.cache_clear()
         data = FieldCodec.load_sluggie(self.filepath)
 
         model = data["SluggiesModel"]
@@ -2191,6 +2187,12 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             add_imported_added_bones(
                 arm_obj, CustomSubmeshImport.added_bone_entries(model),
                 abs_bone_mats if TemplateSources.is_stadium_chunk(model_number) else None)
+            skipped_bones = CustomSubmeshImport.skipped_added_bone_ids(model)
+            if skipped_bones:
+                self.report(
+                    {"WARNING"},
+                    f"Added bone(s) {', '.join(str(b) for b in skipped_bones)} not imported: the parent "
+                    "bone is not in the file. An export from this scene leaves them out.")
             assign_bone_collections(arm_obj)
             add_rest_pose_action(arm_obj)
 
@@ -2314,7 +2316,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             for entry in custom_entries:
                 try:
                     cs = CustomSubmeshImport.decode_custom_submesh(entry)
-                except (KeyError, ValueError, struct.error) as exc:
+                except (KeyError, TypeError, ValueError, struct.error) as exc:
                     self.report({"WARNING"}, f"Custom submesh not imported: {exc}")
                     continue
                 if cs.host_bone_id not in bind_matrices:
@@ -2371,7 +2373,7 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
             return {"CANCELLED"}
 
         arm_data = arm_obj.data
-        if not any('track_id' in arm_data.bones[b.name] for b in arm_data.bones if b.name in arm_data.bones):
+        if not any('track_id' in bone for bone in arm_data.bones):
             self.report({"ERROR"}, "Armature has no track_id data — import a .sluggie first")
             return {"CANCELLED"}
 
@@ -2396,13 +2398,20 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
         if not arm_obj.animation_data:
             arm_obj.animation_data_create()
 
+        # A script may call the operator with only filepath: directory is empty then.
+        directory = self.directory or os.path.dirname(self.filepath)
         total_actions = 0
         for file_entry in file_list:
-            filepath = os.path.join(self.directory, file_entry)
+            filepath = os.path.join(directory, file_entry)
             anm_name = os.path.splitext(file_entry)[0]
 
-            with open(filepath, 'rb') as f:
-                raw = f.read()
+            try:
+                with open(filepath, 'rb') as f:
+                    raw = f.read()
+            except OSError as e:
+                # Skipped, so the files before and after it are still imported.
+                self.report({"WARNING"}, f"{file_entry}: could not be read ({e})")
+                continue
 
             try:
                 anm = AnmFormat.parse(raw)

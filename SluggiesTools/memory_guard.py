@@ -208,8 +208,11 @@ def record(root_dir: str, what: str, problems: list[dict]) -> None:
         slogger.warning(f'Player memory ({what}): {p["text"]}', source=SOURCE)
     path = check_path(root_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
+    # Written whole or not at all: a cut-off file reads as "everything fits" (read_details).
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump({'over': True, 'what': what, 'problems': problems}, f, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def read_details(root_dir: str) -> dict:

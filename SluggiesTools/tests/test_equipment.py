@@ -432,6 +432,20 @@ class PlanEquipTests(unittest.TestCase):
         new = slot_plan.plan_equip_clear(equipment_state({0x67: {'bat': {'vanilla': False}}}), tsp.make_config(),
                                          0x67, 2, env, tsp.STATE_FILE)
         self.assertIn("its template's", new.notes[0])
+        self.assertEqual(new.commands[0], ('--unpatch', '--target-id', '0x67', '--target-file', '2'))
+
+    def test_clear_of_a_new_id_without_its_own_directory_is_nothing_to_do(self):
+        """The targeted reset would refuse such an ID in mid-chain: what it loads is its template's file."""
+        st = equipment_state({0x66: {'bat': {'vanilla': False}}})       # the template's bat is patched
+        plan = slot_plan.plan_equip_clear(st, tsp.make_config(), 0x66, 2, GearEnv(), tsp.STATE_FILE)
+        self.assertTrue(plan.nothing)
+        self.assertEqual(plan.commands, [])
+        self.assertIn('no model directory of its own', plan.notes[0])
+        # an earlier edit of the batch gives it one: the reset is planned as before
+        config = tsp.make_config()
+        tsp.ids_entry(config, 0x66)['model'] = {'from': '0x09'}
+        plan = slot_plan.plan_equip_clear(st, config, 0x66, 2, GearEnv(), tsp.STATE_FILE)
+        self.assertFalse(plan.nothing)
 
 
 class ClassifyGearTests(unittest.TestCase):

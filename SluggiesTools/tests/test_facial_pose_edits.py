@@ -67,6 +67,14 @@ class PoseArrayTests(unittest.TestCase):
         self.assertEqual(list(changes), [(0, 0)])
         self.assertEqual(struct.unpack('>6h', changes[(0, 0)]), (0, 0, 0, 100, 0, -7))   # vertices 0-1 of pose 0
 
+    def test_pose_zero_does_not_follow_a_float_vertex_buffer(self):
+        original = struct.pack('>9f', *range(9))
+        edited = struct.pack('>9f', 0, 1, 2, 103, 4, -2, 6, 7, 8)
+        self.model['Submeshes'] = [{}] * RIGID + [{'VertexBuffer': {
+            'VertexBufferData': trr._b64(original), 'VertexBufferDataEdited': trr._b64(edited),
+            'VertexBufferCompCount': 3, 'VertexBufferQuantizeInfo': 0x40}}]
+        self.assertEqual(facial_pose_edits.changed_position_poses(self.model), {})
+
 
 class HammerspaceBuildTests(unittest.TestCase):
     """A build that rebuilds nothing splices the edited pose arrays into ptr7; the section keeps its length."""

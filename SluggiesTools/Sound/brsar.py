@@ -310,6 +310,10 @@ def parse_rwav(w):
     for c in range(nch):
         ci = wi + u32(w, chan_table + 4 * c)
         start = wdata + 8 + u32(w, ci)
+        need = {ADPCM: dsp_adpcm.samples_to_bytes(samples), PCM16: 2 * samples, PCM8: samples}.get(fmt, 0)
+        if start + need > len(w):
+            raise BrsarError(f'truncated RWAV: channel {c} needs {need} bytes of sample data, '
+                             f'{max(0, len(w) - start)} are there')
         if fmt == ADPCM:
             adpcm = wi + u32(w, ci + 4)
             coefs = [s16(w, adpcm + 2 * k) for k in range(16)]

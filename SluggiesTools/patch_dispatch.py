@@ -47,6 +47,25 @@ COLLISION_SCRIPT = os.path.join(HS_DIR, 'StadiumCollision.py')
 UNUSED_CHARACTER_DIR_INDICES = frozenset(UntanglePolicy.UNUSED_CHARACTER_DIRS)
 
 
+_SLUGGIE_CACHE = {}
+_SLUGGIE_CACHE_SIZE = 8
+
+
+def _read_sluggie(path):
+    """``_load_sluggie(path)``, kept while the file is unchanged: one run resolves a file several times (the
+    High-first sort, the pair check, the patch loop), each a full decompress and parse. Callers only read it."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return _load_sluggie(path)
+    key = (_load_sluggie, os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
+    if key not in _SLUGGIE_CACHE:
+        if len(_SLUGGIE_CACHE) >= _SLUGGIE_CACHE_SIZE:
+            _SLUGGIE_CACHE.clear()
+        _SLUGGIE_CACHE[key] = _load_sluggie(path)
+    return _SLUGGIE_CACHE[key]
+
+
 def python_script_command(script, *args):
     """A child-script command that works in source and frozen builds (as ``start.python_script_command``)."""
     if getattr(sys, 'frozen', False):
@@ -378,7 +397,7 @@ def _is_low_file(name):
     if name.lower().endswith('.sluggie'):
         try:
             path = name if os.path.isfile(name) else _model_files.find_unique(SEARCH_DIR, os.path.basename(name))
-            index = _load_sluggie(path)['SluggiesModel'].get('FileIndex') if path else None
+            index = _read_sluggie(path)['SluggiesModel'].get('FileIndex') if path else None
             if isinstance(index, int):
                 return index == 1
         except (OSError, ValueError, KeyError, TypeError):
@@ -394,7 +413,7 @@ def _resolve_sluggie_quietly(filename):
     name = filename if filename.lower().endswith('.sluggie') else f'{filename}.sluggie'
     try:
         path = name if os.path.isabs(name) and os.path.isfile(name) else _model_files.find_unique(SEARCH_DIR, name)
-        return (path, _load_sluggie(path)['SluggiesModel']) if path else None
+        return (path, _read_sluggie(path)['SluggiesModel']) if path else None
     except (_model_files.AmbiguousNameError, OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -511,7 +530,7 @@ def _run_patching(filenames, unpatch, target_id, as_low, validate_only, target_f
             )
 
             try:
-                sluggies_data = _load_sluggie(target.sluggie_path)
+                sluggies_data = _read_sluggie(target.sluggie_path)
             except (OSError, ValueError) as e:
                 slogger.error(f"Could not read '{target.sluggie_path}': {e}", source="dispatcher")
                 failed = True
@@ -547,7 +566,7 @@ def _run_patching(filenames, unpatch, target_id, as_low, validate_only, target_f
             slogger.info(f"Found: {found}", source="dispatcher")
 
             try:
-                sluggies_data = _load_sluggie(found)
+                sluggies_data = _read_sluggie(found)
             except (OSError, ValueError) as e:
                 slogger.error(f"Could not read '{found}': {e}", source="dispatcher")
                 failed = True

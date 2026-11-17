@@ -1,3 +1,4 @@
+import ast
 import pathlib
 import re
 import sys
@@ -91,6 +92,17 @@ class BuildTemplateSourceChoicesTests(unittest.TestCase):
                 choices = build_template_source_choices(materials)
                 self.assertEqual(choices[0].template_source, 'builtin:rigid_spec_v1')
 
+    def test_surface_ids_sort_by_their_numbers(self):
+        choices = build_template_source_choices(
+            [_mat(surface, 3, 'Spec') for surface in ('sm1_ds10', 'sm10_ds1', 'sm1_ds2', 'sm2_ds1', 'other')])
+        self.assertEqual(
+            [c.template_source for c in choices][len(BUILTIN_CHOICES):],
+            ['rigid:other', 'rigid:sm1_ds2', 'rigid:sm1_ds10', 'rigid:sm2_ds1', 'rigid:sm10_ds1'],
+        )
+        # Mixed digit / text parts never compare an int with a str.
+        self.assertEqual(sorted(['a1', '1a', 'a', '10', '2'], key=TemplateSources.natural_sort_key),
+                         ['1a', '2', '10', 'a', 'a1'])
+
     def test_duplicate_surface_ids_are_deduplicated(self):
         choices = build_template_source_choices([
             _mat('sm1_ds5', 3, 'Spec'),
@@ -142,8 +154,11 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
     def test_stadium_chunks(self):
         self.assertEqual(list(STADIUM_CHUNKS), list(range(7, 17)))
         self.assertTrue(is_stadium_chunk(10))
-        for chunk in (None, 5, 6, 17, 136, '10'):
+        for chunk in (None, 5, 6, 17, 136, '6', '17', 'ten', '', 10.5, 17.0, True):
             self.assertFalse(is_stadium_chunk(chunk), chunk)
+        # A whole number stored as a float or as text (a hand-edited file) is that number.
+        for chunk in (10.0, '10', ' 16 '):
+            self.assertTrue(is_stadium_chunk(chunk), chunk)
 
     def test_registry_covers_the_five_shader_modes(self):
         self.assertEqual(
@@ -211,6 +226,21 @@ class BuiltinRegistryMirrorTests(unittest.TestCase):
             TemplateSources.SPECULAR_SHADER_MODES,
             hammerspace._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES,
         )
+
+    def test_shader_mode_class_mirrors_match_the_in_place_patcher(self):
+        # patch_inplace.py is a script (importing it runs a patch), so its two sets are read from the source.
+        source = (ROOT / 'SluggiesTools' / 'InplacePatcher' / 'patch_inplace.py').read_text(encoding='utf-8')
+        patcher = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \
+                    and node.targets[0].id in ('_LIGHTING_MODES', '_NO_LIGHTING_MODES'):
+                patcher[node.targets[0].id] = ast.literal_eval(node.value.args[0])
+        self.assertEqual(set(TemplateSources.LIT_SHADER_MODES), patcher['_LIGHTING_MODES'])
+        self.assertEqual(set(TemplateSources.UNLIT_SHADER_MODES), patcher['_NO_LIGHTING_MODES'])
+        for modes in (TemplateSources.LIT_SHADER_MODES, TemplateSources.UNLIT_SHADER_MODES):
+            self.assertEqual(len(set(modes)), len(modes))
+            for mode in modes:
+                self.assertIn(mode, TemplateSources.SHADER_MODE_DESCRIPTIONS)
 
     def test_hand_visibility_role_mirror_matches_the_tools(self):
         self.assertEqual(

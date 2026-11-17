@@ -139,10 +139,17 @@ def low_bind_range_errors(
             high = partner_block
         else:
             high = LodPartnerGuard.read_current_block(chunk_number, found[0])
-    except (OSError, struct.error, ValueError):
+    except (OSError, struct.error, ValueError) as exc:
+        _slogger.warning(
+            f'[LOD] texture bind range of {own.geo_name} (chunk {chunk_number}, file {file_index}) not checked: '
+            f'its high-poly partner could not be read ({exc})', source='hammerspace.main')
         return []
     count = texture_count(high) if high else None
     if count is None:
+        if high:
+            _slogger.warning(
+                f'[LOD] texture bind range of {own.geo_name} (chunk {chunk_number}, file {file_index}) not '
+                'checked: its high-poly partner has no readable TEX section', source='hammerspace.main')
         return []
     bad = [bind for bind in texture_binds(block) if bind.texture >= count]
     if not bad:

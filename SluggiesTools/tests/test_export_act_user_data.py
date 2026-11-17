@@ -21,6 +21,7 @@ import os
 import struct
 import sys
 import unittest
+import unittest.mock
 
 TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 if TOOLS_DIR not in sys.path:
@@ -107,6 +108,30 @@ def _make_model(act_bytes):
     act = ACTLayout(f, 0, len(act_bytes), "ACT")
     act.analyze()
     return _FakeModel(f, act)
+
+
+class DamagedActTests(unittest.TestCase):
+    """Walks over damaged data end with an error or a warning instead of running forever."""
+
+    def test_a_looping_bone_tree_is_refused(self):
+        data = bytearray(_build_synthetic_act_bytes())
+        record = act_rebuild.HEADER_SIZE + 2 * act_rebuild.BONE_RECORD_SIZE
+        # bone 2's "next" (record + 8: orientation ptr, prev, next) points back at bone 1
+        struct.pack_into('>I', data, record + 8, act_rebuild.HEADER_SIZE + act_rebuild.BONE_RECORD_SIZE)
+        with self.assertRaisesRegex(ValueError, 'loops'):
+            _make_model(bytes(data))
+
+    def test_a_zero_size_descriptor_ends_the_walk(self):
+        data = bytearray(_build_synthetic_act_bytes())
+        model = _make_model(bytes(data))
+        first = model.ACT.userDataPtr
+        size = struct.unpack_from('>I', data, first)[0]
+        struct.pack_into('>I', data, first + size, 0)         # the second descriptor's size
+        model = _make_model(bytes(data))
+        with unittest.mock.patch.object(export._slogger, 'warning') as warning:
+            descriptors = export._read_act_user_data_descriptors(model)
+        self.assertEqual([d[0] for d in descriptors], [3])
+        warning.assert_called_once()
 
 
 class ExportACTUserDataTests(unittest.TestCase):

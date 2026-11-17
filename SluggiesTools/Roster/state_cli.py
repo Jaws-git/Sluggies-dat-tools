@@ -322,7 +322,7 @@ def main(argv=None) -> int:
         return main_derive(args.output_dir)
     try:
         result = run(args.output_dir)
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:      # OSError: a locked main.dol, a crop or the state file
         slogger.error(str(exc), source=SOURCE)
         return 1
     cols, rows = result['shape']
@@ -344,7 +344,7 @@ def main(argv=None) -> int:
 def main_derive(output_dir: str) -> int:
     try:
         derived, path = run_derive(output_dir)
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         slogger.error(str(exc), source=SOURCE)
         return 1
     config = derived.config

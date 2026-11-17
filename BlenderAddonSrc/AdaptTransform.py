@@ -143,6 +143,55 @@ def _world_points(obj, depsgraph=None):
     return co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
 
 
+# Readings that only depend on a mesh's topology and weights, or on the
+# exact points, kept while caching is on (begin_cache / end_cache: the Assign
+# dialog's preview runs fit on every setting change, and these Python walks
+# are the slow part on a downloaded model of several 100,000 vertices).
+# Off, every call reads afresh.
+_CACHE = {}
+_CACHE_ON = [False]
+
+
+def begin_cache():
+    _CACHE.clear()
+    _CACHE_ON[0] = True
+
+
+def end_cache():
+    _CACHE.clear()
+    _CACHE_ON[0] = False
+
+
+def _cached(key, compute):
+    if not _CACHE_ON[0]:
+        return compute()
+    if key not in _CACHE:
+        _CACHE[key] = compute()
+    return _CACHE[key]
+
+
+def _walk_vertex_groups(mesh):
+    """(vertex index, group index, weight) arrays of every group entry of
+    *mesh*: one Python walk, there is no foreach_get for v.groups."""
+    vertices, groups, weights = [], [], []
+    for v in mesh.vertices:
+        index = v.index
+        for g in v.groups:
+            vertices.append(index)
+            groups.append(g.group)
+            weights.append(g.weight)
+    return (np.array(vertices, dtype=np.int64), np.array(groups, dtype=np.int64),
+            np.array(weights, dtype=np.float64))
+
+
+def _group_arrays(obj):
+    """_walk_vertex_groups of *obj*'s own mesh data (cached; the preview's
+    pose bake changes positions, not weights)."""
+    mesh = obj.data
+    return _cached(('groups', mesh.as_pointer(), len(mesh.vertices), len(obj.vertex_groups)),
+                   lambda: _walk_vertex_groups(mesh))
+
+
 def _hair_mask(obj, depsgraph=None):
     """Per vertex of _world_points(*obj*, *depsgraph*): whether it is hair,
     mostly weighted to vertex groups named like hair or on a face with a
@@ -155,33 +204,53 @@ def _hair_mask(obj, depsgraph=None):
     source = obj.evaluated_get(depsgraph) if depsgraph is not None else obj
     mesh = source.to_mesh() if depsgraph is not None else obj.data
     try:
-        mask = np.zeros(len(mesh.vertices), dtype=bool)
-        if groups:
-            for v in mesh.vertices:
-                total = hair = 0.0
-                for g in v.groups:
-                    total += g.weight
-                    if g.group in groups:
-                        hair += g.weight
-                if total > 0.0 and hair >= _HAIR_WEIGHT_SHARE * total:
-                    mask[v.index] = True
-        if slots:
-            for poly in mesh.polygons:
-                if poly.material_index in slots:
-                    mask[list(poly.vertices)] = True
+        key = ('hair', obj.as_pointer(), depsgraph is not None, len(mesh.vertices), len(mesh.polygons),
+               frozenset(groups), frozenset(slots))
+        return _cached(key, lambda: _hair_mask_of(mesh, groups, slots))
     finally:
         if depsgraph is not None:
             source.to_mesh_clear()
+
+
+def _hair_mask_of(mesh, groups, slots):
+    count = len(mesh.vertices)
+    mask = np.zeros(count, dtype=bool)
+    if groups:
+        vertices, group_ids, weights = _walk_vertex_groups(mesh)
+        total = np.bincount(vertices, weights=weights, minlength=count)
+        is_hair = np.isin(group_ids, list(groups))
+        hair = np.bincount(vertices[is_hair], weights=weights[is_hair], minlength=count)
+        mask |= (total > 0.0) & (hair >= _HAIR_WEIGHT_SHARE * total)
+    if slots:
+        material_index = np.empty(len(mesh.polygons), dtype=np.int32)
+        mesh.polygons.foreach_get('material_index', material_index)
+        loop_start = np.empty(len(mesh.polygons), dtype=np.int32)
+        mesh.polygons.foreach_get('loop_start', loop_start)
+        loop_total = np.empty(len(mesh.polygons), dtype=np.int32)
+        mesh.polygons.foreach_get('loop_total', loop_total)
+        loop_vertex = np.empty(len(mesh.loops), dtype=np.int32)
+        mesh.loops.foreach_get('vertex_index', loop_vertex)
+        hair_polys = np.isin(material_index, list(slots))
+        if hair_polys.any():
+            hair_loops = np.repeat(hair_polys, loop_total)
+            mask[loop_vertex[hair_loops]] = True
     return mask
 
 
 def _mirror_scores(points):
     """Per world axis: mean distance from each (sampled) vertex, mirrored
     across the bounding box centre on that axis, to the nearest vertex,
-    relative to the box diagonal. Lowest = the left/right axis."""
+    relative to the box diagonal. Lowest = the left/right axis. Cached by
+    the points' bytes: the axis and scale settings do not change them."""
+    points = np.ascontiguousarray(points)
+    return _cached(('mirror', points.shape, hash(points.tobytes())), lambda: _mirror_scores_of(points))
+
+
+def _mirror_scores_of(points):
     lo, hi = points.min(axis=0), points.max(axis=0)
     diag = float(np.linalg.norm(hi - lo)) or 1.0
-    tree_points = points[::max(1, len(points) // _KDTREE_MAX_POINTS)]
+    # ceil(len / max): at most _KDTREE_MAX_POINTS points go into the tree
+    tree_points = points[::max(1, -(-len(points) // _KDTREE_MAX_POINTS))]
     tree = KDTree(len(tree_points))
     for i, p in enumerate(tree_points):
         tree.insert(p, i)
@@ -327,6 +396,19 @@ def restore_mesh(obj, backup):
     mesh.update()
 
 
+def _weighted_sum(obj, group_indices, points=None):
+    """(sum of world position x weight, sum of weight) over the positive
+    weights of *obj*'s vertices in the vertex groups *group_indices*;
+    *points* are _world_points(obj) when the caller has them."""
+    vertices, groups, weights = _group_arrays(obj)
+    keep = np.isin(groups, list(group_indices)) & (weights > 0.0)
+    if not keep.any():
+        return np.zeros(3), 0.0
+    points = _world_points(obj) if points is None else points
+    w = weights[keep]
+    return (points[vertices[keep]] * w[:, None]).sum(axis=0), float(w.sum())
+
+
 def named_points(meshes, armatures=(), posed=False):
     """{'front'|'bottom'|'head'|'top': world point} read from names: the
     weighted centre of the meshes' vertex groups of that kind, else the mean
@@ -338,15 +420,14 @@ def named_points(meshes, armatures=(), posed=False):
         kinds = {index: kind for index, kind in kinds.items() if kind}
         if not kinds:
             continue
-        mw = obj.matrix_world
-        for v in obj.data.vertices:
-            for g in v.groups:
-                kind = kinds.get(g.group)
-                if kind and g.weight > 0.0:
-                    entry = sums.setdefault(kind, [Vector(), 0.0])
-                    entry[0] += (mw @ v.co) * g.weight
-                    entry[1] += g.weight
-    found = {kind: total / weight for kind, (total, weight) in sums.items() if weight > 0.0}
+        points = _world_points(obj)
+        for kind in dict.fromkeys(kinds.values()):
+            total, weight = _weighted_sum(obj, [i for i, k in kinds.items() if k == kind], points)
+            if weight > 0.0:
+                entry = sums.setdefault(kind, [np.zeros(3), 0.0])
+                entry[0] += total
+                entry[1] += weight
+    found = {kind: Vector(total / weight) for kind, (total, weight) in sums.items() if weight > 0.0}
     from_bones = {}
     for arm_obj in armatures:
         for bone in arm_obj.data.bones:
@@ -517,15 +598,19 @@ def _source_head_joint(meshes, armatures, frame_world_to_src, posed=False):
     if bones:
         return min(p.z for p in bones)
     samples = []  # (z, weight)
+    to_src_z = np.array(frame_world_to_src)[2]
     for obj in meshes:
         heads = {g.index for g in obj.vertex_groups if _name_kind(g.name) == 'head'}
         if not heads:
             continue
-        mw = obj.matrix_world
-        for v in obj.data.vertices:
-            weight = sum(g.weight for g in v.groups if g.group in heads)
-            if weight > 0.0:
-                samples.append(((frame_world_to_src @ (mw @ v.co)).z, min(weight, 1.0)))
+        vertices, groups, weights = _group_arrays(obj)
+        is_head = np.isin(groups, list(heads))
+        per_vertex = np.bincount(vertices[is_head], weights=weights[is_head], minlength=len(obj.data.vertices))
+        hit = np.nonzero(per_vertex > 0.0)[0]
+        if not len(hit):
+            continue
+        z = _world_points(obj)[hit] @ to_src_z
+        samples += zip(z.tolist(), np.minimum(per_vertex[hit], 1.0).tolist())
     if not samples:
         return None
     total = sum(w for _z, w in samples)
@@ -563,14 +648,12 @@ def _group_hands(meshes, frame_world_to_src, lateral_centre):
                  if _HAND_GROUP_RE.search(g.name) and not _NOT_HAND_GROUP_RE.search(g.name)}
         if not names:
             continue
-        mw = obj.matrix_world
+        points = _world_points(obj)
         per_group = {}
-        for v in obj.data.vertices:
-            for g in v.groups:
-                if g.group in names and g.weight > 0.0:
-                    entry = per_group.setdefault(g.group, [Vector(), 0.0])
-                    entry[0] += (mw @ v.co) * g.weight
-                    entry[1] += g.weight
+        for group in names:
+            total, weight = _weighted_sum(obj, (group,), points)
+            if weight > 0.0:
+                per_group[group] = (Vector(total), weight)
         for total, weight in per_group.values():
             centre = frame_world_to_src @ (total / weight)
             side = 1 if centre.x >= lateral_centre else -1

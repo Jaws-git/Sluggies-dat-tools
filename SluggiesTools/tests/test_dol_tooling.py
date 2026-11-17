@@ -70,6 +70,29 @@ class PpcEncodingTests(unittest.TestCase):
         self.assertEqual(lis & 0xFFFF, 0x807C)
         self.assertEqual(((lis & 0xFFFF) << 16) + ppc.signed16(addi), 0x807BC000)
 
+    def test_an_immediate_that_does_not_fit_is_refused(self):
+        for build in (lambda a: a.li('r3', 0x8000),            # would load -32768
+                      lambda a: a.li('r3', -0x8001),
+                      lambda a: a.cmpwi('r3', 0x8000),
+                      lambda a: a.mulli('r3', 'r3', 0x10000),
+                      lambda a: a.addi('r3', 'r3', 0x10000),
+                      lambda a: a.lwz('r3', -0x8001, 'r4'),
+                      lambda a: a.ori('r3', 'r3', -1),
+                      lambda a: a.cmplwi('r3', 0x10000),
+                      lambda a: a.cmpwi('r3', 0, cr=8),
+                      lambda a: a.beq(TEXT + 8, cr=8),
+                      lambda a: a.rlwinm('r3', 'r3', 32, 0, 31),
+                      lambda a: a.slwi('r3', 'r3', 32),
+                      lambda a: a.clrlwi('r3', 'r3', -1)):
+            with self.assertRaises(ppc.PpcError):
+                word(build)
+
+    def test_both_spellings_of_a_half_assemble(self):
+        self.assertEqual(word(lambda a: a.li('r3', -1)), 0x3860FFFF)
+        self.assertEqual(word(lambda a: a.addi('r3', 'r3', 0xFFFF)), word(lambda a: a.addi('r3', 'r3', -1)))
+        self.assertEqual(word(lambda a: a.ori('r3', 'r3', 0xFFFF)) & 0xFFFF, 0xFFFF)
+        self.assertEqual(word(lambda a: a.slwi('r3', 'r3', 0)), word(lambda a: a.rlwinm('r3', 'r3', 0, 0, 31)))
+
 
 class DolImageTests(unittest.TestCase):
     def test_patch_word_checks_the_stock_word(self):

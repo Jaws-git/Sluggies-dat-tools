@@ -92,7 +92,11 @@ def run_bundled_script_mode():
     script = os.path.abspath(sys.argv[2])
     if not os.path.isfile(script):
         raise SystemExit(f'Bundled script not found: {script}')
-    if os.path.commonpath((ROOT_DIR, script)) != ROOT_DIR:
+    try:
+        inside = os.path.commonpath((ROOT_DIR, script)) == ROOT_DIR
+    except ValueError:      # another drive
+        inside = False
+    if not inside:
         raise SystemExit(f'Refusing to run a script outside the application folder: {script}')
 
     script_dir = os.path.dirname(script)
@@ -137,8 +141,13 @@ def run_gui():
 
 
 def run_resplit_unused():
-    """Give re-tangled unused-character routes their own block copies again."""
-    subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
+    """Give re-tangled unused-character routes their own block copies again. False when it failed (the script
+    logs why)."""
+    if subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR).returncode != 0:
+        slogger.error('The repair of the unused characters did not finish (see the errors above).',
+                      source="dispatcher")
+        return False
+    return True
 
 
 def run_defrag_hammerspace(dry_run=False):
@@ -547,7 +556,8 @@ def run_export(debug=False, notex=False, untangle=False, glb=False, anim_glb=Fal
 
 
 def run_export_icons(use_output=False):
-    """Write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets."""
+    """Write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets. False when the
+    export failed (the script logs why)."""
     for package, name in (('PIL', 'Pillow'), ('numpy', 'numpy')):
         if importlib.util.find_spec(package) is None:
             slogger.error(f"Missing required package: {name}", source="dispatcher")
@@ -564,13 +574,12 @@ def run_export_icons(use_output=False):
             sys.exit(1)
         cmd += ['--dol-path', dol_path, '--dat-path', dat_path]
 
-    subprocess.run(
-        cmd,
-        cwd=TOOLS_DIR,
-        check=True
-    )
+    if subprocess.run(cmd, cwd=TOOLS_DIR).returncode != 0:
+        slogger.error('The icon export did not finish (see the errors above).', source="dispatcher")
+        return False
     slogger.info('Icon export complete: FrontIcon.png/SideIcon.png (and SideIconAlt.png where the character has an '
                  'alternate side portrait) are in each character model folder', source="dispatcher")
+    return True
 
 
 def run_export_sounds():
@@ -597,7 +606,10 @@ class Mode:
     def selected(self, args) -> bool:
         if self._selected is not None:
             return self._selected(args)
-        return bool(getattr(args, self.attr, None))
+        # A value option is selected by being given, an empty text included (``--clear-slot ""`` is a command
+        # with a bad ID, not "no command"); a switch by being on.
+        value = getattr(args, self.attr, None)
+        return value is not None and value is not False
 
 
 def _done(_result) -> bool:
@@ -629,7 +641,7 @@ def _run_unpatch_mode(args) -> bool:
 # In dispatch order: the first selected one runs. The functions are looked up when a command runs.
 MODES = (
     Mode('gui', lambda a: _done(run_gui())),
-    Mode('resplit_unused', lambda a: _done(run_resplit_unused())),
+    Mode('resplit_unused', lambda a: run_resplit_unused()),
     Mode('defrag_hammerspace', lambda a: run_defrag_hammerspace(dry_run=a.dry_run), dry_run=True),
     Mode('deploy_game_files', lambda a: run_deploy_game_files()),
     Mode('roster', _run_roster_mode, dry_run=True, memory=True),
@@ -645,7 +657,7 @@ MODES = (
     Mode('save_gameplay', lambda a: run_save_gameplay(a.save_gameplay)),
     Mode('export', lambda a: run_export(debug=a.debug, notex=a.notex, untangle=a.untangle, glb=a.glb,
                                         anim_glb=a.anim_glb)),
-    Mode('export_icons', lambda a: _done(run_export_icons(use_output=a.use_output))),
+    Mode('export_icons', lambda a: run_export_icons(use_output=a.use_output)),
     Mode('export_sounds', lambda a: run_export_sounds()),
     Mode('patch', _run_patch_mode, memory=True),
     Mode('unpatch', _run_unpatch_mode, memory=True, selected=lambda a: a.unpatch is not None),
@@ -885,8 +897,7 @@ def parse_args():
         if len(sys.argv) == 1:
             args.gui = True
         else:
-            parser.print_help()
-            sys.exit(0)
+            parser.error('no command given (only options that go with one); see --help.')
 
     return args
 

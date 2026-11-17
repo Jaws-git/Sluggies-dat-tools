@@ -36,6 +36,7 @@ DOL code, so the MEM1 arena stays where stock Gecko codes expect it. Read
 back without a manifest: a plate row off the stock page (``renamed_ids``).
 """
 
+import functools
 import os
 import struct
 
@@ -160,6 +161,8 @@ def messages(table: bytes) -> list[bytes]:
     for o in offsets:
         p = start = text + 2 * o
         while table[p:p + 2] != b'\0\0':
+            if p >= len(table):
+                raise NameConfigError('message table: a message has no terminator')
             p += 2
         out.append(bytes(table[start:p]))
     return out
@@ -270,6 +273,7 @@ def plate_sites(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, fir
 # Name plates (select layout rows id + 0x149)
 # --------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=None)
 def font(size: int):
     font = ImageFont.truetype(FONT, size)
     font.set_variation_by_axes([FONT_WEIGHT, 100])          # weight, width 100 (normal)

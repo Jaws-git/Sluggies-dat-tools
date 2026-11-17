@@ -9,6 +9,7 @@ import struct
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ADDON_DIR = ROOT / 'BlenderAddonSrc'
@@ -66,6 +67,11 @@ class DonorFactsTests(unittest.TestCase):
         self.assertFalse(donor.facial)
         self.assertTrue(sre.is_skinned_submesh(sub))
         self.assertFalse(sre.is_skinned_submesh(model['Submeshes'][1]))
+
+    def test_null_skin_lists_are_empty(self):
+        self.assertEqual(sre.skinned_bone_ids({'SK1s': None, 'SK2s': None, 'SKAccs': None}), set())
+        self.assertEqual(sre.skinned_bone_ids(None), set())
+        self.assertEqual(sre.skinned_bone_ids({'SK1s': [{'BoneIndex': 3}], 'SK2s': None}), {3})
 
     def test_rigid_submesh_is_refused(self):
         model = synthetic_donor.build_sluggie()['SluggiesModel']
@@ -237,6 +243,12 @@ class EntryTests(unittest.TestCase):
         )
         kwargs.update(overrides)
         return sre.build_skinned_rebuild_entry(**kwargs)
+
+    def test_vertex_count_is_checked_before_the_faces_are_packed(self):
+        with mock.patch.object(sre, 'encode_vertex_records', side_effect=ValueError('vertex count')), \
+                mock.patch.object(cse, 'encode_faces', side_effect=AssertionError('packed first')):
+            with self.assertRaisesRegex(ValueError, 'vertex count'):
+                self._entry()
 
     def test_vertex_normals_average_the_loops(self):
         loop_normals = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)] * len(self.triangles)

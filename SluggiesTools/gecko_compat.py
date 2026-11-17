@@ -103,8 +103,11 @@ def record(root_dir: str, what: str, **details) -> None:
     slogger.warning(f'{WARNING} ({what})', source=SOURCE)
     path = check_path(root_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
+    # Written whole or not at all: a cut-off file reads as "no break" (read_details).
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump({'breaks': True, 'what': what, **details}, f)
+    os.replace(tmp, path)
 
 
 def read_details(root_dir: str) -> dict:

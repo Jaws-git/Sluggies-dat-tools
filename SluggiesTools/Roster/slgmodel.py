@@ -322,6 +322,19 @@ def read_meta(path: str) -> tuple[dict, zipfile.ZipFile]:
         raise SlgError(f'{name} cannot be read: {exc.strerror or exc}') from exc
     except zipfile.BadZipFile:
         raise SlgError(f'{name} is not a character file (.slgmodel) or is damaged') from None
+    try:
+        return _checked_meta(zf, name), zf
+    except BaseException as exc:
+        zf.close()                                  # a refused file is not kept open (locked on Windows)
+        if isinstance(exc, _DAMAGE):
+            raise SlgError(f'{name} is damaged ({exc})') from None
+        raise
+
+
+_DAMAGE = (zipfile.BadZipFile, zlib.error, EOFError)    # what reading a damaged zip member raises
+
+
+def _checked_meta(zf: zipfile.ZipFile, name: str) -> dict:
     infos = zf.infolist()
     if sum(i.file_size for i in infos) > MAX_FILE:
         raise SlgError(f'{name} is too big to be a character file (over {MAX_FILE >> 20} MB unpacked)')
@@ -342,12 +355,19 @@ def read_meta(path: str) -> tuple[dict, zipfile.ZipFile]:
     if meta.get('format') != FORMAT:
         raise SlgError(f'{name} is a character file of format {meta.get("format")!r}; this tool reads format '
                        f'{FORMAT} (a newer patcher wrote it)')
-    return meta, zf
+    return meta
 
 
 def read(path: str, input_dir: str, blocks: bool = True) -> SlgModel:
     """The character file at ``path`` (module docstring). ``input_dir``: ``1_Input`` (the deltas' clean game
     files). ``blocks`` False reads the metadata, portraits and voice only."""
+    try:
+        return _read(path, input_dir, blocks)
+    except _DAMAGE as exc:                          # a member with a bad CRC or a cut-off stream
+        raise SlgError(f'{os.path.basename(path)} is damaged ({exc})') from None
+
+
+def _read(path: str, input_dir: str, blocks: bool) -> SlgModel:
     from PIL import Image
     path = os.path.abspath(path)
     name = os.path.basename(path)

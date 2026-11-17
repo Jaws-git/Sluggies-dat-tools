@@ -1,4 +1,4 @@
-from base import File, FileChunk, intFromBytes
+from base import ExpectedFormatSkip, FileChunk, intFromBytes
 from helper import getQuantizedColorData, getQuantizedData
 import slogger
 
@@ -15,13 +15,6 @@ class GPL(FileChunk):
         self.geoDescriptors = [
             self.add_child(self.descriptorPtr + x * 8, 8, GEODescriptor, "descriptor").analyze(x) for x in range(self.numDescriptors)
         ]
-
-    def toFile(self, outdir, actor):
-        for i, descriptor in enumerate(self.geoDescriptors):
-            descriptor.layout.toFile(
-                outdir + str(i) + '_' + descriptor.n + '.obj',
-                actor.geoTransformation(i) if actor else [],
-            )
 
     def description(self):
         desc = super().description()
@@ -299,15 +292,9 @@ class PrimitiveList(FileChunk):
             for entry in descriptors:
                 attribute = entry['key']
                 if attribute not in state['attributes']:
-                    slogger.error(
-                        f"did not find attribute {attribute}", source='gpl'
-                    )
-                    exit(1)
+                    raise ExpectedFormatSkip(f'Skipping model: did not find attribute {attribute}')
                 if entry['direct']:
-                    slogger.error(
-                        f"attribute {attribute} uses direct mode", source='gpl'
-                    )
-                    exit(1)
+                    raise ExpectedFormatSkip(f'Skipping model: attribute {attribute} uses direct mode')
                 vertexSize += entry['index_size']
             vertexes = []
             while vertexCount > 0:
@@ -357,10 +344,7 @@ class PrimitiveList(FileChunk):
                         # faces.append([vertexes[x], vertexes[x+1], vertexes[x]])
                         # faces.append([vertexes[x+2], vertexes[x+3], vertexes[x+2]])
                 case _:
-                    slogger.error(
-                        f"primitive type {hex(primitive)} not supported", source='gpl'
-                    )
-                    exit(1)
+                    raise ExpectedFormatSkip(f'Skipping model: primitive type {hex(primitive)} not supported')
         return faces
 
     def description(self, empty = True):
@@ -368,17 +352,3 @@ class PrimitiveList(FileChunk):
             return ''
         desc = super().description()
         return desc
-
-# Very temporary
-class GPLWrapper(File):
-    def __init__(self, f):
-        super().__init__(f)
-
-    def analyze(self, offset = 0x20):
-        self.gpl = self.add_child(offset, 0, GPL, "gpl")
-        self.gpl.analyze()
-    
-    def toFile(self, outdir):
-        for descriptor in self.gpl.geoDescriptors:
-            fname = hex(descriptor.absolute) + ".obj"
-            descriptor.layout.toFile(outdir + fname)

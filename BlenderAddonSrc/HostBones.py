@@ -10,6 +10,7 @@ claims) into the list of bones a new custom submesh may attach to.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -17,10 +18,10 @@ GEO_ID_FREE = 0xFFFF
 # 2: SluggiesSkinned comes from SkinData bone references. Version 1 copied
 # BoneHierarchy's "Skinned" flag, which export.py sets for every mesh-free bone
 # (GeoIdRaw == 0xFFFF), so every free bone looked like it drove skinning.
-# 3: Add Bone needs SluggiesMirrorBoneId/
-# SluggiesMirrorRole/SluggiesSRTType/SluggiesDrawPriority/
-# SluggiesInheritTransform/SluggiesUserAdded on every bone to export
-# BoneHierarchyEdited; armatures imported before these were written lack them.
+# 3: Add Bone needs SluggiesDrawPriority/SluggiesInheritTransform/
+# SluggiesUserAdded on every bone to export BoneHierarchyEdited; armatures
+# imported before these were written lack them. (The importer also writes
+# SluggiesMirrorBoneId/SluggiesMirrorRole/SluggiesSRTType; nothing reads them.)
 BONE_METADATA_VERSION = 3
 RE_IMPORT_MESSAGE = "Re-import this model to enable Add New Submesh"
 
@@ -134,8 +135,6 @@ def compute_rigid_retargets(
     return retargets, issues
 
 
-
-
 def classify_host_bones(
     bone_records: Iterable[BoneRecord],
     scene_claims: Optional[SceneClaims] = None,
@@ -196,10 +195,7 @@ def classify_host_bones(
 _PRESENTATION_ORDER = (STATUS_RECOMMENDED, STATUS_ALLOWED, STATUS_DRIVES_SKINNING)
 
 
-def order_host_bone_choices(
-    choices: Iterable[HostBoneChoice],
-    bone_records: Iterable[BoneRecord],
-) -> List[HostBoneChoice]:
+def order_host_bone_choices(choices: Iterable[HostBoneChoice]) -> List[HostBoneChoice]:
     """Group and order choices for the Add submesh dialog.
 
     Resolution order is ``recommended``, then ``allowed``, then
@@ -207,8 +203,6 @@ def order_host_bone_choices(
     ordered by numeric bone id, so ``bone_2`` always precedes ``bone_10``.
     (``recommended`` used to list leaf bones before inner ones, which read
     as a broken sort in the dialog; the default pick is nearest-bone anyway.)
-
-    *bone_records* is unused and kept for call-site compatibility.
     """
     by_status: Dict[str, List[HostBoneChoice]] = {status: [] for status in _PRESENTATION_ORDER}
     for choice in choices:
@@ -263,7 +257,7 @@ def reassignment_choices(
             (r for r in retargets if r.submesh_index == moving_submesh_index), None)
         current_bone_id = own_retarget.to_bone_id if own_retarget is not None else donor_bone_id
         bone_records = [
-            BoneRecord(r.bone_id, r.parent_id, GEO_ID_FREE, r.skinned)
+            dataclasses.replace(r, geo_id_raw=GEO_ID_FREE)
             if r.geo_id_raw == moving_submesh_index else r
             for r in bone_records
         ]
@@ -275,7 +269,7 @@ def reassignment_choices(
 
     claims = SceneClaims(retargets=retargets, custom_submesh_bone_ids=custom_submesh_bone_ids)
     choices = classify_host_bones(bone_records, claims, roots_only=roots_only)
-    ordered = order_host_bone_choices(choices, bone_records)
+    ordered = order_host_bone_choices(choices)
     if current_bone_id is not None:
         ordered = [c for c in ordered if c.bone_id != current_bone_id]
     return ordered

@@ -83,7 +83,8 @@ def parse_block(blk: bytes) -> dict:
     # ---- GPL ----
     g = hdr['gpl']
     gpl = GplSection(model, g)
-    assert gpl.magic == GPL_MAGIC, 'GPL magic missing'
+    if gpl.magic != GPL_MAGIC:           # not an assert: python -O would skip it
+        raise ValueError('GPL magic missing')
     n = gpl.submesh_count
     desc = gpl.descriptor_ptr
     ud_len = gpl.user_data_length

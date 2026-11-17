@@ -49,6 +49,11 @@ class FieldCodecTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(decode(legacy), REPETITIVE)
 
+    def test_text_that_is_no_base64_is_refused(self):
+        for value in ('not base64!', 'z:not base64!'):
+            with self.subTest(value), self.assertRaises(ValueError):
+                binfmt.decode_field(value)
+
     def test_legacy_zlib_field_still_decodes(self):
         legacy = 'z:' + base64.b64encode(zlib.compress(REPETITIVE)).decode('ascii')
         for name, _encode, decode in self.CODECS:

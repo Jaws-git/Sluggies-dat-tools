@@ -138,7 +138,7 @@ def submesh_index_from_mesh_name(name, chunk_number=None, model_offset=None) -> 
 
 def vertex_buffer_vertex_count(vertex_buffer: dict) -> Optional[int]:
     comp_count = int(vertex_buffer.get("VertexBufferCompCount", 3) or 0)
-    size = 4 if (int(vertex_buffer.get("VertexBufferQuantizeInfo", 0)) >> 4) in (4, 7, 0xA) else 2
+    size = 4 if (int(vertex_buffer.get("VertexBufferQuantizeInfo") or 0) >> 4) in (4, 7, 0xA) else 2
     length = vertex_buffer.get("VertexBufferLength")
     if not comp_count or length is None:
         return None
@@ -298,12 +298,17 @@ def model_identity(model: dict) -> Optional[Tuple[int, int, str]]:
 def overwrite_error(source_model: dict, target_model: Optional[dict], target_name: str) -> Optional[str]:
     """Why an export of *source_model* may not replace the existing
     ``.sluggie`` *target_model* (None when it may): a file of another game
-    model, or no ``.sluggie`` at all (*target_model* None)."""
+    model, or no ``.sluggie`` at all (*target_model* None). A model without
+    an identity (``model_identity`` None) on either side is refused too: it
+    cannot be shown to be the same model."""
     if target_model is None:
         return (f"{target_name} exists but is not a readable .sluggie file. Pick a new file "
                 "name or a .sluggie of this model.")
     source, target = model_identity(source_model), model_identity(target_model)
-    if source is not None and target != source:
+    if source is None:
+        return (f"The selection's .sluggie does not say which game model it is (ChunkNumber, FileIndex or "
+                f"ModelOffset is missing), so it may not replace {target_name}. Pick a new file name.")
+    if target != source:
         return (f"{target_name} belongs to a different model (directory {target[0] if target else '?'}, "
                 f"file {target[1] if target else '?'}, offset {target[2] if target else '?'}) than the "
                 f"selection (directory {source[0]}, file {source[1]}, offset {source[2]}). Pick a new "
@@ -499,14 +504,16 @@ def unweighted_vertices(
     weights to the nearest allowed ancestor). With *donor_covered* (same
     vertex count as the donor), vertices the original model leaves without
     influence are not counted: vanilla bodies have some."""
-    def reaches_allowed(bone):
-        seen = set()
-        while bone is not None and bone not in seen:
-            if bone in allowed:
-                return True
-            seen.add(bone)
-            bone = parent_of.get(bone)
-        return False
+    reached: Dict[int, bool] = {}   # per bone: the walk runs once, not per weight
+
+    def reaches_allowed(start):
+        if start not in reached:
+            bone, seen = start, set()
+            while bone is not None and bone not in seen and bone not in allowed:
+                seen.add(bone)
+                bone = parent_of.get(bone)
+            reached[start] = bone is not None and bone in allowed
+        return reached[start]
 
     result = []
     for vertex, weights in enumerate(vertex_weights):
@@ -635,7 +642,8 @@ def mesh_bytes(counts: MeshCounts) -> int:
     colors = counts.vertices * counts.color_channels * 4
     normals = counts.vertices * 6 if counts.has_normal_buffer else 0
     attributes = 1 + counts.uv_channels + counts.color_channels + (1 if counts.has_normal_buffer else 0)
-    draw_list = corners * attributes * 2 // 2
+    index_bytes, strip_gain = 2, 2      # a u16 index per attribute; strips about halve the list
+    draw_list = corners * attributes * index_bytes // strip_gain
     return records + uvs + colors + normals + draw_list
 
 

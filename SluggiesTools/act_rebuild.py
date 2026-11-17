@@ -441,11 +441,21 @@ def append_leaf_bone(
             by_id[parent_id].first_child = table_off(new_id)
         new_prev = 0
     else:
+        def sibling_id(offset: int) -> int:
+            index, rest = divmod(offset - HEADER_SIZE, BONE_RECORD_SIZE)
+            if rest or index not in by_id:
+                raise ValueError(f"sibling pointer 0x{offset:X} is not a bone record")
+            return index
+
         cur_off = first_child
-        cur_id = (cur_off - HEADER_SIZE) // BONE_RECORD_SIZE
+        cur_id = sibling_id(cur_off)
+        seen = {cur_id}
         while by_id[cur_id].next != 0:
             cur_off = by_id[cur_id].next
-            cur_id = (cur_off - HEADER_SIZE) // BONE_RECORD_SIZE
+            cur_id = sibling_id(cur_off)
+            if cur_id in seen:
+                raise ValueError(f"the sibling chain of bone {cur_id} loops")
+            seen.add(cur_id)
         by_id[cur_id].next = table_off(new_id)
         new_prev = cur_off
 

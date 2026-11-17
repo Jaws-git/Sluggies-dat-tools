@@ -13,6 +13,7 @@ validation this dialog only has to approximate).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Iterable, List, Tuple
 
@@ -45,6 +46,13 @@ SHADER_MODE_DESCRIPTIONS = {
     "Oeka": "Unlit shader (1 vanilla surface), not decoded",
 }
 
+# The Type-7 modes a donor surface can switch between, by class. Mirrors
+# patch_inplace._LIGHTING_MODES / _NO_LIGHTING_MODES: a change across the two
+# classes alters the vertex stride of the surface's primitive lists, so the
+# patcher refuses it and Manage Materials never offers it.
+LIT_SHADER_MODES = ('Spec', 'RhSp', 'LhSp', 'GhSp', 'SpRf')
+UNLIT_SHADER_MODES = ('Shdw', 'Audi', 'Oeka')
+
 # Mirrors HammerspaceMain.STADIUM_CHUNKS (= export.STADIUM_DIR_INDICES): the
 # .sluggie ChunkNumber of the stadium models, 7 Mario Stadium ... 16 Toy
 # Field. In a stadium a custom submesh must hang on a root bone (Dolphin,
@@ -53,7 +61,15 @@ STADIUM_CHUNKS = range(7, 17)
 
 
 def is_stadium_chunk(chunk_number) -> bool:
-    """Whether a .sluggie ChunkNumber is a stadium model directory."""
+    """Whether a .sluggie ChunkNumber is a stadium model directory. A whole
+    number stored as a float or as text (a hand-edited file) counts as that
+    number, instead of silently meaning "character"."""
+    if isinstance(chunk_number, bool):
+        return False
+    if isinstance(chunk_number, float) and chunk_number.is_integer():
+        chunk_number = int(chunk_number)
+    elif isinstance(chunk_number, str) and chunk_number.strip().isdecimal():
+        chunk_number = int(chunk_number.strip())
     return isinstance(chunk_number, int) and chunk_number in STADIUM_CHUNKS
 
 
@@ -221,7 +237,7 @@ def build_template_source_choices(
     preselects it even when the model has copyable donor surfaces; the
     donor-based `rigid:` and `derived:` sources follow. Within
     `rigid:`/`derived:`, candidates are deduplicated by SurfaceId (first-seen
-    wins) and sorted by SurfaceId for a stable order.
+    wins) and sorted by SurfaceId, numbers by value (``natural_sort_key``).
 
     Only built-ins verified in game are listed
     (``BUILTIN_TEMPLATE_NAMES``; all are today), so an unverified capture is
@@ -248,7 +264,14 @@ def build_template_source_choices(
                 key=lambda n: not (stadium and BUILTIN_TEMPLATES[n].stadium_only),
             )
         ],
-        "rigid": [TemplateSourceChoice("rigid", s) for s in sorted(rigid_by_surface)],
-        "derived": [TemplateSourceChoice("derived", s) for s in sorted(derived_by_surface)],
+        "rigid": [TemplateSourceChoice("rigid", s) for s in sorted(rigid_by_surface, key=natural_sort_key)],
+        "derived": [TemplateSourceChoice("derived", s) for s in sorted(derived_by_surface, key=natural_sort_key)],
     }
     return [choice for kind in DIALOG_ORDER for choice in by_kind[kind]]
+
+
+def natural_sort_key(text: str):
+    """Sort key that orders the numbers inside *text* by value, so
+    ``sm1_ds2`` comes before ``sm1_ds10``."""
+    parts = re.split(r'(\d+)', str(text))
+    return [(0, int(part), '') if part.isdigit() else (1, 0, part) for part in parts], str(text)

@@ -43,8 +43,30 @@ def signed16(value: int) -> int:
     return value - 0x10000 if value & 0x8000 else value
 
 
+def _imm16(imm: int, low: int = -0x8000, high: int = 0xFFFF) -> int:
+    """The 16-bit field of ``imm``. The default range takes both spellings of a half (signed, or the unsigned
+    ``lo()``/``ha()`` values); a value outside ``low..high`` would assemble to another instruction."""
+    if not low <= imm <= high:
+        raise PpcError(f'immediate {imm:#x} does not fit 16 bits ({low:#x}..{high:#x})')
+    return imm & 0xFFFF
+
+
+def _signed16(imm: int) -> int:
+    return _imm16(imm, -0x8000, 0x7FFF)
+
+
+def _unsigned16(imm: int) -> int:
+    return _imm16(imm, 0, 0xFFFF)
+
+
+def _field(value: int, bits: int, what: str) -> int:
+    if not 0 <= value < 1 << bits:
+        raise PpcError(f'{what} {value!r} does not fit {bits} bits')
+    return value
+
+
 def d_form(op: int, rt, ra, imm: int) -> int:
-    return (op << 26) | (_r(rt) << 21) | (_r(ra) << 16) | (imm & 0xFFFF)
+    return (op << 26) | (_r(rt) << 21) | (_r(ra) << 16) | _imm16(imm)
 
 
 def x_form(rt, ra, rb, xo: int, rc: int = 0) -> int:
@@ -122,11 +144,11 @@ class Asm:
     def lis(self, rt, imm): return self.word(d_form(15, rt, 0, imm))
     def addis(self, rt, ra, imm): return self.word(d_form(15, rt, ra, imm))
     def addi(self, rt, ra, imm): return self.word(d_form(14, rt, ra, imm))
-    def li(self, rt, imm): return self.addi(rt, 0, imm)
-    def mulli(self, rt, ra, imm): return self.word(d_form(7, rt, ra, imm))
-    def ori(self, ra, rs, imm): return self.word(d_form(24, rs, ra, imm))
-    def andi_(self, ra, rs, imm): return self.word(d_form(28, rs, ra, imm))
-    def xori(self, ra, rs, imm): return self.word(d_form(26, rs, ra, imm))
+    def li(self, rt, imm): return self.addi(rt, 0, _signed16(imm))
+    def mulli(self, rt, ra, imm): return self.word(d_form(7, rt, ra, _signed16(imm)))
+    def ori(self, ra, rs, imm): return self.word(d_form(24, rs, ra, _unsigned16(imm)))
+    def andi_(self, ra, rs, imm): return self.word(d_form(28, rs, ra, _unsigned16(imm)))
+    def xori(self, ra, rs, imm): return self.word(d_form(26, rs, ra, _unsigned16(imm)))
     def add(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 266))
     def subf(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 40))  # rt = rb - ra
     def mullw(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 235))
@@ -136,17 +158,24 @@ class Asm:
     def extsb(self, ra, rs): return self.word(x_form(rs, ra, 0, 954))
 
     def rlwinm(self, ra, rs, sh, mb, me):
+        sh, mb, me = _field(sh, 5, 'rlwinm sh'), _field(mb, 5, 'rlwinm mb'), _field(me, 5, 'rlwinm me')
         return self.word((21 << 26) | (_r(rs) << 21) | (_r(ra) << 16) | (sh << 11) | (mb << 6) | (me << 1))
 
     def slwi(self, ra, rs, n): return self.rlwinm(ra, rs, n, 0, 31 - n)
     def srwi(self, ra, rs, n): return self.rlwinm(ra, rs, 32 - n, n, 31)
     def clrlwi(self, ra, rs, n): return self.rlwinm(ra, rs, 0, n, 31)
 
-    def cmpwi(self, ra, imm, cr=0): return self.word((11 << 26) | (cr << 23) | (_r(ra) << 16) | (imm & 0xFFFF))
-    def cmplwi(self, ra, imm, cr=0): return self.word((10 << 26) | (cr << 23) | (_r(ra) << 16) | (imm & 0xFFFF))
-    def cmpw(self, ra, rb, cr=0): return self.word((31 << 26) | (cr << 23) | (_r(ra) << 16) | (_r(rb) << 11))
+    def cmpwi(self, ra, imm, cr=0):
+        return self.word((11 << 26) | (_field(cr, 3, 'cr') << 23) | (_r(ra) << 16) | _signed16(imm))
+
+    def cmplwi(self, ra, imm, cr=0):
+        return self.word((10 << 26) | (_field(cr, 3, 'cr') << 23) | (_r(ra) << 16) | _unsigned16(imm))
+
+    def cmpw(self, ra, rb, cr=0):
+        return self.word((31 << 26) | (_field(cr, 3, 'cr') << 23) | (_r(ra) << 16) | (_r(rb) << 11))
+
     def cmplw(self, ra, rb, cr=0):
-        return self.word((31 << 26) | (cr << 23) | (_r(ra) << 16) | (_r(rb) << 11) | (32 << 1))
+        return self.word((31 << 26) | (_field(cr, 3, 'cr') << 23) | (_r(ra) << 16) | (_r(rb) << 11) | (32 << 1))
 
     # -- loads and stores ------------------------------------------------
     def lbz(self, rt, d, ra): return self.word(d_form(34, rt, ra, d))
@@ -190,6 +219,7 @@ class Asm:
         if condition not in CONDITIONS:
             raise PpcError(f'unknown condition {condition!r}')
         bo, bit = CONDITIONS[condition]
+        _field(cr, 3, 'cr')
         resolve = self._target(target)
         self.items.append(lambda pc: bc_word(pc, resolve(), bo, bit + 4 * cr))
         return self

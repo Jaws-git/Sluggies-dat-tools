@@ -73,6 +73,14 @@ def blank_payload(page):
     return bytes(page.payload_length)
 
 
+class TplTests(unittest.TestCase):
+    def test_an_image_table_outside_the_file_is_refused(self):
+        art = icons.icon_art
+        tpl = struct.pack('>III', art.TPL_MAGIC, 1, 0x1000) + bytes(0x20)
+        with self.assertRaisesRegex(art.IconArtError, 'image table is outside the file'):
+            art.cmpr_payload(tpl, (8, 8))
+
+
 class PageTests(unittest.TestCase):
     def test_page_size(self):
         self.assertEqual(icons.page_size(1)[:2], (64, 64))
@@ -220,7 +228,9 @@ class ParseTests(unittest.TestCase):
         for config, message in (({'ids': [{'template': 0, 'icon': icon}]}, 'explicit "id"'),
                                 ({'wheels': [{'id': '0x47', 'icon': {'side': 'x/a.png', 'front': 'b.png'}}]}, 'plain'),
                                 ({'wheels': [{'id': '0x47', 'icon': dict(icon, like='0x50')}]}, 'not a stock'),
-                                ({'wheels': [{'id': '0x47', 'icon': dict(icon, fit='zoom')}]}, 'fit')):
+                                ({'wheels': [{'id': '0x47', 'icon': dict(icon, fit='zoom')}]}, 'fit'),
+                                ({'wheels': ['0x47']}, r'wheels\[0\] must be an object'),
+                                ({'wheels': 5}, '"wheels" must be a list')):
             with self.assertRaisesRegex(icons.IconConfigError, message):
                 self.parse(config)
 
@@ -294,6 +304,9 @@ class StepTests(unittest.TestCase):
         _ctx, log = self.run_step({'wheels': [{'id': '0x47'}]})
         self.assertEqual(self.image.to_bytes(), before)
         self.assertIn('stays as it is', log[0])
+        self.assertIn('0x47', log[1])
+        _ctx, log = self.run_step({'wheels': [{'id': 0}]})          # ID 0 is an ID, not "no id"
+        self.assertIn('0x00', log[1])
 
     def test_alternate_side_view(self):
         config = {'wheels': [{'id': '0x47', 'icon': {'side': 'a.png', 'front': 'b.png', 'side_alt': 'b.png'}}]}

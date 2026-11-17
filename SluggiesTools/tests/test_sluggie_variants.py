@@ -84,6 +84,14 @@ class ExportTargetTests(unittest.TestCase):
         self.assertIn('different model', error)
         self.assertIn('file 1', error)
 
+    def test_model_without_identity_is_refused(self):
+        nameless = {'ChunkNumber': 18, 'FileIndex': 0}
+        error = ModelCheckCore.overwrite_error(nameless, dict(self.SOURCE), 'b.sluggie')
+        self.assertIn('does not say which game model', error)
+        self.assertIn('b.sluggie', error)
+        self.assertIsNotNone(ModelCheckCore.overwrite_error(nameless, dict(nameless), 'b.sluggie'))
+        self.assertIn('different model', ModelCheckCore.overwrite_error(self.SOURCE, nameless, 'b.sluggie'))
+
     def test_unreadable_target_is_refused(self):
         self.assertIn('not a readable', ModelCheckCore.overwrite_error(self.SOURCE, None, 'b.sluggie'))
 

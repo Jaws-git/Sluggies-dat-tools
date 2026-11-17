@@ -139,8 +139,13 @@ def bone_absolute_matrices(bone_hierarchy):
     """``{BoneId: absolute bind matrix}`` in armature space, a bpy-free port of
     ``ImportSluggies._compute_bone_absolute_matrices`` (the matrix the
     importer places rigid submeshes with). Rest/bind data only: nothing here
-    can see a pose or animation frame."""
+    can see a pose or animation frame. Raises ValueError for a bone whose
+    parent is not in the list."""
     bones = {int(b['BoneId']): b for b in bone_hierarchy}
+    for bone_id, bone in bones.items():
+        parent_id = bone.get('ParentBoneId')
+        if parent_id is not None and int(parent_id) not in bones:
+            raise ValueError(f'bone {bone_id} has unknown parent {parent_id}')
     absolute = {}
     remaining = list(bones)
     for _ in range(len(remaining) + 1):
@@ -148,6 +153,7 @@ def bone_absolute_matrices(bone_hierarchy):
         for bone_id in remaining:
             bone = bones[bone_id]
             parent_id = bone.get('ParentBoneId')
+            parent_id = None if parent_id is None else int(parent_id)
             if parent_id is not None and parent_id not in absolute:
                 pending.append(bone_id)
                 continue
@@ -408,11 +414,13 @@ def encode_positions(object_name, geometry, position_format=POSITION_FORMAT):
         raise ValueError(
             f'{object_name}: {len(geometry.positions)} vertices exceed the uint16 index range'
         )
-    values = []
-    for index, position in enumerate(geometry.positions):
-        vertex = geometry.source_vertices[index]
-        for axis, value in zip('xyz', position):
-            values.append(quantize_int16(value, divisor, f'{object_name} vertex {vertex} {axis}'))
+    values = rc.quantize_int16_all((value for position in geometry.positions for value in position), divisor)
+    if values is None:          # a refused component: walk again to name it
+        values = []
+        for index, position in enumerate(geometry.positions):
+            vertex = geometry.source_vertices[index]
+            for axis, value in zip('xyz', position):
+                values.append(quantize_int16(value, divisor, f'{object_name} vertex {vertex} {axis}'))
     return struct.pack(f'>{len(values)}h', *values)
 
 
@@ -438,7 +446,7 @@ _TYPE3_SHIFTS = {
     'texture4': 18, 'texture5': 20, 'texture6': 22, 'texture7': 24,
 }
 _U8_ENTRY_LIMIT = 0x100      # a u8 index addresses 256 entries
-_U16_ENTRY_LIMIT = 0xFFFF
+_U16_ENTRY_LIMIT = 0xFFFF    # one short of the 0x10000 a u16 index addresses, like the other uint16 count checks
 MESH_NAME_MAX_LENGTH = 31    # donor names are short ("body", "head"); keep new ones short too
 WHITE = rc.WHITE
 

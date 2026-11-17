@@ -119,7 +119,8 @@ class EffectsTab:
 
         def work():
             archive = found = library = error = None
-            game_volumes = gui_volume.read_volumes(root)
+            volume_problems = []
+            game_volumes = gui_volume.read_volumes(root, volume_problems)
             try:
                 effects = _effects()
                 from Sound import brsar
@@ -132,10 +133,11 @@ class EffectsTab:
                     library = effects.load_library(root)
             except Exception as exc:
                 error = f'{type(exc).__name__}: {exc}'
-            self.app.output_queue.put(('call', self._read_done, archive, found, library, error, game_volumes))
+            self.app.output_queue.put(('call', self._read_done, archive, found, library, error, game_volumes,
+                                       volume_problems))
         threading.Thread(target=work, daemon=True).start()
 
-    def _read_done(self, archive, found, library, error, game_volumes):
+    def _read_done(self, archive, found, library, error, game_volumes, volume_problems=()):
         self.loading = False
         self.volumes = game_volumes
         dpg.configure_item('effects_refresh', enabled=True)
@@ -145,6 +147,10 @@ class EffectsTab:
             self._status(error, _ERROR)
         else:
             self._summary()
+            if volume_problems:              # the list is fine, its Volume column is empty: say why
+                self._status(f'{dpg.get_value("effects_status")} {volume_problems[0]}.', _WARN)
+        for problem in volume_problems:
+            self.app.log_line(f'[sound fx] {problem}', _WARN)
         self._draw_list()
 
     def _summary(self):

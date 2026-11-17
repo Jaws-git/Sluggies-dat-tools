@@ -83,6 +83,7 @@ STAGED_REL = os.path.join('_gui', 'slot', 'staged_packages')
 STAT_REL = os.path.join('_gui', 'stat')    # gui_grid.STAT_STAGING_REL: the Stat Editor tab prunes unused files
 STAT_PREFIX = 'stat_edits_package_'        # starts with StatEditor/editor_install.RECEIVED_PREFIX
 STAT_ORIGIN = 'sluggiezip'                 # the stat edit file's "origin" (gui_grid names the package from it)
+WORK_PREFIX = '.sluggiezip_'               # the export's work folder in _gui, then the process ID
 ICON_VIEWS = ('front', 'side')
 GEAR_FILES = (2, 3, 4, 5)
 ANIM_FILES = tuple(range(6, 15))
@@ -208,7 +209,8 @@ def export(cid: int, path: str, output_dir: str = state_cli.OUTPUT_DIR, today: s
     dat_path = os.path.join(output_dir, 'dt_na.dat')
     if not os.path.isfile(dat_path):
         raise PackageError(f'{dat_path} is missing')
-    work = os.path.join(state_cli.gui_dir(output_dir), f'.sluggiezip_{os.getpid()}')
+    slot_export.sweep_work_folders(state_cli.gui_dir(output_dir), WORK_PREFIX)
+    work = os.path.join(state_cli.gui_dir(output_dir), f'{WORK_PREFIX}{os.getpid()}')
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     try:
@@ -265,6 +267,8 @@ def read_manifest(zf: zipfile.ZipFile, label: str) -> dict:
         doc = json.loads(zf.read(MANIFEST).decode('utf-8'))
     except KeyError:
         raise PackageError(f'{label} is not a character package ({MANIFEST} missing)') from None
+    except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+        raise PackageError(f'{label} is damaged: {exc}') from None
     except (UnicodeDecodeError, ValueError) as exc:
         raise PackageError(f'{label}: {MANIFEST} is not valid JSON: {exc}') from None
     if not isinstance(doc, dict) or doc.get('format') != FORMAT:
@@ -272,6 +276,14 @@ def read_manifest(zf: zipfile.ZipFile, label: str) -> dict:
     if not isinstance(doc.get('version'), int) or doc['version'] > VERSION:
         raise PackageError(f'{label} is package version {doc.get("version")!r}: this version of Sluggies Tools reads '
                            f'up to {VERSION}')
+    # The shapes ``stage`` relies on (a missing key or null counts as "not in the package").
+    for key in ('character', 'model', 'equipment', 'animations', 'portraits', 'stats'):
+        if doc.get(key) is not None and not isinstance(doc[key], dict):
+            raise PackageError(f'{label}: {MANIFEST} is damaged: "{key}" is not an object')
+    for key in ('equipment', 'animations'):
+        bad = [k for k in doc.get(key) or {} if not (k.isascii() and k.isdigit())]
+        if bad:
+            raise PackageError(f'{label}: {MANIFEST} is damaged: "{key}" has the file number {bad[0]!r}')
     return doc
 
 
@@ -314,7 +326,10 @@ def _file(folder: str, rel) -> str | None:
     """The extracted file ``rel`` (a manifest path), or None when the archive does not hold it."""
     if not isinstance(rel, str) or not rel:
         return None
-    path = os.path.join(folder, *rel.split('/'))
+    root = os.path.abspath(folder)
+    path = os.path.abspath(os.path.join(root, *rel.split('/')))
+    if not path.startswith(root + os.sep):          # "../x" or "..\\x": a file outside the package
+        return None
     return path if os.path.isfile(path) else None
 
 
@@ -405,6 +420,15 @@ def stage(path: str, cid: int, state: dict, root_dir: str, name_problem=None, ca
         from Sound import brsar
         sound_archive = os.path.isfile(os.path.join(root_dir, '1_Input', brsar.ARCHIVE))
     manifest, folder = extract(path, os.path.join(root_dir, STAGED_REL))
+    try:
+        return _stage(label, cid, state, root_dir, name_problem, can_portrait, sound_archive, manifest, folder)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)        # a package that is not staged leaves no folder behind
+        raise
+
+
+def _stage(label: str, cid: int, state: dict, root_dir: str, name_problem, can_portrait, sound_archive: bool,
+           manifest: dict, folder: str) -> Staged:
     out = Staged(folder=folder, manifest=manifest)
     target = _hex(cid)
     char = next((c for c in state.get('characters') or [] if c.get('id') == cid), {})

@@ -159,6 +159,14 @@ class SlotProbeTests(unittest.TestCase):
         self.slot_cli.gecko_check(edits, batch, (), self.out)
         return gecko_compat.read_details(self.root)
 
+    def test_a_record_cut_off_while_written_keeps_the_one_before(self):
+        with mock.patch.object(gecko_compat.slogger, 'warning'):
+            gecko_compat.record(self.root, 'first')
+            with (mock.patch.object(gecko_compat.json, 'dump', side_effect=OSError('disk full')),
+                  self.assertRaises(OSError)):
+                gecko_compat.record(self.root, 'second')
+        self.assertEqual(gecko_compat.read_details(self.root)['what'], 'first')
+
     def test_no_break_clears_the_record(self):
         gecko_compat.record(self.root, 'old')
         self.assertEqual(self.check([self.edit(False)], self.batch(('a',))), {})

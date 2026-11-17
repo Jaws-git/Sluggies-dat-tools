@@ -15,6 +15,8 @@ def wav_bytes(rate, channels, loop=None):
     (``end`` exclusive, as the game stores it) or None."""
     if not channels:
         raise ValueError('at least one channel')
+    if rate <= 0:
+        raise ValueError(f'sample rate {rate}')
     length = len(channels[0])
     if any(len(c) != length for c in channels):
         raise ValueError('channels differ in length')

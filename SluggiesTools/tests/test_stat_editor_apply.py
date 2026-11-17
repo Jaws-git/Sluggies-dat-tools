@@ -56,6 +56,27 @@ class ApplyTests(unittest.TestCase):
     def setUp(self):
         self.image = build_roster(EXPANDED)[0]
 
+    def test_a_number_of_hundreds_of_digits_is_refused_not_a_crash(self):
+        huge = 10 ** 400
+        self.assertIn('does not fit a 32-bit float', GAMEPLAY.problem(huge))
+        self.assertIn('does not fit a 32-bit float', GAMEPLAY.problem(-huge))
+        self.assertIn('outside', BATTING.problem(huge))
+        self.assertIn('not a finite number', GAMEPLAY.problem(float('inf')))
+        self.assertIsNone(GAMEPLAY.problem(3))
+        with self.assertRaises(apply.EditFileError):
+            applied(self.image, doc(self.image, {'0x05': {'size': {'Gameplay': huge}}}))
+
+    def test_a_copy_snapshot_with_fields_of_the_wrong_shape_is_refused(self):
+        for bad in (['stats'], {'stats': ['batting arm']}, {'stats': 'batting arm'}):
+            snapshot = {'format': apply.COPY_FORMAT, 'source': '0x05', 'target': '0x66', 'fields': bad}
+            with self.subTest(bad=bad), self.assertRaisesRegex(apply.EditFileError, 'fields'):
+                apply.prepare(copy(self.image), [apply.Copy('snap', snapshot)])
+
+    def test_0xff_is_no_character_id(self):
+        self.assertEqual(apply._id('0xFE', 'x'), 0xFE)
+        with self.assertRaises(apply.EditFileError):
+            apply._id('0xFF', 'x')
+
     def test_every_field_kind(self):
         d = doc(self.image, {
             '0x05': {'stats': {'batting arm': 40, 'speed': 0x1234, 'stamina': 300, 'traj': 2, 'star pitch type': 3},

@@ -71,6 +71,19 @@ class NameTests(unittest.TestCase):
         self.assertEqual(slot_export.pick_number('Mario', models, {'78711424_l_mario_mario01.gpl.sluggie'}, free), 2)
 
 
+class WorkFolderTests(unittest.TestCase):
+    def test_only_stale_work_folders_are_swept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('.slot_export_111', '.slot_export_222', '.slot_export_notes', 'Mario'):
+                os.makedirs(os.path.join(tmp, name))
+            old = os.path.getmtime(os.path.join(tmp, '.slot_export_111')) - 2 * slot_export.STALE_WORK_SECONDS
+            for name in ('.slot_export_111', '.slot_export_notes', 'Mario'):
+                os.utime(os.path.join(tmp, name), (old, old))
+            slot_export.sweep_work_folders(tmp, slot_export.WORK_PREFIX)
+            self.assertEqual(sorted(os.listdir(tmp)), ['.slot_export_222', '.slot_export_notes', 'Mario'])
+            slot_export.sweep_work_folders(os.path.join(tmp, 'missing'), slot_export.WORK_PREFIX)   # no folder: fine
+
+
 class EmbeddedDonorTests(unittest.TestCase):
     """``DonorEntry``: the builder reads the donor from the .sluggie, never from the DAT or the DOL route."""
 

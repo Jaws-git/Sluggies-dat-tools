@@ -351,13 +351,16 @@ def _read_open_pack(zf: zipfile.ZipFile, path: str) -> Pack:
         raise PackError(f'{os.path.basename(path)} is too big to be a roster pack (over {MAX_MEMBERS:,} files or '
                         f'{MAX_UNPACKED >> 20:,} MB unpacked)')
     meta = _load_json(zf, META_FILE)
-    if not isinstance(meta, dict) or meta.get('format') not in READABLE_FORMATS:
+    if not isinstance(meta, dict):
+        raise PackError(f'{os.path.basename(path)} is not a roster pack: {META_FILE} is not a JSON object')
+    if meta.get('format') not in READABLE_FORMATS:
         raise PackError(f'{os.path.basename(path)} is a roster pack of format {meta.get("format")!r}; this tool '
                         f'reads format {" and ".join(map(str, READABLE_FORMATS))}')
     config = _load_json(zf, STATE_FILE)
     fingerprints = _load_json(zf, FINGERPRINTS_FILE)
     if not isinstance(config, dict) or not isinstance(fingerprints, dict):
         raise PackError('the pack\'s state or fingerprints are not JSON objects')
+    _check_shapes(meta, config, fingerprints)
     icons_, clips_ = {}, {}
     for name in zf.namelist():
         if name.startswith(ICON_DIR + '/') and not name.endswith('/'):
@@ -399,6 +402,34 @@ def _read_open_pack(zf: zipfile.ZipFile, path: str) -> Pack:
             if not isinstance(name, str) or name not in clips_:
                 raise PackError(f'{entry.get("id")}: voice clip {moment} ({name}) is missing from the pack')
     return Pack(path, meta, config, fingerprints, icons_, blocks, clips_)
+
+
+ICON_KEYS = frozenset(icons.VIEWS) | {'like', 'fit'}     # what a saved pack's "icon" objects hold
+
+
+def _check_shapes(meta: dict, config: dict, fingerprints: dict) -> None:
+    """Refuse a pack whose JSON files have not the shapes ``pack_files`` writes (the readers and the load planner
+    index them), and what a saved pack never holds: a portrait folder path (``icon.model``; a pack brings its
+    portraits as files) and other unknown ``icon`` keys."""
+    if not isinstance(meta.get('blocks') or {}, dict) or not all(
+            isinstance(roles, dict) for roles in (meta.get('blocks') or {}).values()):
+        raise PackError(f'{META_FILE} in the pack is damaged: "blocks" has not the expected shape')
+    if not all(isinstance(fp, dict) for fp in fingerprints.values()):
+        raise PackError(f'{FINGERPRINTS_FILE} in the pack is damaged: a slot\'s fingerprint is not an object')
+    for key in ('ids', 'wheels', icons.STOCK_KEY, 'character_voices', clip_files.SPECIES_KEY):
+        entries = config.get(key) or []
+        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+            raise PackError(f'{STATE_FILE} in the pack is damaged: "{key}" is not a list of objects')
+    for entry in config.get('ids') or []:
+        model = entry.get('model')
+        if entry.get('id') is None or (model is not None and not (isinstance(model, dict) and 'from' in model)):
+            raise PackError(f'{STATE_FILE} in the pack is damaged: an "ids" entry has no "id" or a "model" without '
+                            '"from"')
+    for entry in _icon_entries(config):
+        unknown = sorted(set(entry['icon']) - ICON_KEYS)
+        if unknown:
+            raise PackError(f'{entry.get("id")}: the pack\'s portrait entry has unexpected keys: '
+                            + ', '.join(map(str, unknown)))
 
 
 def _icon_entries(config: dict):
@@ -529,6 +560,7 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
             entry['model'] = copy.deepcopy(game_model)
             plan.kept_dirs.append(cid)
         else:                  # a fresh copy of the source's files: the pack's blocks go on top
+            entry['model'] = {'from': entry['model']['from']}     # never DAT routes a pack names (saving strips them)
             if pack.slot_models(cid):
                 plan.writes.append((cid, pack.slot_models(cid)))
             plan.equipment_writes += [(cid, role) for role in pack.slot_equipment(cid)]

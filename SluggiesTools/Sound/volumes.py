@@ -166,7 +166,6 @@ def _set_volume(root_dir, name, volume):
         library.pop(name, None)
     else:
         library[name] = volume
-    save_library(root_dir, library)
     out, changed, _missing = write_volumes(base, {name: volume})
     if changed:
         temp = archive_lock.temp_path(output_path)
@@ -178,4 +177,6 @@ def _set_volume(root_dir, name, volume):
             if os.path.exists(temp):
                 os.remove(temp)
             raise
+    # After the archive: a write that failed leaves the library saying what the game still holds.
+    save_library(root_dir, library)
     return old, stock.volume

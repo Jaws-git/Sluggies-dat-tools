@@ -101,6 +101,15 @@ class CustomSubmeshRoundTripTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             csi.decode_custom_submesh(dict(self.entry, FacesCount=99))
 
+    def test_faces_without_vertices_are_refused(self):
+        for value in (None, ''):
+            with self.subTest(value), self.assertRaisesRegex(ValueError, 'points past the 0 vertices'):
+                csi.decode_custom_submesh(dict(self.entry, VertexBufferData=value))
+
+    def test_additional_surface_without_key_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'no SurfaceKey'):
+            csi.decode_custom_submesh(dict(self.entry, AdditionalSurfaces=[{'MaterialName': 'x'}]))
+
 
 class AddedBoneEntryTests(unittest.TestCase):
     def test_added_bones_in_id_order_with_known_parents(self):
@@ -114,9 +123,13 @@ class AddedBoneEntryTests(unittest.TestCase):
             ],
         }
         self.assertEqual([b['BoneId'] for b in csi.added_bone_entries(model)], [2, 3])
+        self.assertEqual(csi.skipped_added_bone_ids(model), [4])
+        model['BoneHierarchyEdited'].append({'BoneId': 5, 'UserAdded': True, 'ParentBoneId': 4})  # below a skipped one
+        self.assertEqual(csi.skipped_added_bone_ids(model), [4, 5])
 
     def test_no_edited_hierarchy(self):
         self.assertEqual(csi.added_bone_entries({'BoneHierarchy': [{'BoneId': 0}]}), [])
+        self.assertEqual(csi.skipped_added_bone_ids({'BoneHierarchy': [{'BoneId': 0}]}), [])
 
 
 if __name__ == '__main__':

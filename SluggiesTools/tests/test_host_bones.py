@@ -231,7 +231,7 @@ class ClassifyHostBonesTests(unittest.TestCase):
         self.assertEqual(choices[1].status, STATUS_EXCLUDED)  # owns a mesh
         self.assertEqual(choices[2].status, STATUS_RECOMMENDED)
         self.assertEqual(choices[4].status, STATUS_RECOMMENDED)
-        ordered = order_host_bone_choices(choices.values(), records)
+        ordered = order_host_bone_choices(choices.values())
         self.assertEqual(sorted(c.bone_id for c in ordered), [0, 2, 4])
 
     def test_stadium_offers_new_root_and_child_bones(self):
@@ -257,7 +257,7 @@ class ClassifyHostBonesTests(unittest.TestCase):
         records = [_rec(1, None, geo_id_raw=0)]
         choices = classify_host_bones(records)
         self.assertTrue(all(c.status == STATUS_EXCLUDED for c in choices))
-        ordered = order_host_bone_choices(choices, records)
+        ordered = order_host_bone_choices(choices)
         self.assertEqual(ordered, [])
 
 
@@ -270,7 +270,7 @@ class OrderHostBoneChoicesTests(unittest.TestCase):
             _rec(4, 1, geo_id_raw=5),  # owned -> excluded
         ]
         choices = classify_host_bones(records)
-        ordered = order_host_bone_choices(choices, records)
+        ordered = order_host_bone_choices(choices)
         self.assertEqual([c.bone_id for c in ordered], [2, 1, 3])
 
     def test_each_group_is_in_numeric_bone_id_order(self):
@@ -278,7 +278,7 @@ class OrderHostBoneChoicesTests(unittest.TestCase):
         # order must win over leaf-ness and over string order ('10' < '2').
         records = [_rec(1, None), _rec(2, 1), _rec(10, 2), _rec(3, 2), _rec(20, None)]
         choices = classify_host_bones(records)
-        ordered = order_host_bone_choices(choices, records)
+        ordered = order_host_bone_choices(choices)
         self.assertEqual(
             [c.bone_id for c in ordered if c.status == STATUS_RECOMMENDED], [2, 3, 10])
         self.assertEqual([c.bone_id for c in ordered if c.status == STATUS_ALLOWED], [1, 20])
@@ -455,7 +455,7 @@ def _choices(data):
     records -> classified -> ordered."""
     model = data['SluggiesModel']
     records = bone_records_from_hierarchy(model['BoneHierarchy'], model.get('SkinData'))
-    ordered = order_host_bone_choices(classify_host_bones(records), records)
+    ordered = order_host_bone_choices(classify_host_bones(records))
     return {c.bone_id: c.status for c in ordered}, len(records)
 
 

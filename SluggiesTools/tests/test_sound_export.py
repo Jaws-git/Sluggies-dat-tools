@@ -277,6 +277,26 @@ class ExportSoundsTests(unittest.TestCase):
         self.assertIsNone(next(s for s in index['sounds'] if s['name'] == 'bgm_test')['path'])
         self.assertNotIn('stream/bgm_test.wav', self._paths())
 
+    def test_a_stream_path_that_leaves_the_sound_folder_is_skipped(self):
+        import types
+        os.makedirs(os.path.join(self.tmp, 'outside'))
+        with open(os.path.join(self.tmp, 'outside', 'bgm_test.brstm'), 'wb') as handle:
+            handle.write(self.stream)
+        real_files = brsar.Brsar.files
+
+        def files(archive):
+            return [types.SimpleNamespace(external_path='../outside/bgm_test.brstm') if f.external_path else f
+                    for f in real_files(archive)]
+
+        with (mock.patch.object(brsar.Brsar, 'files', files),
+              mock.patch.object(export_sounds._slogger, 'warning') as warning):
+            records, written, missing = export_sounds.export_streams(
+                brsar.Brsar.from_file(os.path.join(self.sound_dir, 'MY2.brsar')), self.sound_dir, self.out)
+        self.assertEqual((written, missing, records[0]['path']), (0, [], None))
+        self.assertTrue(any('leaves the sound folder' in str(call.args[0]) for call in warning.call_args_list))
+        self.assertEqual(os.listdir(os.path.join(self.tmp, 'outside')), ['bgm_test.brstm'])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'out', 'outside')))
+
     def test_earlier_export_is_replaced_but_other_files_and_folders_are_kept(self):
         """Only what the earlier export's index lists is removed: the Sound FX file dialog opens in this
         folder, and a WAV the user saved there went with the whole folder before."""

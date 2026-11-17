@@ -254,7 +254,25 @@ class CropTests(Fixture):
         again, counts = self.crops(0x00, 0x66)
         self.assertEqual(counts, (0, 0))
         self.assertFalse(os.path.exists(stale))
+        left = os.path.join(self.out, 'half.png.tmp')           # what an interrupted run leaves behind
+        with open(left, 'wb') as f:
+            f.write(b'x')
+        self.crops(0x00, 0x66)
+        self.assertFalse(os.path.exists(left))
         self.assertEqual([r['file'] for r in again[0x00].values()], [r['file'] for r in first[0x00].values()])
+
+    def test_a_damaged_bank_is_an_icon_state_error(self):
+        bank = state_icons.read_bank(self.image, self.dat)
+        short = state_icons.IconBank(bank.data)
+        short.data = bank.data[:icons.DESCRIPTOR_TABLE + 4]     # the descriptor table is cut off
+        with self.assertRaisesRegex(state_icons.IconStateError, 'descriptor runs past the end'):
+            short.page(0)
+        for bad in (float('inf'), float('nan')):
+            with self.subTest(uv=bad):
+                page, uv = bank.rows[0]
+                bank.rows[0] = (page, (uv[0], bad, uv[2], uv[3]))
+                with self.assertRaisesRegex(state_icons.IconStateError, 'non-finite'):
+                    bank.row_rect(0)
 
     def test_cache_key_follows_the_page_bytes(self):
         bank = state_icons.read_bank(self.image, self.dat)

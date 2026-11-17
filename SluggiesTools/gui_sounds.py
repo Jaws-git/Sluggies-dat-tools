@@ -25,6 +25,7 @@ thread; Refresh reads it again.
 
 import os
 import threading
+import time
 
 import dearpygui.dearpygui as dpg
 
@@ -39,11 +40,13 @@ _OK = (120, 220, 140, 255)
 _ERROR = (255, 120, 110, 255)
 _PENDING = (255, 170, 70, 255)
 _CHANGED = (110, 170, 255, 255)
+_TEXT_THEMES = {}       # text colour -> the button theme of that colour
 _WINDOWS = os.name == 'nt'
 LIST_W = 340
 BUTTON_H = 28
 PACK_FILTERS = [('Voice packs', '*.sluggiesvoice'), ('All files', '*.*')]
 CLIP_DIR_SETTING = 'sounds_last_clip_dir'      # the GUI settings key: the folder the last Replace... WAV came from
+ACTION_WAIT = 600.0     # s: how long "Stage for its slots" waits for one slot's dialog before it gives up
 PACK_DIR_SETTING = 'sounds_last_pack_dir'      # the GUI settings key: the folder the last voice pack was imported / exported in
 
 
@@ -119,8 +122,9 @@ class SoundsTab:
         root = self.app.root_dir
 
         def work():
+            volume_problems = []
             result = {'archive': None, 'stock': [], 'custom': [], 'problems': [], 'error': None, 'output_size': None,
-                      'volumes': gui_volume.read_volumes(root)}
+                      'volumes': gui_volume.read_volumes(root, volume_problems), 'volume_problems': volume_problems}
             try:
                 brsar, _clips, sound_packs = _sound_modules()
                 result['custom'], result['problems'] = sound_packs.list_packs(root)
@@ -154,10 +158,19 @@ class SoundsTab:
         if self.error:
             self._status(self.error, _ERROR)
         else:
+            # What went wrong without stopping the read shows here too: the console is hidden by default.
+            notes = list(result.get('volume_problems') or [])
+            if self.problems:
+                n = len(self.problems)
+                notes.insert(0, f'{n} custom pack folder{"s" if n != 1 else ""} could not be read and '
+                                f'{"are" if n != 1 else "is"} not listed (see the log)')
             self._status(f'{len(self.stock)} game voice packs, {len(self.custom)} custom pack'
-                         f'{"s" if len(self.custom) != 1 else ""}.', _OK)
+                         f'{"s" if len(self.custom) != 1 else ""}.' + ''.join(f' {note}.' for note in notes),
+                         _WARN if notes else _OK)
         for problem in self.problems:
             self.app.log_line(f'[sounds] voice pack not readable: {problem}', _WARN)
+        for problem in result.get('volume_problems') or []:
+            self.app.log_line(f'[sounds] {problem}', _WARN)
         self._archive_line()
         if self.selected is not None and self.selected[0] == 'custom' and not any(
                 p.name == self.selected[1] for p in self.custom):
@@ -250,9 +263,12 @@ class SoundsTab:
         if key == self.selected:
             dpg.bind_item_theme(button, 'sounds_selected_theme')
         if color is not None:
-            with dpg.theme() as theme:
-                with dpg.theme_component(dpg.mvButton):
-                    dpg.add_theme_color(dpg.mvThemeCol_Text, color)
+            theme = _TEXT_THEMES.get(color)
+            if theme is None or not dpg.does_item_exist(theme):     # one per colour, not one per row and redraw
+                with dpg.theme() as theme:
+                    with dpg.theme_component(dpg.mvButton):
+                        dpg.add_theme_color(dpg.mvThemeCol_Text, color)
+                _TEXT_THEMES[color] = theme
             dpg.bind_item_theme(button, theme)
 
     def _select(self, key):
@@ -436,9 +452,11 @@ class SoundsTab:
             self._play_bytes(sound_packs.stock_clip_wav(self.archive, sound_id))
         except Exception as exc:
             self.app.log_line(f'[sounds] could not decode sound {sound_id}: {exc}', _WARN)
+            self._status(f'Could not play the clip: {exc}', _ERROR)
 
     def _play_file(self, path):
         if not path or not os.path.isfile(path):
+            self._status('Could not play the clip: its file is missing' + (f' ({path}).' if path else '.'), _ERROR)
             return
         _brsar, clips, _sound_packs = _sound_modules()
         try:
@@ -449,6 +467,7 @@ class SoundsTab:
             self._play_bytes(data)
         except Exception as exc:
             self.app.log_line(f'[sounds] could not play {os.path.basename(path)}: {exc}', _WARN)
+            self._status(f'Could not play {os.path.basename(path)}: {exc}', _ERROR)
 
     # ------------------------------------------------------------------ encoding
     def _encode(self, path, on_done):
@@ -530,6 +549,10 @@ class SoundsTab:
 
     def _on_reset_stock(self, head, moment):
         if self.working or self.grid.pending.pack is not None:
+            return
+        if self.grid._locked():
+            # A staging check or its dialog is up: dropping an edit now would prune the staged file it checks.
+            self._status('The character grid is busy: try again in a moment.', _WARN)
             return
         if self.grid.pending.species_clip_edit(head, moment) is not None:
             self.grid.pending.drop_species_clip(head, moment)
@@ -689,30 +712,56 @@ class SoundsTab:
 
     def _on_restage(self, pack, users):
         """Stage the pack again on every slot that speaks with it (one edit at a time: each runs the staging
-        check; the next starts when the dialog closes)."""
+        check; the next starts when the dialog closes). It stops at the first slot that is not staged (its
+        dialog was cancelled, or the edit refused)."""
         if not users or self.grid.pending.pack is not None:
             return
         state = self._state()
         queue = list(users)
+        total = len(queue)
 
-        def next_one():
+        def next_one(last=None, edits_before=None):
+            # Staging replaces the pending list (PendingEdits.accept); a cancel leaves the same list.
+            if last is not None and self.grid.pending.edits is edits_before:
+                left = len(queue) + 1
+                self._status(f'Stopped at {self._name(last)}: not staged ({left} of {total} slot'
+                             f'{"s" if total != 1 else ""} left).', _WARN)
+                return
             if not queue:
+                if last is not None:
+                    self._status(f'{pack.name!r} staged for {total} slot{"s" if total != 1 else ""}; "Patch Game" '
+                                 'writes it.', _OK)
                 return
             cid = queue.pop(0)
             char = gui_grid.characters(state).get(cid) or {}
             source = gui_grid.hex_id(char['char_voice']) if char.get('char_voice') is not None else None
             edit = gui_grid.char_voice_edit(cid, source, pack.name)
+            before = self.grid.pending.edits
             if not self.grid.stage_edit(edit, gui_grid.CHAR_VOICE):
                 self._status('The character grid is busy: try again in a moment.', _WARN)
                 return
-            self._after_action(next_one)
+            self._after_action(lambda: next_one(cid, before), lambda: self._status(
+                f'Stopped at {self._name(cid)}: its dialog stayed open. Use "Stage for its slots" again for the '
+                'rest.', _WARN))
         next_one()
 
-    def _after_action(self, callback):
-        """Run ``callback`` once the grid tab's dialog closed (polled through the queue)."""
+    def _after_action(self, callback, on_timeout=None, timeout=ACTION_WAIT):
+        """Run ``callback`` once the grid tab's dialog closed (polled through the queue). After ``timeout``
+        seconds the polling ends with ``on_timeout``: a dialog nobody closes must not keep a timer running for
+        the rest of the session."""
+        deadline = time.monotonic() + timeout
+
         def check():
             if self.grid.action is None and self.grid.confirm is None and not self.app.busy:
                 callback()
+            elif time.monotonic() >= deadline:
+                if on_timeout is not None:
+                    on_timeout()
             else:
-                threading.Timer(0.3, lambda: self.app.output_queue.put(('call', check))).start()
-        threading.Timer(0.3, lambda: self.app.output_queue.put(('call', check))).start()
+                arm()
+
+        def arm():
+            timer = threading.Timer(0.3, lambda: self.app.output_queue.put(('call', check)))
+            timer.daemon = True
+            timer.start()
+        arm()

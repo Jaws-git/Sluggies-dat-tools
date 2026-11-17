@@ -293,6 +293,36 @@ class ReadTests(unittest.TestCase):
         with self.assertRaisesRegex(slgmodel.SlgError, 'missing in 1_Input'):
             slgmodel.read(write_file(self.tmp, name='noin.slgmodel'), os.path.join(self.tmp, 'nowhere'))
 
+    def test_a_member_with_a_bad_crc_is_refused_and_the_file_is_closed(self):
+        def damage(path, member):
+            """Flip a byte of the stored ``member``'s data (its CRC no longer matches)."""
+            with zipfile.ZipFile(path) as zf:
+                info = zf.getinfo(member)
+            with open(path, 'r+b') as f:
+                f.seek(info.header_offset + 26)
+                name_length, extra_length = struct.unpack('<HH', f.read(4))
+                at = info.header_offset + 30 + name_length + extra_length + info.file_size // 2
+                f.seek(at)
+                byte = f.read(1)
+                f.seek(at)
+                f.write(bytes([byte[0] ^ 0xFF]))
+
+        def stored(name):
+            path = os.path.join(self.tmp, name)
+            with zipfile.ZipFile(write_file(self.tmp, name='src_' + name)) as src, \
+                    zipfile.ZipFile(path, 'w', zipfile.ZIP_STORED) as dst:
+                for member in src.namelist():
+                    dst.writestr(member, src.read(member))
+            return path
+
+        for n, member in enumerate((slgmodel.META, 'side.png', 'models/0.slgd')):
+            with self.subTest(member=member):
+                path = stored(f'crc{n}.slgmodel')
+                damage(path, member)
+                with self.assertRaises(slgmodel.SlgError):
+                    slgmodel.read(path, self.inputs)
+                os.remove(path)                                 # not left open (it would be locked on Windows)
+
 
 # --------------------------------------------------------------------------
 # Plans
@@ -577,6 +607,17 @@ class VoicePackWriteTests(unittest.TestCase):
             with self.assertRaisesRegex(slot_plan.PlanError, 'cannot be read'):
                 slot_cli.write_voice_pack(os.path.join(copies, 'slg_66_pack.json'), tmp)
             self.assertEqual(len(sound_packs.list_packs(tmp)[0]), 2)     # nothing half-written
+
+    def test_a_failed_write_leaves_no_pack_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copies = os.path.join(tmp, '_gui', 'slot', 'copies')
+            spec = {'name': 'Rosalina', 'voice': DAISY, 'clips': {'v1': {'rwav': 'v1.rwav', 'wav': None}}}
+            slot_cli.write_copy_files({'pack.json': spec, 'v1.rwav': self.rwav}, copies)
+            import Sound.sound_packs as used                  # the module object ``slot_cli`` imports
+            with mock.patch.object(used, 'set_clip', side_effect=OSError('disk full')):
+                with self.assertRaisesRegex(slot_plan.PlanError, 'could not be written'):
+                    slot_cli.write_voice_pack(os.path.join(copies, 'pack.json'), tmp)
+            self.assertFalse(os.path.exists(sound_packs.pack_folder(tmp, 'Rosalina')))
 
 
 if __name__ == '__main__':

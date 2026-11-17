@@ -37,5 +37,11 @@ class ParseSelectionTests(unittest.TestCase):
         self.assertEqual(native_dialog.parse_selection('\0\0'), [])
 
 
+class FindOwnerWindowTests(unittest.TestCase):
+    def test_no_window_of_this_process_has_the_title(self):
+        # On Windows the enumeration runs and finds nothing; elsewhere user32 is missing. None both ways.
+        self.assertIsNone(native_dialog.find_owner_window('no window is called this 7f3a91'))
+
+
 if __name__ == '__main__':
     unittest.main()

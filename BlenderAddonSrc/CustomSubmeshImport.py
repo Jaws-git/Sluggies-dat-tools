@@ -94,7 +94,7 @@ def decode_custom_submesh(entry: dict) -> CustomSubmeshMesh:
     if count <= 0 or len(flat) < count * 3:
         raise ValueError(f'{name}: FacesData holds {len(flat) // 3} triangles, FacesCount says {count}')
     faces = [tuple(flat[3 * k:3 * k + 3]) for k in range(count)]
-    if positions and max(flat[:count * 3]) >= len(positions):
+    if not positions or max(flat[:count * 3]) >= len(positions):
         raise ValueError(f'{name}: a face points past the {len(positions)} vertices')
     corners = 3 * count
     problems: List[str] = []
@@ -113,6 +113,8 @@ def decode_custom_submesh(entry: dict) -> CustomSubmeshMesh:
                                _u16s(entry.get('NormalFacesData')), corners, f'{name} normals', problems)
 
     additional = [dict(s) for s in entry.get('AdditionalSurfaces') or []]
+    if any(not s.get('SurfaceKey') for s in additional):
+        raise ValueError(f'{name}: an additional surface has no SurfaceKey')
     face_surfaces = [0] * count
     if additional:
         indices = _u16s(entry.get('FaceSurfaceIndices'))
@@ -140,18 +142,31 @@ def decode_custom_submesh(entry: dict) -> CustomSubmeshMesh:
     )
 
 
+def _split_added_bones(model: dict) -> Tuple[List[dict], List[int]]:
+    """``(usable entries, skipped ids)`` of the Add Bone bones, in id order."""
+    edited = model.get('BoneHierarchyEdited') or []
+    donor_ids = {int(b['BoneId']) for b in model.get('BoneHierarchy') or []}
+    known = set(donor_ids)
+    added, skipped = [], []
+    for bone in sorted((b for b in edited if b.get('UserAdded')), key=lambda b: int(b['BoneId'])):
+        parent = bone.get('ParentBoneId')
+        if parent is not None and int(parent) not in known:
+            skipped.append(int(bone['BoneId']))
+            continue
+        known.add(int(bone['BoneId']))
+        added.append(bone)
+    return added, skipped
+
+
 def added_bone_entries(model: dict) -> List[dict]:
     """The Add Bone bones of ``BoneHierarchyEdited`` in id order (the order
     they were created in, which the exporter assigns ids by), each one's parent
     already present (a donor bone or an earlier added bone)."""
-    edited = model.get('BoneHierarchyEdited') or []
-    donor_ids = {int(b['BoneId']) for b in model.get('BoneHierarchy') or []}
-    known = set(donor_ids)
-    added = []
-    for bone in sorted((b for b in edited if b.get('UserAdded')), key=lambda b: int(b['BoneId'])):
-        parent = bone.get('ParentBoneId')
-        if parent is not None and int(parent) not in known:
-            continue
-        known.add(int(bone['BoneId']))
-        added.append(bone)
-    return added
+    return _split_added_bones(model)[0]
+
+
+def skipped_added_bone_ids(model: dict) -> List[int]:
+    """Ids of the Add Bone bones ``added_bone_entries`` leaves out: their
+    parent is unknown (a damaged file), or was itself left out. The importer
+    warns, because the next export from that scene drops them from the file."""
+    return _split_added_bones(model)[1]

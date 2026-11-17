@@ -39,8 +39,11 @@ class VersionTests(unittest.TestCase):
         self.assertIsNone(ei.parse_version(None))
 
     def test_latest_release(self):
-        release = ei.parse_latest_release(json.dumps({'tag_name': 'v4.3', 'html_url': 'https://x/v4.3'}))
-        self.assertEqual((release.version, release.tag, release.page), (Decimal('4.3'), 'v4.3', 'https://x/v4.3'))
+        page = 'https://github.com/o/r/releases/tag/v4.3'
+        release = ei.parse_latest_release(json.dumps({'tag_name': 'v4.3', 'html_url': page}))
+        self.assertEqual((release.version, release.tag, release.page), (Decimal('4.3'), 'v4.3', page))
+        for other in ('https://x/v4.3', 'file:///c:/x', 5):          # only a GitHub page reaches the browser
+            self.assertEqual(ei.parse_latest_release({'tag_name': 'v4.3', 'html_url': other}).page, ei.RELEASES_PAGE)
         self.assertEqual(ei.parse_latest_release({'tag_name': 'v5.0'}).page, ei.RELEASES_PAGE)
         with self.assertRaises(ValueError):
             ei.parse_latest_release({'tag_name': 'nightly'})

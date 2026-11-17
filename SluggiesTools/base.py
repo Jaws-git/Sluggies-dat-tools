@@ -1,9 +1,11 @@
 import struct
-import pprint
-pp = pprint.PrettyPrinter(indent=0)
 
 # Lazy import to avoid circular dependencies.
 # slogger is imported inside methods that need it.
+
+class ExpectedFormatSkip(Exception):
+    """A model the exporter cannot read and skips: logged, and the export goes on with the next one."""
+
 
 def tabs(n):
     return '    ' * n
@@ -96,13 +98,6 @@ class SequentialData:
         self.pos += 4
         return struct.unpack('>f', self.f.read(4))[0]
 
-    def single(self):
-        # if self.length > 0 and self.pos + 4 > self.length:
-        #     warnings.warn("Read oob at " + hex(self.absolute) + " + " + hex(self.pos))
-        self.f.seek(self.absolute + self.pos)
-        self.pos += 2
-        return struct.unpack('>f', self.f.read(2))[0]
-    
     def half(self):
         # if self.length > 0 and self.pos + 2 > self.length:
         #     warnings.warn("Read oob at " + hex(self.absolute) + " + " + hex(self.pos))

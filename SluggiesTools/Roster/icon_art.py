@@ -8,11 +8,13 @@ import os
 import struct
 import subprocess
 import tempfile
+import warnings
 
 import numpy as np
 from PIL import Image, ImageOps
 
 ICON_WIDTH, ICON_HEIGHT = 48, 51
+MAX_ARTWORK_SIDE = 4096                 # as icon_import.MAX_SIDE: checked from the header, before decoding
 FIT_MODES = ('contain', 'cover', 'strict')
 DEFAULT_FIT_MODE = 'contain'
 TPL_MAGIC = 0x0020AF30
@@ -58,8 +60,16 @@ def load_portrait(path: str, fit_mode: str = DEFAULT_FIT_MODE):
     ``strict`` (must already be 48x51); alpha hardened."""
     check_fit_mode(fit_mode)
     try:
-        with Image.open(path) as source:
-            image = source.convert('RGBA')
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(path) as source:
+                width, height = source.size         # from the header, before anything is decoded
+                if width > MAX_ARTWORK_SIDE or height > MAX_ARTWORK_SIDE:
+                    raise IconArtError(f'artwork {path} is {width}x{height}; at most '
+                                       f'{MAX_ARTWORK_SIDE}x{MAX_ARTWORK_SIDE} is supported')
+                image = source.convert('RGBA')
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise IconArtError(f'artwork {path} is too large to read safely') from exc
     except OSError as exc:
         raise IconArtError(f'could not read artwork {path}: {exc}') from exc
     return harden_alpha(fit_image(image, fit_mode, path))
@@ -72,6 +82,8 @@ def cmpr_payload(tpl: bytes, size: tuple[int, int]) -> bytes:
     magic, count, table = struct.unpack_from('>III', tpl, 0)
     if magic != TPL_MAGIC or count != 1:
         raise IconArtError(f'unexpected TPL header: magic=0x{magic:08X}, images={count}')
+    if table + 8 > len(tpl):
+        raise IconArtError('TPL image table is outside the file')
     header, palette = struct.unpack_from('>II', tpl, table)
     if palette != 0 or header + 12 > len(tpl):
         raise IconArtError('TPL is not a palette-free single image')

@@ -164,15 +164,42 @@ def quantize_int16_lazy(value, divisor, make_context):
         return quantize_int16(value, divisor, make_context())
 
 
+def quantize_int16_all(values, divisor):
+    """Every value of *values* quantized, or None when one is refused: the
+    fast path of the encoders, which then run their per-component loop only
+    to name the bad component (building that text for every component was a
+    large part of the loop)."""
+    try:
+        return [quantize_int16(value, divisor, '') for value in values]
+    except ValueError:
+        return None
+
+
+def position_extent(geometry):
+    """``(lowest, highest)`` coordinate of *geometry* over all axes (0.0 is
+    always included), or None when a coordinate is not finite."""
+    low = high = 0.0
+    for position in geometry.positions:
+        for value in position:
+            if not math.isfinite(value):
+                return None
+            if value < low:
+                low = value
+            elif value > high:
+                high = value
+    return low, high
+
+
+def _extent_fits(extent, quantize_info):
+    # Rounding is monotonic, so the two extremes decide for every coordinate.
+    divisor = int16_divisor(quantize_info)
+    return extent is not None and fits_int16(extent[0], divisor) and fits_int16(extent[1], divisor)
+
+
 def position_format_fits(geometry, quantize_info):
     """True when every bone-local coordinate is representable in
     *quantize_info*, using the same rounding as the quantizer."""
-    divisor = int16_divisor(quantize_info)
-    return all(
-        fits_int16(value, divisor)
-        for position in geometry.positions
-        for value in position
-    )
+    return _extent_fits(position_extent(geometry), quantize_info)
 
 
 def worst_out_of_range_vertex(geometry, quantize_info) -> Optional[int]:
@@ -196,9 +223,11 @@ def worst_out_of_range_vertex(geometry, quantize_info) -> Optional[int]:
 
 def first_fitting_format(geometry, candidates) -> Optional[int]:
     """The first QuantizeInfo of *candidates* (finest first) that holds every
-    position, or None when none does."""
+    position, or None when none does. The positions are walked once, not
+    once per candidate."""
+    extent = position_extent(geometry)
     for quantize_info in candidates:
-        if position_format_fits(geometry, quantize_info):
+        if _extent_fits(extent, quantize_info):
             return quantize_info
     return None
 
@@ -293,7 +322,9 @@ def encode_loop_normals(object_name, geometry, loop_normals, normal_format, pinn
     data = bytearray()
     indices = []
     for loop, normal, vertex in zip(loops, transformed, vertices):
-        values = [quantize_int16(v, divisor, f'{object_name} loop {loop} normal') for v in normal]
+        values = quantize_int16_all(normal, divisor)
+        if values is None:
+            values = [quantize_int16(v, divisor, f'{object_name} loop {loop} normal') for v in normal]
         values += [0] * (comp_count - 3)
         record = struct.pack(f'>{comp_count}h', *values)
         key = (record, vertex if vertex in pinned else None)
@@ -313,8 +344,12 @@ def encode_loop_uvs(object_name, geometry, loop_uvs, uv_format):
     records = []
     for loop in loop_order(geometry):
         u, v = loop_uvs[loop]
-        s = quantize_int16(u, divisor, f'{object_name} loop {loop} UV u')
-        t = quantize_int16(1.0 - v, divisor, f'{object_name} loop {loop} UV v (stored as 1 - v)')
+        quantized = quantize_int16_all((u, 1.0 - v), divisor)
+        if quantized is not None:
+            s, t = quantized
+        else:
+            s = quantize_int16(u, divisor, f'{object_name} loop {loop} UV u')
+            t = quantize_int16(1.0 - v, divisor, f'{object_name} loop {loop} UV v (stored as 1 - v)')
         records.append(struct.pack(f'>{comp_count}h', s, t, *([0] * (comp_count - 2))))
     return dedupe_records(records)
 

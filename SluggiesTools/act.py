@@ -76,7 +76,6 @@ class ACTLayout(FileChunk):
         # That gets read here and stored in the bone objects when they're created
         track_ids = []
         old_pos = self.tell()
-        bone_track_pairs = {}
         if self.userDataSize:
             self.seek(self.userDataPtr + 0x2)
             self.track_bone_offset = self.half()
@@ -84,12 +83,6 @@ class ACTLayout(FileChunk):
             self.seek(self.userDataPtr + 0xC)
             for i in range(self.boneCount):
                 track_ids.append(self.half())
-            # print(track_ids)
-            self.seek(self.userDataPtr + self.track_bone_offset + 0xC)
-            for i in range(self.boneCount):
-                bone_id = self.byte()
-                self.byte()  # bone type, not used
-                bone_track_pairs[bone_id] = track_ids[i]
         else:
             # No user data (867 of the 1,408 stock models with an ACT): the pointer is 0, and reading a
             # "table" there gave the ACT header and bone table as track ids. No bone has a track.
@@ -114,10 +107,6 @@ class ACTLayout(FileChunk):
                 bone_layout.parent = None
             else:
                 bone_layout.parent = self.bone_layouts[node.parent.addr]
-            # if bone_layout.id in bone_track_pairs:
-            #     bone_layout.track_id = bone_track_pairs[bone_layout.id]
-            # else:
-            #     bone_layout.track_id = -1
             self.bone_layouts[node.addr] = bone_layout
             for child in node.children:
                 node_stack.append(child)
@@ -151,14 +140,6 @@ class ACTLayout(FileChunk):
         desc += "\nUser defined data size: " + hex(self.userDataSize)
         desc += "\nUser defined data ptr: " + hex(self.absolute + self.userDataPtr)
         return desc
-
-class DSTree(FileChunk):
-    def analyze(self):
-        pass
-
-class MTX(FileChunk):
-    def analyze(self):
-        self.data = self.read(0x30)
 
 class ACTBoneLayout(FileChunk):
     def analyze(self):
@@ -212,11 +193,6 @@ class BoneInfluence():
         self.source_position = source_position
         # string description of where this came from for debugging
         self.source = source
-
-    def calculateVertexIndex(self, vertexSize):
-        # Given the size of a vertex, we can combine the gplArrAddr and arrIndex into a single value
-        self.vertexIndex = self.arrAddr // vertexSize + self.arrIndex
-        # Now we have a tidy struct with a vertex id, a bone id, and a weight
 
 class SKN(FileChunk):
     def analyze(self):

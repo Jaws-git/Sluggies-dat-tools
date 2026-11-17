@@ -34,8 +34,15 @@ try:
 except ImportError:  # imported as Hammerspace.UntangledTextures
     from .ModelBlock import ModelBlock, texture_payload_len
 
-#: Matches the export's untangle ``max_attempts``.
+#: The export's untangle ``max_attempts``.
 MAX_ATTEMPTS = 8192
+#: Attempts a replay tries. The k-th copy of one texture needs k flips; over
+#: every export in 2_Output_Assets (1,237 models, 6,900 textures, 2026-11-17)
+#: the most was 15. A replay that cannot match (a texture flipped again by
+#: the old re-untangle bug) hashes the whole image per attempt, about 67 s
+#: for a 512 x 512 CMPR texture at the export's limit; this cap makes it
+#: about 2 s.
+REPLAY_MAX_ATTEMPTS = 256
 _MODELS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '2_Output_Assets'))
 
 
@@ -81,7 +88,7 @@ def textures(block, model_start: int) -> list[_Texture]:
     return [_Texture(tex, descriptor) for descriptor in tex.descriptors()]
 
 
-def replay(image: bytes, texture: _Texture, target: str, max_attempts: int = MAX_ATTEMPTS):
+def replay(image: bytes, texture: _Texture, target: str, max_attempts: int = REPLAY_MAX_ATTEMPTS):
     """Return ``image`` with the export's flip sequence applied until its
     Dolphin name is ``target``, or None when no attempt matches."""
     if texture.name(image) == target:
@@ -122,7 +129,8 @@ def reapply(block: bytearray, model_start: int, texture_descriptors, vanilla_blo
             continue  # edited or re-encoded: it has its own hash already
         replayed = replay(image, texture, target)
         if replayed is None:
-            notes.append(f'tex {index}: no flip sequence reproduces {target}.png; kept vanilla bytes')
+            notes.append(f'tex {index}: no flip sequence of up to {REPLAY_MAX_ATTEMPTS} attempts reproduces '
+                         f'{target}.png; kept vanilla bytes')
         elif replayed != image:
             block[texture.image_start:texture.image_end] = replayed
             notes.append(f'tex {index}: re-applied untangled name {target}.png')

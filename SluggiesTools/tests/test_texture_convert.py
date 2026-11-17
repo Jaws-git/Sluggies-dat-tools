@@ -4,6 +4,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -121,6 +122,27 @@ class ConvertedPngTests(ConvertingTestCase):
             self.assertEqual(TextureConvert.source_of(first), os.path.abspath(copy))
             with Image.open(first) as out:
                 self.assertEqual(out.convert('RGBA').tobytes(), sample_image(alpha=0).tobytes())
+
+    def test_old_cache_files_are_pruned_once_per_session(self):
+        cache = pathlib.Path(self._cache.name)
+        old, recent, other = cache / 'old.png', cache / 'recent.png', cache / 'notes.txt'
+        for path in (old, recent, other):
+            path.write_bytes(b'x')
+        long_ago = time.time() - (TextureConvert.CACHE_MAX_AGE_DAYS + 1) * 86400
+        os.utime(old, (long_ago, long_ago))
+        os.utime(other, (long_ago, long_ago))
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(TextureConvert, '_pruned_folders', set()):
+            source = os.path.join(temp_dir, 'hat.tga')
+            sample_image(alpha=0).save(source, 'TGA')
+            first = TextureConvert.converted_png(source)
+            self.assertFalse(old.exists())
+            self.assertTrue(recent.exists() and other.exists() and os.path.isfile(first))
+            # Only the first conversion of a session prunes.
+            old.write_bytes(b'x')
+            os.utime(old, (long_ago, long_ago))
+            TextureConvert.converted_png(source)
+            self.assertTrue(old.exists())
 
     def test_unsupported_format_raises(self):
         with tempfile.TemporaryDirectory() as temp_dir:

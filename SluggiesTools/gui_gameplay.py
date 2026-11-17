@@ -316,7 +316,10 @@ class GameplayTab:
         self._in_flight.add(path)
         if not self.grid.offer_gameplay(gui_grid.gameplay_edit(path), on_staged=staged):
             self._in_flight.discard(path)
-            os.remove(path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass                         # pruned meanwhile, or held open: a leftover file harms nothing
 
     def _on_stage(self, tab):
         own = set(tables.tab_fields(tab))
@@ -357,10 +360,13 @@ class GameplayTab:
 
         def ok():
             self.grid._end_action()
-            self.drafts.clear()
-            self.grid.offer_gameplay(gui_grid.gameplay_edit(gui_grid.GAMEPLAY_RESET),
-                                     on_staged=lambda: self.app.log_line(
-                                         '[gameplay] staged: every gameplay value back to 1_Input.', _PENDING))
+
+            def staged():
+                self.drafts.clear()          # only now: a refused or cancelled reset keeps the typed values
+                self.app.log_line('[gameplay] staged: every gameplay value back to 1_Input.', _PENDING)
+            if not self.grid.offer_gameplay(gui_grid.gameplay_edit(gui_grid.GAMEPLAY_RESET), on_staged=staged):
+                self.app.toast.warn('The reset was not staged: the character grid is busy, or the edit could not be '
+                                    'written. Try again in a moment.')
         self.grid.action = 'ask'
         self.grid._dialog(gui_grid.SlotDialog('Reset the gameplay settings?', lines, True), ok, ok_label='Stage reset')
 
@@ -401,8 +407,11 @@ class GameplayTab:
         self._pick(save=False)
 
     def _pick(self, save):
+        try:
+            os.makedirs(self.settings_dir, exist_ok=True)
+        except OSError as exc:               # the dialog then starts elsewhere; the grid must not stay locked
+            self.app.log_line(f'[gameplay] could not create {self.settings_dir}: {exc}', _WARN)
         self.grid.action = 'gameplay_file'
-        os.makedirs(self.settings_dir, exist_ok=True)
         if save:
             filters = [('Gameplay settings', '*' + gui_grid.GAMEPLAY_EXTENSION), ('All files', '*.*')]
         else:
@@ -430,7 +439,9 @@ class GameplayTab:
             else:
                 self.app.log_line('[gameplay] the settings were not saved: see the log above.', _WARN)
                 self.app.toast.error('Gameplay settings were not saved.')
-        self.app.run_chain([gui_grid.gameplay_save_command(path)], on_done=done)
+        if not self.app.run_chain([gui_grid.gameplay_save_command(path)], on_done=done):
+            self.app.toast.warn('Gameplay settings were not saved: another command is running. Try again when it '
+                                'is done.')
 
     def _on_load_paths(self, paths):
         path = next((p for p in paths if p and os.path.isfile(p)), None)

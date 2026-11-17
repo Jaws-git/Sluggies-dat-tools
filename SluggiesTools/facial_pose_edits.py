@@ -47,7 +47,12 @@ def _edited_buffers(model: dict, restore: bool) -> dict:
             continue
         original = decode_field(original_data)
         edited = original if edited_data is None else decode_field(edited_data)
-        stride = vb.get('VertexBufferCompCount', 3) * comp_size(vb.get('VertexBufferQuantizeInfo', 0))
+        component_size = comp_size(vb.get('VertexBufferQuantizeInfo', 0))
+        component_count = vb.get('VertexBufferCompCount', 3)
+        stride = component_count * component_size
+        # Pose zero follows the buffer as int16 x y z: a buffer of another layout (floats) is not followed.
+        if component_size != 2 or component_count < 3:
+            continue
         if len(original) == len(edited) and stride > 0 and len(original) % stride == 0:
             buffers[index] = (original, edited, stride)
     return buffers

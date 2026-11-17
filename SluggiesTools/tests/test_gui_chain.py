@@ -125,6 +125,43 @@ class ConsoleFlushTests(unittest.TestCase):
         self.assertEqual(self.dpg.set_value.call_args_list[-1], mock.call('log_text', 'one\ntwo'))
 
 
+class LogLineSeverityTests(unittest.TestCase):
+    def test_the_tabs_trouble_colours_become_a_word(self):
+        """The console is one text field without colours: a line a tab logs as a warning or an error says so."""
+        app = gui.SluggiesGui(['start'], 'root')
+        app.log_line('plain')
+        app.log_line('[music] could not play x', gui_character_grid._WARN)
+        app.log_line('[sound fx] refused', list(gui_character_grid._ERROR))
+        app.log_line('[character grid] exported', gui_character_grid._OK)
+        self.assertEqual(list(app.log_lines), ['plain', '[Warning] [music] could not play x',
+                                               '[Error] [sound fx] refused', '[character grid] exported'])
+
+
+class SwatchRowTests(unittest.TestCase):
+    def test_rows_are_balanced_and_an_empty_square_does_not_divide_by_zero(self):
+        self.assertEqual(gui_character_grid.swatches_per_row(10, 1000), 5)
+        self.assertEqual(gui_character_grid.swatches_per_row(0, 1000), 1)
+
+
+class SettingsWriteTests(unittest.TestCase):
+    def test_a_failed_write_is_tried_again_for_the_same_value(self):
+        import gui_settings
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, '_gui', 'settings.json')
+            settings = gui_settings.Settings(path)
+            with mock.patch.object(gui_settings.os, 'replace', side_effect=OSError('locked')):
+                with self.assertRaises(OSError):
+                    settings.set('key', 'value')
+            self.assertEqual(os.listdir(os.path.dirname(path)), [])          # no temp file left
+            self.assertEqual(settings.get('key'), 'value')                   # kept for the session
+            settings.set('key', 'value')                                     # the same value: written now
+            self.assertEqual(gui_settings.Settings(path).get('key'), 'value')
+            before = os.path.getmtime(path)
+            with mock.patch.object(gui_settings.os, 'replace', side_effect=AssertionError('written again')):
+                settings.set('key', 'value')                                 # saved and unchanged: no write
+            self.assertEqual(os.path.getmtime(path), before)
+
+
 class GridReadSkipTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

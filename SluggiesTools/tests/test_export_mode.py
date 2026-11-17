@@ -55,6 +55,10 @@ class MirrorTests(unittest.TestCase):
             self.assertEqual(ExportMode.clamp_texture_dimensions(*size),
                              texture_helper.clamp_texture_dimensions(*size), size)
 
+    def test_color_entry_sizes_are_the_add_ons_one_table(self):
+        import RebuildCommon
+        self.assertIs(ExportMode._COLOR_ENTRY_SIZE, RebuildCommon.COLOR_ENTRY_SIZE)
+
     def test_color_entry_sizes_match_binfmt(self):
         import binfmt
         for nibble in range(6):

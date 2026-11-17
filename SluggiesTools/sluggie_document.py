@@ -851,6 +851,13 @@ def _read_act_user_data_descriptors(model):
     pos = 0
     while pos < len(blob):
         size, kind, count, data_ptr = struct.unpack_from('>IHHI', blob, pos)
+        if size < 0xC:               # smaller than its own header (0: the walk would never move on)
+            _slogger.warning(
+                f'model at 0x{act.absolute:08X}: ACT user-data descriptor at +0x{pos:X} has size {size}; '
+                'the rest of the user data is not read.',
+                source='export.act_user_data',
+            )
+            break
         descriptors.append((kind, count, data_ptr, blob[pos + 0xC:pos + size]))
         pos += size
     return descriptors

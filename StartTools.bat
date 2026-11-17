@@ -1,9 +1,14 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal
+rem Run from this folder whatever the start folder is ("Run as administrator", a shortcut): start.py and the
+rem relative folders below are looked up here. Delayed expansion comes after, so a "!" in the path survives.
+cd /d "%~dp0"
 
 set "SLUGGIES_SOURCE=StartTools.bat"
 set SLUGGIES_LAUNCHER=python start.py
-if exist "%~dp0sluggies-dat-tools.exe" set SLUGGIES_LAUNCHER="%~dp0sluggies-dat-tools.exe"
+where python >nul 2>nul || set SLUGGIES_LAUNCHER=py -3 start.py
+if exist "sluggies-dat-tools.exe" set SLUGGIES_LAUNCHER="sluggies-dat-tools.exe"
+setlocal EnableDelayedExpansion
 
 :menu
 echo.
@@ -11,7 +16,7 @@ echo ==================
 echo Sluggers Dat Tools
 echo ==================
 echo.
-echo [1] Extract all models ^& character icons ^& 'untangle' textures, choose a roster size, enable CPU vs CPU support
+echo [1] Extract all models ^& character icons ^& 'untangle' textures, choose a roster size
 echo [2] Extract all models ^& character icons
 echo [3] Extract character icons only (FrontIcon/SideIcon into the model folders)
 echo.
@@ -145,7 +150,7 @@ exit /b 1
 
 :game_options_menu
 rem Shows the game options in 3_Output_Dat\main.dol and turns the chosen ones on or off. They survive roster
-rem runs; menu [1]'s export starts from a fresh main.dol, so it turns both on again. Enter changes nothing.
+rem runs; menu [1]'s export starts from a fresh main.dol, so turn them on again after it. Enter changes nothing.
 rem Sets errorlevel 1 when the change failed.
 echo   Game options in 3_Output_Dat\main.dol:
 call !SLUGGIES_LAUNCHER! --game-options

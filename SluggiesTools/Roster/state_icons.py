@@ -82,6 +82,8 @@ class IconBank:
         if not 0 <= page < self.page_count:
             raise IconStateError(f'page 0x{page:02X} does not exist ({self.page_count} pages)')
         d = icons.DESCRIPTOR_TABLE + page * icons.DESCRIPTOR_SIZE
+        if d + icons.DESCRIPTOR_SIZE > len(self.data) or d + 0x1B > len(self.data):
+            raise IconStateError(f'page 0x{page:02X}: its descriptor runs past the end of the bank')
         image_at, palette_at, height, width = struct.unpack_from('>IIHH', self.data, d)
         fmt = self.data[d + 0x17]
         entries = struct.unpack_from('>H', self.data, d + 0x18)[0]
@@ -132,8 +134,11 @@ class IconBank:
         page, (v1, u1, v2, u2) = self.rows[row]
         p = self.page(page)
         width, height = p['width'], p['height']
-        x0, y0 = max(0, round(u1 * width)), max(0, round(v1 * height))
-        x1, y1 = min(width, round(u2 * width)), min(height, round(v2 * height))
+        try:
+            x0, y0 = max(0, round(u1 * width)), max(0, round(v1 * height))
+            x1, y1 = min(width, round(u2 * width)), min(height, round(v2 * height))
+        except (OverflowError, ValueError) as exc:      # a non-finite UV (inf: OverflowError, nan: ValueError)
+            raise IconStateError(f'resource row {row} has a non-finite rect on page 0x{page:02X}') from exc
         if x1 <= x0 or y1 <= y0:
             raise IconStateError(f'resource row {row} has an empty rect on page 0x{page:02X}')
         return page, [x0, y0, x1 - x0, y1 - y0]
@@ -249,6 +254,7 @@ def write_crops(bank: IconBank, results, icon_dir: str) -> tuple[int, int]:
         os.replace(tmp, path)
         written += 1
     for name in os.listdir(icon_dir):
-        if name.endswith('.png') and name not in used:
+        # '.png.tmp': what an interrupted run left behind (every crop of this run is already in place)
+        if (name.endswith('.png') and name not in used) or name.endswith('.png.tmp'):
             os.remove(os.path.join(icon_dir, name))
     return len(pages), written

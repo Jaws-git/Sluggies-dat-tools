@@ -192,7 +192,7 @@ AVAILABLE = 0x80071ABC              # FUN_80071abc(obj, handle): not on a team, 
 MEMBER_TAKE = 0x80071EAC            # cmpwi cr1,r29,0: add family member r26 to the wheel?
 MEMBER_NEXT = 0x80071EE0
 HAS_MEMBERS = 0x8006E868            # lbz r3,0x5a(r3): provider "head has members", r4 = head
-DECIDE_FN, DECIDE_CALL = 0x800688B4, 0x80073DF4
+DECIDE_CALL = 0x80073DF4
 CURSOR_FAMILY = 0x80073C34          # lbz r3,0x2(r3): family of id (r4 = id * 8)
 
 # j. empty cells
@@ -313,10 +313,11 @@ def parse_grid(config: dict, stock_heads: bytes, stock_map: bytes) -> Grid | Non
             raise GridConfigError(f'grid.squares[{k}] must list 1-{SQUARE_MAX} character IDs')
         members = tuple(_id(m, f'grid.squares[{k}]') for m in sq)
         for cid in members:
+            # the range first: ``in`` on bytes raises for a value above 0xFF
+            if not (0 <= cid < ids.PLAYER_END or ids.FIRST_NEW <= cid <= ids.MAX_ID):
+                raise GridConfigError(f'grid.squares[{k}]: 0x{cid:02X} is not a player ID')
             if cid in stock_heads:
                 raise GridConfigError(f'grid.squares[{k}]: 0x{cid:02X} is a stock square\'s head character')
-            if not (cid < ids.PLAYER_END or ids.FIRST_NEW <= cid <= ids.MAX_ID):
-                raise GridConfigError(f'grid.squares[{k}]: 0x{cid:02X} is not a player ID')
         squares.append(members)
     flat = [c for sq in squares for c in sq]
     if len(set(flat)) != len(flat):
@@ -324,7 +325,10 @@ def parse_grid(config: dict, stock_heads: bytes, stock_map: bytes) -> Grid | Non
 
     needed = SQUARE_HEADS + len(squares)
     if cfg.get('shape') is not None:
-        shape = tuple(cfg['shape'])
+        shape = cfg['shape']
+        if not isinstance(shape, list) or not all(isinstance(n, int) and not isinstance(n, bool) for n in shape):
+            raise GridConfigError(f'grid.shape must be [columns, rows], not {shape!r}')
+        shape = tuple(shape)
         if shape not in SHAPES:
             raise GridConfigError(f'grid.shape {list(shape)} is not one of '
                                   + ', '.join(f'{c}x{r}' for c, r in SHAPES))
@@ -339,6 +343,8 @@ def parse_grid(config: dict, stock_heads: bytes, stock_map: bytes) -> Grid | Non
     if order is None:
         cells = default_cells(cols, rows, stock_map, len(squares))
     else:
+        if not isinstance(order, list):
+            raise GridConfigError(f'grid.order must be a list of cells or of rows, not {order!r}')
         if order and all(isinstance(r, list) for r in order):
             order = [x for r in order for x in r]
         if len(order) > cols * rows:
@@ -352,7 +358,7 @@ def parse_grid(config: dict, stock_heads: bytes, stock_map: bytes) -> Grid | Non
             cid = _id(entry, f'grid.order[{n}]')
             if cid in firsts:
                 cells.append(('square', firsts[cid]))
-            elif cid in stock_heads:
+            elif 0 <= cid <= 0xFF and cid in stock_heads:
                 cells.append(('stock', stock_heads.index(cid)))
             else:
                 raise GridConfigError(f'grid.order[{n}]: 0x{cid:02X} is neither a stock square\'s head '
@@ -766,6 +772,13 @@ def screen_dx(cols: int) -> int:
 
 
 def grid_layout(data: bytes, grid: Grid) -> bytes:
+    try:
+        return _grid_layout(data, grid)
+    except (struct.error, ValueError, IndexError) as exc:    # records cut short, a bar without its three nodes
+        raise layout2d.Layout2dError(f'the select layout is damaged: {type(exc).__name__}: {exc}') from exc
+
+
+def _grid_layout(data: bytes, grid: Grid) -> bytes:
     lay = layout2d.Layout(data)
     stock = lay.node_blobs(GRID_ELEMENT)
     if len(stock) < STOCK_SQUARES or any(struct.unpack_from('>HH', n, 0) != (3, 0x3C) for n in stock[:STOCK_SQUARES]):

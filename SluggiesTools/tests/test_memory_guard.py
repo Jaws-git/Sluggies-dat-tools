@@ -162,6 +162,14 @@ class GuardTests(unittest.TestCase):
         memory_guard.clear_check(self.root)
         self.assertEqual(memory_guard.read_details(self.root), {})
 
+    def test_a_record_cut_off_while_written_keeps_the_one_before(self):
+        with mock.patch.object(memory_guard.slogger, 'warning'):
+            memory_guard.record(self.root, 'first', [{'text': 'one'}])
+            with (mock.patch.object(memory_guard.json, 'dump', side_effect=OSError('disk full')),
+                  self.assertRaises(OSError)):
+                memory_guard.record(self.root, 'second', [{'text': 'two'}])
+        self.assertEqual(memory_guard.read_details(self.root)['what'], 'first')
+
     def test_a_writing_run_asks_unless_accepted(self):
         with mock.patch.object(memory_guard.slogger, 'ask', return_value='n') as ask:
             self.assertFalse(memory_guard.guard(self.over, 'the slot edits', self.root))

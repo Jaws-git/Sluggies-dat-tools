@@ -1,11 +1,8 @@
 from base import FileChunk
 from binfmt import itb
 import os
-import shutil
 import subprocess
 import slogger
-
-globalcounter = 0
 
 _U64_MASK = (1 << 64) - 1
 _XXH64_PRIME1 = 11400714785074694791
@@ -172,7 +169,6 @@ def decode_tpl(fname, pngname):
 
 class TEXPalette(FileChunk):
     def analyze(self):
-        global globalcounter
         self.numTPLs = self.half()
         if self.numTPLs > 10000:
             raise Exception("Too many tpls: " + str(self.numTPLs))
@@ -323,6 +319,11 @@ class TEXDescriptor(FileChunk):
         dataLength = self._data_length()
         hasPalette = self.paletteDataPtr > 0
         fname = path + '.tpl'
+        # Checked before the file is opened: a mismatch leaves no half-written TPL and no open handle.
+        if image_data_override is not None and len(image_data_override) != dataLength:
+            raise Exception('image_data_override length mismatch in TEX export')
+        if hasPalette and tlut_data_override is not None and len(tlut_data_override) != self.paletteEntries * 2:
+            raise Exception('tlut_data_override length mismatch in TEX export')
 
         out = open(fname, 'wb')
         # TEXPalette
@@ -393,13 +394,3 @@ class TEXDescriptor(FileChunk):
         """Return Dolphin-compatible base texture name (without .png)."""
         image_data, tlut_data = self._read_payload()
         return self.dolphinTextureBasenameForPayload(image_data, tlut_data)
-
-    def toFileWithDolphinName(self, path, dolphin_path):
-        """Export indexed name plus Dolphin-compatible hash name."""
-        self.toFile(path)
-        legacy_png = path + '.png'
-        dolphin_png = dolphin_path + '.png'
-        if legacy_png == dolphin_png:
-            return
-        if not os.path.exists(dolphin_png):
-            shutil.copyfile(legacy_png, dolphin_png)

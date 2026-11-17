@@ -71,6 +71,7 @@ _LOG_FLUSH_INTERVAL = 0.1          # seconds between console text updates (a lon
 _LOG_COLOR = (220, 220, 220, 255)
 _DANGER_COLOR = (255, 120, 110, 255)             # gecko_compat warnings, like the grid's error lines
 _PROMPT_COLOR = (255, 210, 90, 255)
+_SEVERITY_OF_COLOR = {_PROMPT_COLOR: 'Warning', _DANGER_COLOR: 'Error'}   # the tabs' _WARN and _ERROR (log_line)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _PRIMARY_SIZE = (170, 44)
 _VIEWPORT_TITLE = 'Sluggies Tools'
@@ -679,7 +680,10 @@ class SluggiesGui:
         self.log_dirty = True
 
     def log_line(self, line, color=_LOG_COLOR):
-        self._log_line(line, color)
+        """A tab's line for the console. The console cannot colour a line (``_log_line``), so the two colours
+        the tabs use for trouble become a word in front of it, as in the log file: ``[Warning]``, ``[Error]``."""
+        severity = _SEVERITY_OF_COLOR.get(tuple(color)) if color is not None else None
+        self._log_line(f'[{severity}] {line}' if severity else line, color)
 
     def _log_line(self, line, color=_LOG_COLOR):
         """Add a line to the console. ``color`` is kept for the callers; the console is one read-only text field
@@ -933,6 +937,7 @@ class SluggiesGui:
         if not steps:
             self.log_line('Nothing to export: tick "Export .sluggies", "Export Icons" or "Export sound files".',
                           _PROMPT_COLOR)
+            self.toast.warn('Nothing to export: tick "Export .sluggies", "Export Icons" or "Export sound files".')
             return
         # the spinner runs while this export does (not for other tabs' commands)
         dpg.configure_item('export_spinner', show=True)
@@ -993,6 +998,7 @@ class SluggiesGui:
         name = dpg.get_value('roster_config')
         if not name:
             self._log_line('No roster configuration selected.', _PROMPT_COLOR)
+            self.toast.warn('No roster configuration selected.')
             return
         path = os.path.join(self.config_dir, name)
         fresh = dpg.get_value('roster_fresh')

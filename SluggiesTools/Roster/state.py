@@ -116,8 +116,11 @@ def clip_hashes(result: dict, archive) -> None:
                 if 0 <= sid < len(sounds) and sounds[sid].type == brsar.WAVE:
                     try:
                         cache[sid] = hashlib.sha1(brsar_write.sound_rwav(archive, sounds[sid])).hexdigest()
-                    except Exception:            # BrsarError / WriteError of either import path, struct errors
-                        pass
+                    except Exception as exc:     # BrsarError / WriteError of either import path, struct errors
+                        # reported with the state's warnings (the caller logs them): the hash stays unknown
+                        result.setdefault('warnings', []).append(
+                            f'custom clip (sound {sid}) cannot be read from the sound archive: '
+                            f'{type(exc).__name__}: {exc}')
         return cache[sid]
 
     def convert(ids_):

@@ -74,6 +74,22 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(volume_of(self.read_output(), 'hit_a'), 107)
         self.assertEqual(volumes.load_library(self.root), {})
 
+    def test_a_failed_archive_write_leaves_the_library_as_it_was(self):
+        from unittest import mock
+        volumes.set_volume(self.root, 'hit_a', 90)
+        real_replace = os.replace
+
+        def replace(source, target):                      # only the archive's write fails
+            if os.path.basename(target) == os.path.basename(self.output):
+                raise OSError('disk full')
+            real_replace(source, target)
+
+        with mock.patch.object(volumes.os, 'replace', side_effect=replace):
+            with self.assertRaises(OSError):
+                volumes.set_volume(self.root, 'hit_a', 60)
+        self.assertEqual(volume_of(self.read_output(), 'hit_a'), 90)
+        self.assertEqual(volumes.load_library(self.root), {'hit_a': 90})
+
     def test_game_volumes(self):
         self.assertEqual(volumes.game_volumes(self.root)['hit_a'], (107, 107))   # no output: the input's
         volumes.set_volume(self.root, 'hit_a', 80)

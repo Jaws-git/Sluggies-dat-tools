@@ -19,7 +19,6 @@ from . import AdaptLowpoly
 from . import AdaptTransform
 from . import AdaptWeights
 from . import CustomSubmeshExport
-from . import FieldCodec
 from . import AnimScale
 from . import BoneRoles
 from .AnmExport import SLUGGIES_OT_export_anm_group, _POSE_BONE_PATH, _action_fcurves, anm_groups
@@ -100,11 +99,35 @@ def _find_target_armature(context):
 def _any_sluggies_armature_imported(context):
     """Whether any Sluggies armature exists anywhere in the view layer,
     regardless of what is currently active. Used only to word the poll/empty
-    messages correctly (\"import a model\" vs. \"select an armature\")."""
-    return any(
-        o.type == 'ARMATURE' and 'SluggiesBoneMetadataVersion' in o.keys()
-        for o in context.view_layer.objects
-    )
+    messages correctly (\"import a model\" vs. \"select an armature\").
+
+    Cached per view layer until the next depsgraph update, undo, redo or
+    load: every poll of the panel's buttons asks on each redraw, and the
+    answer walks all objects (hundreds with a stadium)."""
+    key = context.view_layer.as_pointer()
+    known = _ANY_ARMATURE_CACHE.get(key)
+    if known is None:
+        known = _ANY_ARMATURE_CACHE[key] = any(
+            o.type == 'ARMATURE' and 'SluggiesBoneMetadataVersion' in o.keys()
+            for o in context.view_layer.objects
+        )
+    return known
+
+
+_ANY_ARMATURE_CACHE = {}     # view layer pointer -> bool, see _any_sluggies_armature_imported
+
+# What a dialog's draw lists from the scene, by a key of the caller's: dialogs
+# redraw on every hover and property change. Cleared with
+# _ANY_ARMATURE_CACHE (depsgraph update, undo, redo, load), so it holds only
+# while nothing in the scene changed.
+_DRAW_CACHE = {}
+
+
+def _draw_cached(key, compute):
+    """compute(), kept in _DRAW_CACHE under *key* until the scene changes."""
+    if key not in _DRAW_CACHE:
+        _DRAW_CACHE[key] = compute()
+    return _DRAW_CACHE[key]
 
 
 def _no_target_armature_message(context):
@@ -159,8 +182,8 @@ def _submesh_index_of(obj):
 
 
 # Object pointer -> (signature, bone id) for _uniform_bone_id: the panel and
-# its dialogs ask on every redraw, and the answer reads every vertex. Cleared
-# when a Mesh data-block changes (weights, vertex groups, Edit Mode; posing
+# its dialogs ask on every redraw, and the answer reads every vertex. An entry
+# is dropped when its Mesh data-block changes (weights, vertex groups, Edit Mode; posing
 # updates only the objects, measured 2026-10-23), after undo/redo, on load and
 # by this module's own vertex group writes. The signature also catches a
 # swapped mesh, a changed vertex count and renamed vertex groups.
@@ -183,13 +206,24 @@ def _uniform_bone_id(obj):
 def _forget_uniform_bones_on_mesh_update(_scene, depsgraph):
     # Runs on every depsgraph update (playback, transform drags): skip the
     # update walk while there is nothing to forget.
-    if _UNIFORM_BONE_CACHE and any(isinstance(update.id, bpy.types.Mesh) for update in depsgraph.updates):
-        _UNIFORM_BONE_CACHE.clear()
+    _ANY_ARMATURE_CACHE.clear()
+    _DRAW_CACHE.clear()
+    if not _UNIFORM_BONE_CACHE:
+        return
+    # Only the meshes that changed: editing one mesh must not make the next
+    # redraw read every vertex of every other rigid mesh again.
+    changed = {update.id.original.as_pointer() for update in depsgraph.updates
+               if isinstance(update.id, bpy.types.Mesh)}
+    if changed:
+        for key in [key for key, (signature, _bone_id) in _UNIFORM_BONE_CACHE.items() if signature[0] in changed]:
+            del _UNIFORM_BONE_CACHE[key]
 
 
 @persistent
 def _forget_uniform_bones(*_args):
     _UNIFORM_BONE_CACHE.clear()
+    _ANY_ARMATURE_CACHE.clear()
+    _DRAW_CACHE.clear()
 
 
 _UNIFORM_BONE_HANDLERS = (
@@ -266,8 +300,10 @@ def _model_chunk_number(arm_obj):
         return None
     if path not in _CHUNK_NUMBER_CACHE:
         try:
-            _CHUNK_NUMBER_CACHE[path] = FieldCodec.load_sluggie(path)['SluggiesModel'].get('ChunkNumber')
-        except (OSError, ValueError, KeyError):
+            _CHUNK_NUMBER_CACHE[path] = SluggiePath.load_model(path).get('ChunkNumber')
+        except OSError:
+            return None     # locked or briefly unreadable: not cached, the next call reads again
+        except (ValueError, KeyError):
             _CHUNK_NUMBER_CACHE[path] = None
     return _CHUNK_NUMBER_CACHE[path]
 
@@ -284,7 +320,7 @@ def _ordered_host_bone_choices(context, arm_obj, exclude=None):
     claims = _gather_scene_claims(context, arm_obj, records, exclude)
     choices = HostBones.classify_host_bones(
         records, claims, roots_only=_model_is_stadium(arm_obj))
-    return HostBones.order_host_bone_choices(choices, records)
+    return HostBones.order_host_bone_choices(choices)
 
 
 def _template_source_materials(context, arm_obj):
@@ -404,7 +440,7 @@ def _low_poly_texture_warning(arm_obj):
     if not sluggie_path:
         return None
     try:
-        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
+        model = SluggiePath.load_model(sluggie_path)
     except (OSError, ValueError):
         return None
     try:
@@ -719,7 +755,7 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
     overwritten: it is loaded as-is and *reused* is True.
     """
     try:
-        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
+        model = SluggiePath.load_model(sluggie_path)
     except (OSError, ValueError):
         model = {}
     try:
@@ -774,7 +810,7 @@ def _add_material_mesh_kind(obj):
 def _read_bone_hierarchy(sluggie_path):
     """The parsed .sluggie's BoneHierarchy list, or None if unreadable."""
     try:
-        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
+        model = SluggiePath.load_model(sluggie_path)
     except (OSError, ValueError):
         return None
     return model.get('BoneHierarchy')
@@ -972,7 +1008,11 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
                     self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Keep offset")
                                 if not sluggie_path else HostBones.RE_IMPORT_MESSAGE)
                     return {"CANCELLED"}
-                bind_matrices = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)
+                try:
+                    bind_matrices = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)
+                except ValueError as exc:
+                    self.report({"ERROR"}, f"BoneHierarchy of the source .sluggie: {exc}")
+                    return {"CANCELLED"}
                 b_old = bind_matrices.get(current_bone_id)
                 b_new = bind_matrices.get(target_bone_id)
                 if b_old is None or b_new is None:
@@ -1016,27 +1056,28 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         _drop_enum_items('reassign.target_bone')
 
 
-def _new_surface_plan(context, arm_obj, obj, template_source):
+def _new_surface_plan(context, arm_obj, obj, template_source, existing_surface_ids=None):
     """Everything Add material writes onto a new surface of *obj* made from
     *template_source*, checked before any material is touched. Also used by
     Check Models to turn a plain Blender material into such a surface.
-    Raises ValueError with the reason."""
+    *existing_surface_ids*, when given, stands for the SurfaceIds of
+    bpy.data.materials (a caller that plans several surfaces keeps it up to
+    date instead of a scan per surface). Raises ValueError with the reason."""
     kind, submesh_index = _add_material_mesh_kind(obj)
     if kind is None:
         raise ValueError("Select a donor or custom submesh")
     owner = f'sm{submesh_index}' if kind == 'donor' else obj.get('CustomSubmeshId')
     if not owner:
         raise ValueError(f"{obj.name} has no CustomSubmeshId; re-create it with Add New Submesh")
-    existing_surface_ids = [
-        mat.get('SurfaceId', '') for mat in bpy.data.materials if mat.get('SurfaceId')
-    ]
+    if existing_surface_ids is None:
+        existing_surface_ids = _surface_ids_in_file()
     surface_id = TemplateSources.next_new_surface_key(owner, existing_surface_ids)
 
     sluggie_path = SluggiePath.resolve(arm_obj)
     if not sluggie_path:
         raise ValueError(SluggiePath.missing_message(arm_obj, "Add material"))
     try:
-        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
+        model = SluggiePath.load_model(sluggie_path)
     except (OSError, ValueError) as exc:
         raise ValueError(f"Could not read {sluggie_path!r}: {exc}") from exc
     template_texture_index = _custom_submesh_template_texture_index(model, template_source)
@@ -1052,6 +1093,10 @@ def _new_surface_plan(context, arm_obj, obj, template_source):
         'wrap_s': wrap_s,
         'wrap_t': wrap_t,
     }
+
+
+def _surface_ids_in_file():
+    return [mat.get('SurfaceId', '') for mat in bpy.data.materials if mat.get('SurfaceId')]
 
 
 def _apply_new_surface_plan(mat, plan):
@@ -1892,7 +1937,7 @@ def _model_tex_dir(sluggie_path):
     """(model, tex dir, error) for the .sluggie at *sluggie_path*; the tex dir
     is the one export reads (a Low model's is its High model's)."""
     try:
-        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
+        model = SluggiePath.load_model(sluggie_path)
     except (OSError, ValueError) as exc:
         return None, None, f"Could not read {sluggie_path!r}: {exc}"
     try:
@@ -2065,6 +2110,7 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None, en
         obj['TemplateSource'] = template_of(primary)
     template_source = str(obj['TemplateSource'])
     mesh = obj.data
+    surface_ids = None      # SurfaceIds in the file, scanned once, kept up to date below
     for index, mat in enumerate(materials):
         is_primary = mat == primary
         is_own = (_is_primary_surface_of(mat, custom_submesh_id) if is_primary
@@ -2076,11 +2122,17 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None, en
             shader_mode = _template_shader_mode(context, arm_obj, template_source)
             specular_strength = _template_specular_strength(context, arm_obj, template_source)
         else:
+            if surface_ids is None:
+                surface_ids = _surface_ids_in_file()
             plan = _new_surface_plan(
-                context, arm_obj, obj, template_of(mat) if template_of is not None else added_template)
+                context, arm_obj, obj, template_of(mat) if template_of is not None else added_template,
+                existing_surface_ids=surface_ids)
+        old_surface_id = mat.get('SurfaceId')
         if mat.users > 1 or mat.library is not None:
-            mat = mat.copy()
+            mat = mat.copy()    # the copy's props go below, the original keeps its id
             mesh.materials[index] = mat
+        elif surface_ids is not None and old_surface_id in surface_ids:
+            surface_ids.remove(old_surface_id)  # this material's own id goes below
         for prop in _SLUGGIES_MATERIAL_PROPS:
             if prop in mat:
                 del mat[prop]
@@ -2088,6 +2140,7 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None, en
             _set_custom_primary_surface(mat, custom_submesh_id, shader_mode, specular_strength)
         else:
             _apply_new_surface_plan(mat, plan)
+            surface_ids.append(plan['surface_id'])
     notes = []
     for mat in mesh.materials if ensure_textures else ():
         note = _ensure_surface_texture(context, mat, tex_dir)
@@ -2915,7 +2968,9 @@ _ASSIGN_LIST_MAX = 25
 # 'saved' {object: (matrix_basis, mesh, Armature modifier visibility)} from
 # before the dialog, restored before every preview, on Cancel and before OK
 # applies for real; 'request' the settings a timer previews next; 'lines' /
-# 'error' what the last preview found. Empty while no dialog is open.
+# 'error' what the last preview found; 'listed' {armature name: (targets,
+# others, posed)} what the dialog's draw shows for that armature, worked out
+# once (the dialog redraws on every hover). Empty while no dialog is open.
 _ASSIGN_PREVIEW = {}
 
 
@@ -2946,6 +3001,7 @@ def _run_assign_preview():
 
 def _start_assign_preview(context, targets):
     _ASSIGN_PREVIEW.clear()
+    AdaptTransform.begin_cache()    # weights and topology do not change under the dialog
     _ASSIGN_PREVIEW['targets'] = list(targets)
     # The old rigs too: Align and scale only moves them.
     _ASSIGN_PREVIEW['saved'] = {
@@ -2975,9 +3031,13 @@ def _restore_assign_state():
             pass
 
 
-def _end_assign_preview():
+def _end_assign_preview(keep_cache=False):
+    """Restore the scene; *keep_cache* leaves AdaptTransform's cache on for
+    OK's own fit (the caller ends it)."""
     _restore_assign_state()
     _ASSIGN_PREVIEW.clear()
+    if not keep_cache:
+        AdaptTransform.end_cache()
 
 
 def _apply_assign_preview(context, settings):
@@ -3205,13 +3265,25 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
             _update_assign_preview(self, context)
         return context.window_manager.invoke_props_dialog(self, width=360)
 
+    def _listed(self, context):
+        """(targets, others, any old rig posed) for the picked armature; kept
+        while the dialog is open, as the selection and the old rigs' poses do
+        not change under it (the preview moves objects, not pose bones)."""
+        listed = _ASSIGN_PREVIEW.setdefault('listed', {})
+        entry = listed.get(self.armature)
+        if entry is None:
+            arm_obj = bpy.data.objects.get(self.armature) if self.armature != 'NONE' else None
+            targets, _skipped, others = self._targets(context, arm_obj)
+            posed = any(AdaptTransform.is_posed(rig) for rig in _old_rigs(context, targets))
+            entry = listed[self.armature] = (targets, others, posed)
+        return entry
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, 'armature')
-        arm_obj = bpy.data.objects.get(self.armature) if self.armature != 'NONE' else None
-        targets, _skipped, others = self._targets(context, arm_obj)
+        targets, others, posed = self._listed(context)
         align_only = self.align and self.align_only
-        if not align_only and any(AdaptTransform.is_posed(rig) for rig in _old_rigs(context, targets)):
+        if not align_only and posed:
             layout.row().prop(self, 'pose', expand=True)
         layout.prop(self, 'align')
         if self.align:
@@ -3243,10 +3315,11 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
     def execute(self, context):
         # OK starts from the state before the dialog: the preview only showed
         # what this applies.
-        _end_assign_preview()
+        _end_assign_preview(keep_cache=True)
         try:
             return self._assign(context)
         finally:
+            AdaptTransform.end_cache()
             _drop_enum_items('adapt_armature.armature')
 
     def cancel(self, context):
@@ -3640,13 +3713,16 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
             return
         layout.label(text=f"Armature: {arm_obj.name}", icon='ARMATURE_DATA')
 
-        sluggies, _addable = _adapt_mesh_inventory(context, arm_obj)
+        sluggies = _draw_cached(
+            ('adapt_meshes', context.view_layer.as_pointer(), arm_obj.as_pointer()),
+            lambda: [(obj.name, _adapt_mesh_status(obj))
+                     for obj in _adapt_mesh_inventory(context, arm_obj)[0]])
         box = layout.box()
         box.label(text="Sluggies meshes")
-        for obj in sluggies:
+        for name, status in sluggies:
             split = box.split(factor=0.5)
-            split.label(text=obj.name, icon='MESH_DATA')
-            split.label(text=_adapt_mesh_status(obj))
+            split.label(text=name, icon='MESH_DATA')
+            split.label(text=status)
         if not sluggies:
             box.label(text="None")
 
@@ -3859,18 +3935,39 @@ def _convert_material_targets(context, arm_obj, model):
     return targets
 
 
-def _own_material(mat, meshes):
+def _material_meshes():
+    """{material: set of meshes whose slots hold it}, from one walk over
+    bpy.data.meshes, for `_own_material` calls in a loop."""
+    users = {}
+    for mesh in bpy.data.meshes:
+        for slot_material in mesh.materials:
+            if slot_material is not None:
+                users.setdefault(slot_material, set()).add(mesh)
+    return users
+
+
+def _own_material(mat, meshes, users=None):
     """*mat*, or a copy of it put in *meshes*' slots when a library or any
-    other mesh uses it too, so converting it changes nothing else."""
-    shared = mat.library is not None or any(
-        mesh not in meshes and mat in mesh.materials[:] for mesh in bpy.data.meshes)
+    other mesh uses it too, so converting it changes nothing else. *users*
+    is `_material_meshes()`, kept up to date here when a copy is made."""
+    if users is None:
+        shared = mat.library is not None or any(
+            mesh not in meshes and mat in mesh.materials[:] for mesh in bpy.data.meshes)
+    else:
+        shared = mat.library is not None or any(
+            mesh not in meshes for mesh in users.get(mat, ()))
     if not shared:
         return mat
     copy = mat.copy()
     for mesh in meshes:
+        replaced = False
         for index, slot_material in enumerate(mesh.materials):
             if slot_material == mat:
                 mesh.materials[index] = copy
+                replaced = True
+        if replaced and users is not None:
+            users.get(mat, set()).discard(mesh)
+            users.setdefault(copy, set()).add(mesh)
     return copy
 
 
@@ -3999,13 +4096,14 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
 
         # Rows by owner, each with its own (unshared) material.
         body_rows, rigid_rows = [], {}
+        material_users = _material_meshes()
         for row in self.rows:
             obj = bpy.data.objects.get(row.object_name) if row.object_name else None
             mat = bpy.data.materials.get(row.material_name) if row.material_name else None
             if (row.object_name and obj is None) or (row.material_name and mat is None):
                 continue
             if mat is not None:
-                mat = _own_material(mat, {obj.data} if obj is not None else body_meshes)
+                mat = _own_material(mat, {obj.data} if obj is not None else body_meshes, material_users)
             if obj is None:
                 body_rows.append((row, mat))
             else:
@@ -4023,11 +4121,14 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
         folder = TextureFolder.folder_for(bpy.data.filepath) if collect else None
         converted, notes = TextureFolder.convert(_model_images(context), folder)
         owner = f'sm{_BODY_SUBMESH}'
+        existing = _surface_ids_in_file() if body_rows else []    # kept up to date per row
         for row, mat in body_rows:
+            old_surface_id = mat.get('SurfaceId')
+            if old_surface_id in existing:
+                existing.remove(old_surface_id)
             for prop in _SLUGGIES_MATERIAL_PROPS:
                 if prop in mat:
                     del mat[prop]
-            existing = [m.get('SurfaceId', '') for m in bpy.data.materials if m.get('SurfaceId')]
             wrap_s, wrap_t = _template_wrap_modes(context, arm_obj, row.template)
             _apply_new_surface_plan(mat, {
                 'kind': 'donor',
@@ -4041,6 +4142,7 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
                 'wrap_s': wrap_s,
                 'wrap_t': wrap_t,
             })
+            existing.append(mat['SurfaceId'])
             note = _ensure_surface_texture(context, mat, tex_dir)
             if note:
                 notes.append(note)
@@ -4233,10 +4335,11 @@ class SLUGGIES_OT_adapt_weights(bpy.types.Operator):
                     obj.data = obj.data.copy()
                     lines.append(f"{obj.name}'s mesh data was shared, so it got its own copy")
                 if self.method == 'MAP':
-                    if not AdaptWeights.survey(obj, arm_obj)['mappable']:
+                    weights = AdaptWeights.read_weights(obj)    # one pass for both
+                    if not AdaptWeights.survey(obj, arm_obj, weights)['mappable']:
                         lines.append(f"{obj.name}: too few vertex groups from an old rig to map, left as it was")
                         continue
-                    result = AdaptWeights.map_groups(obj, arm_obj)
+                    result = AdaptWeights.map_groups(obj, arm_obj, weights)
                 else:
                     result = AdaptWeights.autorig(context, obj, arm_obj, self.whole_body, self.remove_old_groups)
                     _ensure_armature_modifier(obj, arm_obj)
@@ -4796,21 +4899,28 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
         self.name = name[:-len('.sluggie')] if name.lower().endswith('.sluggie') else name
         return context.window_manager.invoke_props_dialog(self, width=520)
 
+    def _draw_lines(self, context):
+        """[(text, icon)] the dialog lists under the name."""
+        try:
+            targets = self._targets()
+        except ValueError as exc:
+            return [(str(exc), 'ERROR')]
+        lines = []
+        for model, path in zip(self._models(), targets):
+            state = "overwrite" if os.path.isfile(path) else "new"
+            lines.append((f"{model.name}: {os.path.basename(path)} ({state})", 'FILE'))
+            hidden = [obj.name for obj in [model] + model_meshes(context, model)[1] if not obj.visible_get()]
+            if hidden:
+                lines.append((f"Unhidden before the export: {', '.join(hidden)}", 'HIDE_OFF'))
+        return lines
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, 'name')
         col = layout.column(align=True)
-        try:
-            targets = self._targets()
-        except ValueError as exc:
-            col.label(text=str(exc), icon='ERROR')
-        else:
-            for model, path in zip(self._models(), targets):
-                state = "overwrite" if os.path.isfile(path) else "new"
-                col.label(text=f"{model.name}: {os.path.basename(path)} ({state})", icon='FILE')
-                hidden = [obj.name for obj in [model] + model_meshes(context, model)[1] if not obj.visible_get()]
-                if hidden:
-                    col.label(text=f"Unhidden before the export: {', '.join(hidden)}", icon='HIDE_OFF')
+        key = ('export_high_low', context.view_layer.as_pointer(), self.high_name, self.low_name, self.name)
+        for text, icon in _draw_cached(key, lambda: self._draw_lines(context)):
+            col.label(text=text, icon=icon)
         layout.prop(self, 'use_custom_normals')
         layout.prop(self, 'reimport_textures')
 
@@ -5202,6 +5312,8 @@ def unregister():
         if handler in handlers:
             handlers.remove(handler)
     _UNIFORM_BONE_CACHE.clear()
+    _ANY_ARMATURE_CACHE.clear()
+    _DRAW_CACHE.clear()
     _ENUM_ITEMS.clear()
     del bpy.types.Scene.sluggies_animation_scale
     del bpy.types.Scene.sluggies_show_free_host_bones

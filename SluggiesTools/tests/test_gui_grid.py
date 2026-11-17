@@ -210,6 +210,8 @@ class PortraitTests(unittest.TestCase):
         self.assertEqual(gui_grid.icon_file(self.s, self.state_path, 0x06, gui_grid.FRONT),
                          os.path.join(self.dir, 'icons', 'a.png'))
         self.assertIsNone(gui_grid.icon_file(self.s, self.state_path, 0x47, gui_grid.SIDE))    # not on disk
+        self.assertEqual(gui_grid.icon_file(self.s, self.state_path, 0x47, gui_grid.SIDE, check=False),
+                         os.path.join(self.dir, 'icons', 'gone.png'))                          # the caller looks
         self.assertIsNone(gui_grid.icon_file(self.s, self.state_path, 0x66, gui_grid.SIDE))    # not resolved
         self.s['characters'][0]['icon'] = None                                                 # no DAT
         self.assertIsNone(gui_grid.icon_file(self.s, self.state_path, 0x06, gui_grid.FRONT))
@@ -482,6 +484,33 @@ class PendingEditsTests(unittest.TestCase):
         gui_grid.write_edits(path, {'edits': []})
         with open(path, encoding='utf-8') as f:
             self.assertEqual(json.load(f), {'edits': []})
+
+    def test_a_failed_write_keeps_the_file_a_child_reads_next(self):
+        path = os.path.join(self.tmp, 'slot', 'edits.json')
+        gui_grid.write_edits(path, {'edits': [{'op': 'clear', 'id': '0x0D'}]})
+        with self.assertRaises(TypeError):                       # stops halfway through the document
+            gui_grid.write_edits(path, {'edits': [{'op': 'clear', 'id': object()}]})
+        with self.assertRaises(UnicodeEncodeError):              # the game directory file's encoding
+            gui_grid._write_whole(path, 'D:\\Games\\\u30de\u30ea\u30aa', 'ascii')
+        with open(path, encoding='utf-8') as f:
+            self.assertEqual(json.load(f), {'edits': [{'op': 'clear', 'id': '0x0D'}]})
+        self.assertEqual(os.listdir(os.path.dirname(path)), ['edits.json'])      # no temp file left
+
+    def test_dropping_an_equipment_edit_takes_the_slot_marks_along(self):
+        bat = {'op': 'equip', 'id': '0x66', 'file': 2, 'sluggie': 'bat.sluggie'}
+        glove = {'op': 'equip_clear', 'id': '0x66', 'file': 3}
+        self.p.edits = [bat, glove, {'op': 'clear', 'id': '0x0D'}]
+        self.p.sections = [{'action': 'equip', 'target': '0x66', 'edit': bat},
+                           {'action': 'equip_clear', 'target': '0x66', 'edit': glove},
+                           {'action': 'clear', 'target': '0x0D', 'edit': {'op': 'clear', 'id': '0x0D'}}]
+        self.p.gecko = {0x66, 0x0D}
+        self.p.memory = {0x66: 'over by 12 KB', 0x0D: 'over by 1 KB'}
+        self.p.drop_equip(0x66, 2)
+        self.assertEqual(self.p.edits, [glove, {'op': 'clear', 'id': '0x0D'}])
+        self.assertEqual([s['action'] for s in self.p.sections], ['equip_clear', 'clear'])
+        self.assertTrue(self.p.has(0x66))                        # its glove edit stays, without the old marks
+        self.assertFalse(self.p.breaks_gecko(0x66) or self.p.over_memory(0x66))
+        self.assertTrue(self.p.breaks_gecko(0x0D) and self.p.over_memory(0x0D))
 
 
 def rename_section(cid='0x0D', text='Little Toad', nothing=False):

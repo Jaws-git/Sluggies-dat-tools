@@ -7,6 +7,7 @@ the worker-thread GIL helper.
 * ``render_turns``: for a worker thread running long numpy loops that hold the GIL.
 """
 
+import atexit
 import contextlib
 import os
 import sys
@@ -73,10 +74,26 @@ class ClipPlayer:
         if self.path is None:
             handle, self.path = tempfile.mkstemp(prefix=self.prefix, suffix='.wav')
             os.close(handle)
+            atexit.register(self._discard)
         winsound.PlaySound(None, winsound.SND_PURGE)              # stop what still plays: the file is rewritten
         with open(self.path, 'wb') as handle:
             handle.write(wav_bytes)
         winsound.PlaySound(self.path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+
+    def _discard(self):
+        """At exit: stop the playback (it holds the file open) and delete the temp WAV."""
+        path, self.path = self.path, None
+        if path is None:
+            return
+        try:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except (ImportError, RuntimeError, OSError):
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 _FAST_SWITCH = 0.0005

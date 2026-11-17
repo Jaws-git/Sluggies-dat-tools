@@ -131,6 +131,9 @@ class MusicTab:
         self._cache_dir = None
         self._request = 0                    # bumped by every Play and Stop: a decode that finishes late is dropped
         self._decoding = 0                   # decodes running
+        self._running = {}                   # (sound_id, files epoch) of a running decode -> the Play it answers
+        self._epoch = 0                      # bumped when stream files may have changed: older decodes are not cached
+        self._stale = []                     # decoded WAVs out of the cache that could not be deleted yet (playing)
         self.picks = gui_audio.FilePicks(app)
 
     # ------------------------------------------------------------------ build
@@ -184,7 +187,9 @@ class MusicTab:
         dpg.configure_item('music_refresh', enabled=True)
         self._spinner()
         self.tracks, self.archive_path, self.error = tracks, archive_path, error
-        self._cache.clear()                  # the files may have changed: decode again on the next Play
+        self._epoch += 1                     # the files may have changed: decode again on the next Play
+        dropped, self._cache = list(self._cache.values()), {}
+        self._discard(*dropped)
         if error:
             self._status(error, _ERROR)
         else:
@@ -303,10 +308,15 @@ class MusicTab:
         if cached and os.path.isfile(cached):
             self._start(track, cached)
             return
-        self._decoding += 1
-        self._spinner()
         if self.working is None:
             self._status(f'Decoding {track.name}...', _DIM)
+        key = (track.sound_id, self._epoch)
+        if key in self._running:
+            self._running[key] = request     # its decode runs already: that one plays for this click
+            return
+        self._running[key] = request
+        self._decoding += 1
+        self._spinner()
         if self._cache_dir is None:
             self._cache_dir = tempfile.mkdtemp(prefix='sluggies_music_')
             atexit.register(shutil.rmtree, self._cache_dir, True)
@@ -323,21 +333,44 @@ class MusicTab:
                     wavfile.write_wav(target, stream.rate, brstm.decode(stream))
             except Exception as exc:
                 error = f'{type(exc).__name__}: {exc}'
-            self.app.output_queue.put(('call', self._decoded, track, path, target, request, error))
+            self.app.output_queue.put(('call', self._decoded, track, path, target, key, error))
         threading.Thread(target=work, daemon=True).start()
 
-    def _decoded(self, track, path, target, request, error):
+    def _decoded(self, track, path, target, key, error):
+        request = self._running.pop(key, None)       # the last Play that asked for this decode
         self._decoding -= 1
         self._spinner()
         if error:
+            self._discard(target)
             self._status(f'Could not decode {track.name}: {error}', _ERROR)
             self.app.log_line(f'[music] could not decode {path}: {error}', _WARN)
             return
-        if path == track.path:               # not replaced meanwhile
+        fresh = key[1] == self._epoch        # no file was replaced or re-read meanwhile
+        if fresh:
+            old = self._cache.get(track.sound_id)
             self._cache[track.sound_id] = target
+            if old and old != target:
+                self._discard(old)
         if request != self._request:         # stopped, or another track asked for meanwhile
+            if not fresh:
+                self._discard(target)
             return
         self._start(track, target)
+        if not fresh:
+            self._stale.append(target)       # plays this once; deleted with the next file that leaves the cache
+
+    def _discard(self, *paths):
+        """Delete decoded WAVs that left the cache (a long track is tens of MB). One that still plays cannot be
+        deleted on Windows: it is tried again with the next ones, and the folder goes when the GUI exits."""
+        remaining = []
+        for path in [*self._stale, *paths]:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                remaining.append(path)
+        self._stale = remaining
 
     def _start(self, track, path):
         import winsound
@@ -358,11 +391,23 @@ class MusicTab:
     def _on_replace(self, track):
         if self.working is not None or self.app.picking or track.path is None:
             return
+        if self._command_runs():
+            return
         self.picks.pick_sound('music_wav_dialog', f'Replace the music track {track.name}', WAV_DIR_SETTING,
                               (os.path.join(self.app.models_dir, '_SOUNDS', 'stream'),),
                               lambda path: self._encode(track, path))
 
+    def _command_runs(self):
+        """A command runs (it may be copying or rewriting ``3_Output_Dat/sound_NA``): Replace and Reset wait, and
+        the status line says so."""
+        if not self.app.busy:
+            return False
+        self._status('A command is running: try again when it is done.', _WARN)
+        return True
+
     def _encode(self, track, wav_path):
+        if self.working is not None or self._command_runs():     # one started while the file was picked
+            return
         self.working = track
         self._spinner()
         self._status(f'Encoding {os.path.basename(wav_path)} for {track.name}...', _DIM)
@@ -407,14 +452,19 @@ class MusicTab:
         self._reread(track)
 
     def _on_reset(self, track):
-        if self.working is not None or track.stock is None:
+        if self.working is not None or track.stock is None or self._command_runs():
             return
         target = self._output_path(track)
         try:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copyfile(track.stock, target)
+            shutil.copyfile(track.stock, target + '.tmp')        # never a half-copied track under its name
+            os.replace(target + '.tmp', target)
         except OSError as exc:
             self._status(f'Could not reset {track.name}: {exc}', _ERROR)
+            try:
+                os.remove(target + '.tmp')
+            except OSError:
+                pass
             return
         self._status(f'{track.name} reset to the stock track.', _OK)
         self._reread(track)
@@ -430,7 +480,10 @@ class MusicTab:
     def _reread(self, track):
         """After the output file of ``track`` changed: its state, header and decoded cache."""
         from Sound import brstm
-        self._cache.pop(track.sound_id, None)
+        self._epoch += 1                     # a decode of the old file that still runs is not cached
+        dropped = self._cache.pop(track.sound_id, None)
+        if dropped:
+            self._discard(dropped)
         output = self._output_path(track)
         track.output = output if os.path.isfile(output) else None
         track.replaced = track.output is not None and (track.stock is None or not _same_file(output, track.stock))

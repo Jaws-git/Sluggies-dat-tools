@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -264,6 +265,16 @@ class BindPoseScaleTests(unittest.TestCase):
         x, y, z, nx, ny, nz = struct.unpack('>6h', out)
         self.assertEqual((x, y, z), (200, 200, 150))
         self.assertEqual((nx, ny, nz), (10, 20, 30))
+
+    def test_scale_int16_clamp_is_reported(self):
+        data = struct.pack('>6h', 20000, -20000, 300, 10, 20, 30)
+        with mock.patch.object(_root_scale, '_warn_clamped') as warn:
+            out = _root_scale.scale_bind_pose_data(data, 0x30, 1, 0, (2.0, 2.0, 2.0))
+        self.assertEqual(struct.unpack('>3h', out[:6]), (32767, -32768, 600))
+        warn.assert_called_once_with(2, 1, (2.0, 2.0, 2.0))
+        with mock.patch.object(_root_scale, '_warn_clamped') as warn:
+            _root_scale.scale_bind_pose_data(struct.pack('>6h', 1, 2, 3, 0, 0, 0), 0x30, 1, 0, (2.0, 2.0, 2.0))
+        warn.assert_not_called()
 
     def test_scale_noop_returns_same(self):
         data = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)

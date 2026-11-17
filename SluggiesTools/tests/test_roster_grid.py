@@ -77,6 +77,12 @@ class ParseTests(unittest.TestCase):
                              ({'squares': [['0x66'], ['0x66']]}, 'two squares'),
                              ({'squares': [[]]}, '1-10'),
                              ({'shape': [13, 4]}, 'not one of'),
+                             ({'shape': 5}, r'grid.shape must be \[columns, rows\]'),
+                             ({'shape': ['12', '5']}, r'grid.shape must be \[columns, rows\]'),
+                             ({'order': 5}, 'grid.order must be a list'),
+                             ({'squares': [['0x100']]}, '0x100 is not a player ID'),
+                             ({'squares': [[-1]]}, 'is not a player ID'),
+                             ({'order': stock + ['0x100']}, 'neither'),
                              ({'squares': [[f'0x{0x66 + i:02X}'] for i in range(20)]}, 'do not fit'),
                              ({'order': stock}, 'leaves out 0x01'),
                              ({'order': stock + ['0x01', '0x01']}, 'twice'),
@@ -176,6 +182,15 @@ class LayoutTests(unittest.TestCase):
         banner = lay.node_blobs(grid.BANNER)[0]
         self.assertEqual(struct.unpack_from('>h', banner, 4 + 8)[0], grid.BANNER_X + 40)
         self.assertEqual(struct.unpack_from('>ff', banner, 4 + 0x34), (1.5, 1.5))
+
+    def test_a_damaged_layout_is_a_layout_error(self):
+        g = parse({'squares': [['0x66']], 'shape': [12, 5]})
+        with mock.patch.object(grid, '_stretch_bars', side_effect=struct.error('unpack_from requires a buffer')):
+            with self.assertRaisesRegex(layout2d.Layout2dError, 'select layout is damaged'):
+                grid.grid_layout(grid_bank(), g)
+        with mock.patch.object(layout2d.Layout, 'node_blobs', return_value=[b'\x00\x03\x00\x3C'] * 40):
+            with self.assertRaisesRegex(layout2d.Layout2dError, 'select layout is damaged'):
+                grid.grid_layout(grid_bank(), g)       # a bar without its three nodes: unpacking fails
 
     def test_eleven_by_four_keeps_rows(self):
         lay = layout2d.Layout(grid.grid_layout(grid_bank(), parse({})))

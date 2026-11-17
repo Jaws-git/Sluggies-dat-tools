@@ -222,6 +222,17 @@ class ManifestTests(unittest.TestCase):
             manifest.find(blob)
         with self.assertRaisesRegex(manifest.ManifestError, 'damaged'):
             manifest.find(manifest.MAGIC + struct.pack('>I', 4) + b'junk')
+        good = {'shape': [12, 5], 'cells': [None, [0, 1]], 'squares': [[0x66]]}
+        self.assertEqual(manifest.find(manifest.encode({'version': 1, 'grid': good}))['grid'], good)
+        for change in ({'shape': 5}, {'shape': [12]}, {'cells': None}, {'cells': [5]}, {'squares': [[]]},
+                       {'squares': {}}, {'voices': 5}):
+            with self.subTest(change=change), self.assertRaisesRegex(manifest.ManifestError, 'grid'):
+                manifest.find(manifest.encode({'version': 1, 'grid': dict(good, **change)}))
+        for key in ('shape', 'cells', 'squares'):
+            with self.subTest(missing=key), self.assertRaisesRegex(manifest.ManifestError, 'grid'):
+                manifest.find(manifest.encode({'version': 1, 'grid': {k: v for k, v in good.items() if k != key}}))
+        with self.assertRaisesRegex(manifest.ManifestError, 'ID list'):
+            manifest.find(manifest.encode({'version': 1, 'ids': [[0x66, 0]]}))
 
     def test_mismatched_manifest_warns_and_the_binary_wins(self):
         image, ctx = build(SQUARES_12X5)

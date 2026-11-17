@@ -22,6 +22,7 @@ import hashlib
 import os
 import struct
 import tempfile
+import time
 import zlib
 
 
@@ -42,6 +43,11 @@ _OTHER_SIGNATURES = (
 cache_dir = None
 # converted PNG path (normcase) -> the source it was made from, for reports.
 _sources = {}
+# Cached conversions older than this are deleted on the first conversion of a
+# session (every edit of a source leaves another full-size PNG behind).
+CACHE_MAX_AGE_DAYS = 30
+# Cache folders (normcase) already pruned in this session.
+_pruned_folders = set()
 
 
 def needs_conversion(path):
@@ -103,6 +109,29 @@ def _cache_folder():
     return cache_dir or os.path.join(tempfile.gettempdir(), 'SluggiesConvertedTextures')
 
 
+def _prune_cache(folder):
+    """Once per session and folder: delete the cached PNGs (and temp files a
+    crashed write left) older than ``CACHE_MAX_AGE_DAYS``. A pruned entry
+    that is needed again is converted again, to the same bytes."""
+    key = os.path.normcase(os.path.abspath(folder))
+    if key in _pruned_folders:
+        return
+    _pruned_folders.add(key)
+    limit = time.time() - CACHE_MAX_AGE_DAYS * 86400
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.endswith(('.png', '.tmp')):
+            continue
+        try:
+            if entry.is_file() and entry.stat().st_mtime < limit:
+                os.remove(entry.path)
+        except OSError:
+            pass
+
+
 def converted_png(source_path, decode=None):
     """The path of a PNG with the pixels of the image at *source_path*, made
     once per source content (module docstring). *decode* (default
@@ -118,6 +147,7 @@ def converted_png(source_path, decode=None):
     except OSError as exc:
         raise ValueError(f'{name} could not be read ({exc})') from exc
     folder = _cache_folder()
+    _prune_cache(folder)
     target = os.path.join(folder, hashlib.sha1(_CACHE_VERSION + data).hexdigest() + '.png')
     if not os.path.isfile(target):
         width, height, rgba = (decode or decode_rgba)(source_path)

@@ -142,8 +142,10 @@ def decode_field(value, use_compression: bool = True) -> bytes | None:
         if value.startswith(HEX_FIELD_PREFIX):
             return bytes.fromhex(value[len(HEX_FIELD_PREFIX):])
         if value.startswith(ZLIB_FIELD_PREFIX):
-            return zlib.decompress(base64.b64decode(value[len(ZLIB_FIELD_PREFIX):]))
-        return base64.b64decode(value)
+            return zlib.decompress(base64.b64decode(value[len(ZLIB_FIELD_PREFIX):], validate=True))
+        # validate: text that is no base64 raises (binascii.Error, a ValueError) instead of decoding to
+        # whatever its base64 letters happen to spell.
+        return base64.b64decode(value, validate=True)
     return bytes(value)
 
 

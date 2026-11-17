@@ -146,7 +146,27 @@ def _decode(blob: bytes, at: int) -> dict:
     if not isinstance(manifest, dict) or manifest.get('version') != VERSION:
         raise ManifestError(f'roster manifest version {manifest.get("version") if isinstance(manifest, dict) else "?"}'
                             f' is not {VERSION}')
+    _check_shape(manifest)
     return manifest
+
+
+def _check_shape(manifest: dict) -> None:
+    """Refuse a manifest whose grid or ID list has not the shape ``build`` writes (the readers index them)."""
+    grid = manifest.get('grid')
+    if grid is not None:
+        ok = (isinstance(grid, dict)
+              and isinstance(grid.get('shape'), list) and len(grid['shape']) == 2
+              and all(isinstance(n, int) and not isinstance(n, bool) for n in grid['shape'])
+              and isinstance(grid.get('cells'), list)
+              and all(c is None or isinstance(c, list) for c in grid['cells'])
+              and isinstance(grid.get('squares'), list)
+              and all(isinstance(sq, list) and sq for sq in grid['squares'])
+              and isinstance(grid.get('voices') or [], list))
+        if not ok:
+            raise ManifestError('roster manifest is damaged: its grid has not the expected shape')
+    ids = manifest.get('ids') or []
+    if not isinstance(ids, list) or not all(isinstance(c, list) and len(c) >= 4 for c in ids):
+        raise ManifestError('roster manifest is damaged: its ID list has not the expected shape')
 
 
 # --------------------------------------------------------------------------

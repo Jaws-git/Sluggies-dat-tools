@@ -130,6 +130,15 @@ class TestWeights(unittest.TestCase):
         # unknown; vertex 3 is not used by any face.
         self.assertEqual(core.unweighted_vertices(weights, {0, 1, 2}, {1}, parent_of), [1, 2])
 
+    def test_unweighted_parent_cycle_ends(self):
+        parent_of = {3: 4, 4: 3, 1: 0, 0: None}
+        weights = [{3: 1.0, 4: 0.5}, {1: 1.0, 3: 1.0}, {1: 0.0}]
+        self.assertEqual(core.unweighted_vertices(weights, {0, 1, 2}, {0}, parent_of), [0, 2])
+
+    def test_vertex_count_with_a_null_quantize_info(self):
+        buffer = {"VertexBufferCompCount": 3, "VertexBufferQuantizeInfo": None, "VertexBufferLength": 60}
+        self.assertEqual(core.vertex_buffer_vertex_count(buffer), 10)
+
     def test_unweighted_skips_vertices_the_donor_left_bare(self):
         self.assertEqual(core.unweighted_vertices([{}, {}], {0, 1}, {0}, {}, donor_covered={1}), [1])
 

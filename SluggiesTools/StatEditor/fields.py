@@ -103,6 +103,12 @@ def numbered(count: int) -> tuple[str, ...]:
     return tuple(str(i) for i in range(count))
 
 
+def _short(value) -> str:
+    """``repr`` for a message, cut for a number of hundreds of digits."""
+    text = repr(value)
+    return text if len(text) <= 40 else f'{text[:20]}... ({len(text)} digits)'
+
+
 @dataclass(frozen=True)
 class Value:
     """Where one value lives and how it is stored (shared by character and global fields)."""
@@ -116,10 +122,13 @@ class Value:
     def problem(self, value) -> str | None:
         """Why ``value`` cannot be stored, or None."""
         if self.kind == 'f32':
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return f'{value!r} is not a finite number'
-            if abs(value) > 3.4028234663852886e38:
-                return f'{value!r} does not fit a 32-bit float'
+            # An int past the float range first (math.isfinite raises OverflowError for it).
+            if abs(value) > 3.4028234663852886e38 and not (isinstance(value, float) and math.isinf(value)):
+                return f'{_short(value)} does not fit a 32-bit float'
+            if not math.isfinite(value):
+                return f'{value!r} is not a finite number'
             return None
         if isinstance(value, bool) or not isinstance(value, int):
             return f'{value!r} is not a whole number'

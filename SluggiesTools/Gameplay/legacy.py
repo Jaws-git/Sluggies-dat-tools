@@ -69,7 +69,13 @@ def js_round(x: float) -> int:
 
 
 def _number(value, where: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise LegacyError(f'{where}: {value!r} is not a number')
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:            # an int too large for a float: no setting is that large
+        raise LegacyError(f'{where}: a number of {len(str(abs(value)))} digits is not a setting') from None
+    if not finite:
         raise LegacyError(f'{where}: {value!r} is not a number')
     return value
 

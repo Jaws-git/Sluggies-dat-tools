@@ -96,5 +96,18 @@ class ReadSoundTests(unittest.TestCase):
             self.assertIsNone(state_cli.open_sound(tmp))
 
 
+class MainErrorTests(unittest.TestCase):
+    """A file that cannot be read or written ends both commands with an ``[Error]`` line and exit code 1."""
+
+    def test_an_os_error_is_reported_not_raised(self):
+        for argv, name in (([], 'run'), (['--derive'], 'run_derive')):
+            with self.subTest(argv=argv), \
+                    mock.patch.object(state_cli, name, side_effect=PermissionError(13, 'main.dol is locked')), \
+                    mock.patch.object(state_cli.slogger, 'configure'), \
+                    mock.patch.object(state_cli.slogger, 'error') as error:
+                self.assertEqual(state_cli.main(argv), 1)
+                self.assertIn('main.dol is locked', error.call_args[0][0])
+
+
 if __name__ == '__main__':
     unittest.main()

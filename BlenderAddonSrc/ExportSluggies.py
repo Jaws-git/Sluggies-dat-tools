@@ -41,11 +41,17 @@ def _from_bytes(raw: bytes, use_compression: bool = True):
 
 
 def _pack_quantized_component(value, divisor, context):
+    """*context* names the component in the error text: a string, or a
+    function returning one, called only when the value is refused (building
+    the text for every component of every vertex and loop, each with an RNA
+    name read, was a large part of the encode loops)."""
     value = float(value)
     if not math.isfinite(value):
+        context = context() if callable(context) else context
         raise ValueError(f"{context}: coordinate/component is not finite ({value})")
     quantized = round(value * divisor)
     if not -32768 <= quantized <= 32767:
+        context = context() if callable(context) else context
         minimum = -32768 / divisor
         maximum = 32767 / divisor
         raise ValueError(
@@ -177,7 +183,7 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
                 raw_bytes += _pack_quantized_component(
                     val,
                     divisor,
-                    f"{obj.name} vertex {v.index} {component_names[component_index]}",
+                    lambda v=v, name=component_names[component_index]: f"{obj.name} vertex {v.index} {name}",
                 )
         if donor_normal_bytes is not None:
             raw_bytes += donor_normal_bytes
@@ -222,7 +228,9 @@ def _encode_facial_key(
             # the shape onto the limit without a word.
             offset = mapped_index * stride + component * component_size
             raw[offset:offset + 2] = _pack_quantized_component(
-                value, divisor, f"shape key {key.name} vertex {vertex_index} {'xyz'[component]}")
+                value, divisor,
+                lambda vertex_index=vertex_index, component=component:
+                    f"shape key {key.name} vertex {vertex_index} {'xyz'[component]}")
     return bytes(raw)
 
 
@@ -512,7 +520,10 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         edited.append(entry)
 
     stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
-    donor_absolute = CustomSubmeshExport.bone_absolute_matrices(donor_bones) if stadium else {}
+    try:
+        donor_absolute = CustomSubmeshExport.bone_absolute_matrices(donor_bones) if stadium else {}
+    except ValueError as exc:
+        raise ExportCancelled(f"BoneHierarchy of the source .sluggie: {exc}") from exc
     for b in new_bones:
         own_id = id_by_bone_name[b.name]
         parent = b.parent
@@ -591,7 +602,7 @@ def untracked_keys_warnings(candidates, context):
 # a substitute for the patcher's own gate. Sibling-chain order is not in the
 # .sluggie at all, so neither check can see it; the patcher's rebuilder keeps
 # donor chains intact by construction.
-def validate_bone_hierarchy_edited_export(model, warnings):
+def validate_bone_hierarchy_edited_export(model):
     """Return a list of blocking error strings for ``BoneHierarchyEdited``, or
     an empty list when nothing is wrong."""
     bone_hierarchy_edited = model.get("BoneHierarchyEdited")
@@ -778,7 +789,8 @@ def encode_uv_channel_edited(obj, json_channel, use_compression=True, all_uv_cha
                 raw_bytes += _pack_quantized_component(
                     int(val) / divisor,
                     divisor,
-                    f"{obj.name} UV{ch_ind} slot {slot_index} component {component_index}",
+                    lambda slot_index=slot_index, component_index=component_index:
+                        f"{obj.name} UV{ch_ind} slot {slot_index} component {component_index}",
                 )
 
     return _from_bytes(bytes(raw_bytes), use_compression), conflicts
@@ -897,7 +909,7 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_compression=T
                 normal_data += struct.pack('>f', val)
             else:
                 normal_data += _pack_quantized_component(
-                    val, divisor, f"{obj.name} per-loop normal component"
+                    val, divisor, lambda: f"{obj.name} per-loop normal component"
                 )
         if comp > 3:
             normal_data += donor_records[loop_position][3 * comp_size:]
@@ -1146,7 +1158,8 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_com
                     record += _pack_quantized_component(
                         int(val) / divisor,
                         divisor,
-                        f"{obj.name} UV{ch_ind} loop {coord_index} component {component_index}",
+                        lambda coord_index=coord_index, component_index=component_index, ch_ind=ch_ind:
+                            f"{obj.name} UV{ch_ind} loop {coord_index} component {component_index}",
                     )
             records.append(bytes(record))
         uv_edits[ch_ind] = _per_loop_buffer(records, f"{obj.name} UV{ch_ind}", use_compression)
@@ -1447,6 +1460,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     def pack_val(v, context):
         if is_float:
             if not math.isfinite(float(v)):
+                context = context() if callable(context) else context
                 raise ValueError(f"{context}: coordinate/component is not finite ({v})")
             return struct.pack('>f', float(v))
         return _pack_quantized_component(v, divisor, context)
@@ -1464,7 +1478,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
             ('x', 'y', 'z', 'nx', 'ny', 'nz'),
             (vd.co.x, vd.co.y, vd.co.z, nx, ny, nz),
         ):
-            buf.extend(pack_val(val, f"{obj.name} vertex {local_v} {component}"))
+            buf.extend(pack_val(val, lambda component=component: f"{obj.name} vertex {local_v} {component}"))
         return bytes(buf)
 
     # Weights, per vertex: the donor's own bytes while the vertex has its
@@ -1791,6 +1805,7 @@ def _skin_component_packer(quant_info):
     def pack_val(v, context):
         if is_float:
             if not math.isfinite(float(v)):
+                context = context() if callable(context) else context
                 raise ValueError(f"{context}: coordinate/component is not finite ({v})")
             return struct.pack('>f', float(v))
         return _pack_quantized_component(v, divisor, context)
@@ -1832,6 +1847,7 @@ class _DonorSkinIndex:
     membership: dict                 # global vertex -> {bone id}
     skacc_weight: dict               # (bone id, global vertex) -> donor weight byte
     weight_total: dict               # global vertex -> {bone id: units of 256, all its records summed}
+    sk2_weights: dict = field(default_factory=dict)   # SK2s index -> its decoded WeightData
 
 
 def _index_donor_skin(skin_data, vertex_stride):
@@ -1868,7 +1884,7 @@ def _index_donor_skin(skin_data, vertex_stride):
         pair = (min(e['BoneIndex1'], e['BoneIndex2']), max(e['BoneIndex1'], e['BoneIndex2']))
         index.first_sk2_entry_by_pair.setdefault(pair, idx)
         first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // vertex_stride
-        pair_weights = _to_bytes(e['WeightData'])
+        pair_weights = index.sk2_weights[idx] = _to_bytes(e['WeightData'])
         for i in range(e['VertexCnt']):
             index.sk2_entry_of[first + i] = idx
             index.membership.setdefault(first + i, set()).update(
@@ -2010,7 +2026,7 @@ def _replay_donor_roles(skin_data, donor, groups, parsed, global_idx, sub_idx, v
         b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
         first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // donor.vertex_stride
         k = global_idx - first
-        wt_bytes = _to_bytes(e['WeightData'])
+        wt_bytes = donor.sk2_weights[entry_idx]      # decoded once per entry, not per vertex
         w1_byte, w2_byte = wt_bytes[2 * k], wt_bytes[2 * k + 1]
         w_lo, w_hi = (w1_byte, w2_byte) if e['BoneIndex1'] <= e['BoneIndex2'] else (w2_byte, w1_byte)
         if units is not None:
@@ -2284,7 +2300,8 @@ def _encode_skin_source(entries, pack_val, custom_normals_cache, use_compression
         ):
             raw += pack_val(
                 val,
-                f"{obj_ref.name} vertex {v.index} SKN {component}",
+                lambda v=v, component=component, obj_ref=obj_ref:
+                    f"{obj_ref.name} vertex {v.index} SKN {component}",
             )
     return _from_bytes(bytes(raw), use_compression)
 
@@ -3284,6 +3301,19 @@ def _armature_local_geometry(context, obj, warnings):
     return _geometry_in_bind_space(context, obj, SkinnedRebuildExport.IDENTITY, warnings)
 
 
+# [the BoneHierarchy list, its bind matrices] of the last call: every rigid and
+# custom object of an export asks for the same list, and the answer is a
+# pure-Python matrix product per bone. Matched by identity (the list is kept
+# alive here), emptied when an export starts.
+_BIND_MATRICES = [None, None]
+
+
+def _bind_matrices(bone_hierarchy):
+    if _BIND_MATRICES[0] is not bone_hierarchy:
+        _BIND_MATRICES[:] = [bone_hierarchy, CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)]
+    return _BIND_MATRICES[1]
+
+
 def _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_id, warnings):
     """World position is authoritative.
 
@@ -3305,7 +3335,7 @@ def _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_
             f"{obj.name}: custom submesh has no Armature modifier or armature parent; "
             "it can't be placed relative to its host bone"
         )
-    host_bind = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy).get(host_bone_id)
+    host_bind = _bind_matrices(bone_hierarchy).get(host_bone_id)
     if host_bind is None:
         raise ValueError(
             f"{obj.name}: host bone {host_bone_id} does not exist in the target "
@@ -3848,7 +3878,7 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
         (poly.vertices for poly in mesh.polygons), target_submesh.get("FacesData"),
     )
     moved = RigidRebuildExport.positions_moved(
-        [tuple(v.co) for v in mesh.vertices], geometry, donor.position_quantize,
+        [tuple(v.co) for v in mesh.vertices], geometry, donor.position_quantize, obj.name,
     )
     routing = RigidRebuildExport.route_faces(
         obj.name, donor, geometry.triangles,
@@ -4032,7 +4062,7 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
         (poly.vertices for poly in mesh.polygons), target_submesh.get("FacesData"),
     )
     moved = RigidRebuildExport.positions_moved(
-        [tuple(v.co) for v in mesh.vertices], geometry, donor.position_quantize,
+        [tuple(v.co) for v in mesh.vertices], geometry, donor.position_quantize, obj.name,
     )
     routing = RigidRebuildExport.route_faces(
         obj.name, donor, geometry.triangles,
@@ -4500,6 +4530,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # go on raises ExportCancelled. Nothing is written to disk before
         # _copy_textures, so a cancel before it leaves the files as they were.
         run = _ExportRun()
+        _BIND_MATRICES[:] = [None, None]
         try:
             self._load_source(context, run)
             self._collect_objects(context, run)
@@ -4792,9 +4823,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             raise ExportCancelled(name_error)
         encode_bone_hierarchy_edited(selected, data, warnings, context)
         warnings.extend(untracked_keys_warnings(selected, context))
-        bone_hierarchy_errors = validate_bone_hierarchy_edited_export(
-            data["SluggiesModel"], warnings
-        )
+        bone_hierarchy_errors = validate_bone_hierarchy_edited_export(data["SluggiesModel"])
         if bone_hierarchy_errors:
             raise ExportCancelled(bone_hierarchy_errors)
 

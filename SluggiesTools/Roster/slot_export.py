@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import sys
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_DIR = os.path.normpath(os.path.join(_HERE, '..'))
@@ -278,8 +279,11 @@ def read_slot(cid: int, dat_handle, output_dir: str = state_cli.OUTPUT_DIR):
         chunk, _file, base, _base_length = base_entry(model_dir, file_index)
         _exporter().set_log_dir_index(chunk)
         try:
-            entries.append(Entry(file_index, chunk, base, data, ShiftedFile(dat_handle, offset - base)))
-        except Exception as exc:                 # the export reader's own errors: one unreadable file is skipped
+            entry = Entry(file_index, chunk, base, data, ShiftedFile(dat_handle, offset - base))
+            if entry.entry.child is None:        # the reader classifies it as nothing: there is nothing to write
+                raise SlotExportError('not a model, an archive or an animation bank')
+            entries.append(entry)
+        except Exception as exc:                # the export reader's own errors: one unreadable file is skipped
             if file_index in (0, 1):
                 raise SlotExportError(f'file {file_index} of the slot ({len(data):,} bytes) cannot be read: '
                                       f'{type(exc).__name__}: {exc}') from exc
@@ -296,6 +300,30 @@ def read_slot(cid: int, dat_handle, output_dir: str = state_cli.OUTPUT_DIR):
     return char, entries, portraits
 
 
+WORK_PREFIX = '.slot_export_'                # the work folder's name, then the process ID
+STALE_WORK_SECONDS = 24 * 3600.0
+
+
+def sweep_work_folders(parent: str, prefix: str, max_age: float = STALE_WORK_SECONDS) -> None:
+    """Remove the work folders (``<prefix><pid>``) a killed run left in ``parent``: only those older than
+    ``max_age``, so an export running in another process keeps its own."""
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        path = os.path.join(parent, name)
+        if not (name.startswith(prefix) and name[len(prefix):].isdigit() and os.path.isdir(path)):
+            continue
+        try:
+            stale = now - os.path.getmtime(path) > max_age
+        except OSError:
+            continue
+        if stale:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, models_dir: str = MODELS_DIR,
                  today: str | None = None, record: dict | None = None) -> str:
     """Write the export folder; returns its path. Written into a hidden folder first and renamed at the end, so a
@@ -308,7 +336,8 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
                          lambda folder: os.path.exists(os.path.join(models_dir, folder)))
     folder = os.path.join(models_dir, folder_name(character, number))
     export_tag = tag(character, number)
-    work = os.path.join(models_dir, f'.slot_export_{os.getpid()}')
+    sweep_work_folders(models_dir, WORK_PREFIX)
+    work = os.path.join(models_dir, f'{WORK_PREFIX}{os.getpid()}')
     if os.path.exists(work):
         shutil.rmtree(work)
     os.makedirs(work)
@@ -317,6 +346,8 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
     try:
         high_folder = None
         for e in entries:
+            if e.entry.child is None:            # nothing the export writes (``read_entry``)
+                continue
             export.set_log_dir_index(e.chunk)
             if e.is_anm:
                 e.entry.child.dumpRaw(work, e.file_index, character)

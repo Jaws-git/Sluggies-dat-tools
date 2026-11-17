@@ -67,12 +67,13 @@ def skinned_bone_ids(skin_data: Optional[dict]) -> set:
     """Bones the donor's SK1/SK2/SKAcc entries skin to (mirrors
     SluggiesTools/binfmt.skin_bone_ids; the add-on can't import it)."""
     bones = set()
-    for entry in (skin_data or {}).get('SK1s', []):
+    skin_data = skin_data or {}
+    for entry in skin_data.get('SK1s') or []:
         bones.add(int(entry['BoneIndex']))
-    for entry in (skin_data or {}).get('SK2s', []):
+    for entry in skin_data.get('SK2s') or []:
         bones.add(int(entry['BoneIndex1']))
         bones.add(int(entry['BoneIndex2']))
-    for entry in (skin_data or {}).get('SKAccs', []):
+    for entry in skin_data.get('SKAccs') or []:
         bones.add(int(entry['BoneIndex']))
     return bones
 
@@ -331,7 +332,7 @@ def vertex_normals(geometry: 'cse.BoneLocalGeometry', loop_normals, vertex_count
             for axis in range(3):
                 sums[vertex][axis] += normal[axis]
     result = []
-    for exported, blender_vertex in enumerate(geometry.source_vertices):
+    for blender_vertex in geometry.source_vertices:
         total = sums[blender_vertex]
         if all(abs(v) < 1e-12 for v in total):
             total = [0.0, 0.0, 1.0]
@@ -373,13 +374,17 @@ def encode_vertex_records(object_name: str, geometry: 'cse.BoneLocalGeometry', n
     divisor = rc.int16_divisor(quantize_info)
     if len(geometry.positions) > 0xFFFF:
         raise ValueError(f'{object_name}: {len(geometry.positions)} vertices exceed the uint16 index range')
-    values = []
-    for index, (position, normal) in enumerate(zip(geometry.positions, normals)):
-        vertex = geometry.source_vertices[index]
-        for axis, value in zip('xyz', position):
-            values.append(rc.quantize_int16(value, divisor, f'{object_name} vertex {vertex} {axis}'))
-        for axis, value in zip(('nx', 'ny', 'nz'), normal):
-            values.append(rc.quantize_int16(value, divisor, f'{object_name} vertex {vertex} {axis}'))
+    values = rc.quantize_int16_all(
+        (value for position, normal in zip(geometry.positions, normals)
+         for value in (*tuple(position)[:3], *tuple(normal)[:3])), divisor)
+    if values is None:          # a refused component: walk again to name it
+        values = []
+        for index, (position, normal) in enumerate(zip(geometry.positions, normals)):
+            vertex = geometry.source_vertices[index]
+            for axis, value in zip('xyz', position):
+                values.append(rc.quantize_int16(value, divisor, f'{object_name} vertex {vertex} {axis}'))
+            for axis, value in zip(('nx', 'ny', 'nz'), normal):
+                values.append(rc.quantize_int16(value, divisor, f'{object_name} vertex {vertex} {axis}'))
     return struct.pack(f'>{len(values)}h', *values)
 
 
@@ -411,11 +416,13 @@ def build_skinned_rebuild_entry(
     widened = rc.widened_position_info(object_name, donor.position_quantize, position_quantize)
     if widened:
         infos.append(widened)
+    # First: this checks the vertex count, before the faces pack vertex indices as uint16.
+    vertex_records = encode_vertex_records(object_name, geometry, normals, position_quantize)
     faces_data, faces_count = cse.encode_faces(object_name, geometry.faces)
     if len(routing.indices) != faces_count:
         raise ValueError(f'{object_name}: {len(routing.indices)} surface indices for {faces_count} faces')
     entry = {
-        'VertexBufferData': rc.encode_field(encode_vertex_records(object_name, geometry, normals, position_quantize), use_compression),
+        'VertexBufferData': rc.encode_field(vertex_records, use_compression),
         'Influences': encode_influences(vertex_weights, geometry.source_vertices, use_compression),
     }
     if widened:

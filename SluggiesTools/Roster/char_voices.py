@@ -429,6 +429,15 @@ def state_entry(choice: Choice, custom: dict | None, ids_of: dict) -> dict:
             'pack': choice.pack}
 
 
+def _wave_length(archive, fid: int) -> int:
+    """The wave data length of an archived family file (``file_bytes`` gives None for an external file)."""
+    parts = archive.file_bytes(fid)
+    if parts is None:
+        raise CharVoiceConfigError(f'{KEY}: family file {fid} is not inside the sound archive (an external file): '
+                                   'it cannot take voice clips')
+    return len(parts[1])
+
+
 @steps.register('char_voices')
 def apply(ctx: steps.RosterContext) -> list[str]:
     if KEY not in ctx.config:
@@ -449,14 +458,14 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     ids_of = {}
     if vp.needs_archive():
         touched = sorted({c[0] for c in vp.copies} | {c[0] for c in vp.clips})
-        before = {fid: len(archive.file_bytes(fid)[1]) for fid in touched}
+        before = {fid: _wave_length(archive, fid) for fid in touched}
         added = new_sounds(archive, vp, stock)
         out, new_ids = brsar_write.add_sounds(sound, added)
         ids_of = dict(zip(vp.copies + vp.clips, new_ids))
         ctx.state['sound_out'] = out
         grown = brsar.Brsar(out)
         for fid, old in before.items():
-            new = len(grown.file_bytes(fid)[1])
+            new = _wave_length(grown, fid)
             species = sorted(s for s, (_sp, fam, _vs) in vp.rows.items() if fam == fid)
             warn = f' -- above the largest family file known to work ({FAMILY_FILE_TESTED_MAX:,})' \
                 if new > FAMILY_FILE_TESTED_MAX else ''

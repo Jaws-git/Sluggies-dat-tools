@@ -164,6 +164,50 @@ class CustomPackTests(unittest.TestCase):
             sound_packs.read_pack_file(bad)
         del other
 
+    def _pack_file(self, clip, members):
+        path = os.path.join(self.tmp, 'made' + sound_packs.PACK_EXTENSION)
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('pack.json', json.dumps({'format': 1, 'name': 'Made', 'clips': {'v1': clip}}))
+            for name, data in members.items():
+                zf.writestr(name, data)
+        return path
+
+    def test_only_the_named_members_of_a_pack_file_are_read(self):
+        from unittest import mock
+        path = self._pack_file({'rwav': 'v1.rwav'}, {'v1.rwav': self.a, 'extra.bin': bytes(1000)})
+        with mock.patch.object(zipfile.ZipFile, 'read', autospec=True, side_effect=zipfile.ZipFile.read) as read:
+            pack, files = sound_packs.read_pack_file(path)
+        self.assertEqual(sorted(call.args[1] for call in read.call_args_list), ['pack.json', 'v1.rwav'])
+        self.assertEqual(files, {'v1.rwav': self.a})
+        self.assertEqual(sound_packs.import_pack(self.tmp, path).rwav_bytes('v1'), self.a)
+
+    def test_a_member_larger_than_a_clip_is_refused_unread(self):
+        from unittest import mock
+        path = self._pack_file({'rwav': 'v1.rwav'}, {'v1.rwav': self.a})
+        with mock.patch.object(sound_packs, 'MAX_MEMBER_BYTES', len(self.a) - 1):
+            with self.assertRaisesRegex(sound_packs.PackError, 'too large'):
+                sound_packs.read_pack_file(path)
+
+    def test_a_clip_file_must_be_a_clip_by_name_and_content(self):
+        for clip, members, message in (
+                ({'rwav': 'v1.bat'}, {'v1.bat': self.a}, 'not a .rwav file'),
+                ({'rwav': 'v1.rwav', 'wav': 'run_me.bat'}, {'v1.rwav': self.a, 'run_me.bat': b'RIFF'},
+                 'not a .wav file'),
+                ({'rwav': 'v1.rwav', 'wav': 'v1.wav'}, {'v1.rwav': self.a, 'v1.wav': b'@echo off'},
+                 'not a WAV file')):
+            with self.subTest(message), self.assertRaisesRegex(sound_packs.PackError, message):
+                sound_packs.read_pack_file(self._pack_file(clip, members))
+
+    def test_a_failed_clip_write_keeps_the_old_clip(self):
+        from unittest import mock
+        pack = sound_packs.create_pack(self.tmp, 'Rosa', 0x09)
+        sound_packs.set_clip(pack, 'v1', self.a)
+        with mock.patch.object(sound_packs.os, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                sound_packs.set_clip(pack, 'v1', self.b)
+        self.assertEqual(pack.rwav_bytes('v1'), self.a)
+        self.assertEqual(sorted(os.listdir(pack.folder)), ['pack.json', 'v1.rwav'])
+
 
 class StockPackTests(unittest.TestCase):
     @classmethod

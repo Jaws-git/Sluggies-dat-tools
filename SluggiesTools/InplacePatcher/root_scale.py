@@ -290,6 +290,7 @@ def scale_bind_pose_data(
         vertex_cnt = (len(data) - vertex_offset) // stride
 
     out = bytearray(data)
+    clamped = 0
     for vi in range(vertex_cnt):
         base = vertex_offset + vi * stride
         for ci in range(3):  # position components only
@@ -298,10 +299,28 @@ def scale_bind_pose_data(
             if comp_fmt == ">f":
                 (out[off : off + comp_size]) = struct.pack(">f", raw * factors[ci])
             else:
-                (out[off : off + comp_size]) = struct.pack(
-                    ">h", _rescale_bind_pose_component(raw, factors[ci])
-                )
+                quantized = _rescale_bind_pose_component(raw, factors[ci])
+                if quantized != int(round(raw * factors[ci])):
+                    clamped += 1
+                (out[off : off + comp_size]) = struct.pack(">h", quantized)
+    if clamped:
+        _warn_clamped(clamped, vertex_cnt, factors)
     return bytes(out)
+
+
+def _warn_clamped(clamped: int, vertex_cnt: int, factors) -> None:
+    """Scaled 16-bit bind-pose coordinates left the int16 range and were clamped: those vertices are flattened
+    against the edge of the range. The logger is imported here only, the rest of the module stays free of it."""
+    try:
+        import slogger
+    except ImportError:
+        from SluggiesTools import slogger
+    slogger.warning(
+        f"Root-bone scale {tuple(factors)!r}: {clamped} bind-pose coordinate(s) of {vertex_cnt} vertices do not "
+        f"fit the model's 16-bit format and were clamped to its limit; the model will look flattened there. "
+        f"Use a smaller scale.",
+        source="root_scale",
+    )
 
 
 def resolve_bind_pose_scale(model: dict) -> tuple[float, float, float] | None:

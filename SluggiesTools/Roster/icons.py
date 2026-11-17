@@ -208,9 +208,13 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
         raise IconConfigError(f'"{STOCK_KEY}" must be a list of {{"id", "icon"}} entries')
     listed = []
     for key in ('wheels', 'ids', STOCK_KEY):
+        if not isinstance(config.get(key) or [], list):
+            raise IconConfigError(f'"{key}" must be a list of entries')
         for n, entry in enumerate(config.get(key) or []):
             if key == STOCK_KEY and (not isinstance(entry, dict) or entry.get('icon') is None):
                 raise IconConfigError(f'{key}[{n}] needs an "id" and an "icon"')
+            if not isinstance(entry, dict):
+                raise IconConfigError(f'{key}[{n}] must be an object, not {entry!r}')
             if entry.get('icon') is not None:
                 listed.append((f'{key}[{n}]', key, entry))
     for where, key, entry in listed:
@@ -618,7 +622,8 @@ def apply(ctx: steps.RosterContext, encode_cmpr=None) -> list[str]:
     encode_cmpr = encode_cmpr or encode_page
     entries = parse_icons(ctx.config, ctx.icon_dir)
     if not entries:
-        bare = [ids._number(w.get('id'), 'wheels.id') for w in ctx.config.get('wheels') or [] if w.get('id')]
+        bare = [ids._number(w.get('id'), 'wheels.id') for w in ctx.config.get('wheels') or []
+                if w.get('id') is not None]
         note = ['no "icon" in the roster config: the icon bank stays as it is']
         if bare:
             note.append('note: ' + ', '.join(f'0x{c:02X}' for c in bare) + ' have no icon here; they show the '

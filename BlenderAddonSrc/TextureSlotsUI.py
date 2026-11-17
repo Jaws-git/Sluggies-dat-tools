@@ -15,7 +15,6 @@ import textwrap
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, IntProperty, StringProperty
 
-from . import FieldCodec
 from . import ModelCheckCore
 from . import SluggiePath
 from . import TextureSlotsCore
@@ -82,7 +81,27 @@ def _image_file_name(node):
 
 # The open dialog's High tex/ folder and slot file names by index: a Low
 # item's update callback sees only the item, not the operator.
-_preview = {'tex_dir': '', 'slots': {}}
+# 'loaded' names the images the preview created, so that the ones left
+# without users can be removed when the dialog closes.
+_preview = {'tex_dir': '', 'slots': {}, 'loaded': set()}
+
+
+def _load_preview_image(path):
+    count = len(bpy.data.images)
+    image = bpy.data.images.load(path, check_existing=True)
+    if len(bpy.data.images) > count:
+        _preview['loaded'].add(image.name)
+    return image
+
+
+def _close_preview():
+    """Remove the images the preview loaded and nothing uses any more (a
+    drag through ten slots loads ten), and forget the dialog's folder."""
+    for name in _preview['loaded']:
+        image = bpy.data.images.get(name)
+        if image is not None and image.users == 0:
+            bpy.data.images.remove(image)
+    _preview.update(tex_dir='', slots={}, loaded=set())
 
 
 def _material_image_node(material_name):
@@ -111,7 +130,7 @@ def _preview_texture_index(item, context):
         file_name = _preview['slots'].get(item.texture_index)
         path = os.path.join(_preview['tex_dir'], file_name) if file_name else ''
         if path and os.path.isfile(path):
-            image = bpy.data.images.load(path, check_existing=True)
+            image = _load_preview_image(path)
     _set_node_image(node, image or _original_image(item))
 
 
@@ -169,7 +188,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
         else:   # without a Low model only the High model's slots are listed
             high_path = SluggiePath.resolve(high_arm)
             try:
-                model = FieldCodec.load_sluggie(high_path).get('SluggiesModel', {})
+                model = SluggiePath.load_model(high_path)
             except (OSError, ValueError) as exc:
                 self.hint = f"Could not read {high_path}: {exc}"
                 model = {}
@@ -177,6 +196,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             slots = TextureSlotsCore.texture_slots(model)
             _preview['tex_dir'] = self.tex_dir
             _preview['slots'] = {index: file_name for index, file_name, _added in slots}
+            _preview['loaded'] = set()
             for slot in slots:
                 entry = self.slots.add()
                 entry.index, entry.file_name, entry.added = slot
@@ -201,10 +221,11 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self, width=740)
 
     def _slot_name(self, index):
-        for slot in self.slots:
-            if slot.index == index:
-                return slot.file_name
-        return None
+        names = getattr(self, '_slot_names', None)
+        if names is None or len(names) != len(self.slots):
+            # draw() asks once per listed material per redraw: index the slots once
+            names = self._slot_names = {slot.index: slot.file_name for slot in self.slots}
+        return names.get(index)
 
     def draw(self, context):
         layout = self.layout
@@ -253,6 +274,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
 
     def execute(self, context):
         if self.hint:
+            _close_preview()
             return {"CANCELLED"}
         # The preview already set the images; this reports the result (and
         # sets them again, should an update have been missed).
@@ -269,8 +291,9 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             if not os.path.isfile(path):
                 errors.append(f"{item.material_name}: {path} not found")
                 continue
-            _set_node_image(node, bpy.data.images.load(path, check_existing=True))
+            _set_node_image(node, _load_preview_image(path))
             changed += 1
+        _close_preview()
         for message in errors:
             self.report({"ERROR"}, message)
         if changed:
@@ -284,6 +307,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             node = _material_image_node(item.material_name)
             if node is not None:
                 _set_node_image(node, _original_image(item))
+        _close_preview()
 
 
 _CLASSES = (SluggiesTextureSlot, SluggiesLowTextureItem, SLUGGIES_OT_manage_texture_slots)

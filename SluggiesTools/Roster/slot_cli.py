@@ -38,6 +38,7 @@ import argparse
 import copy
 import json
 import os
+import shutil
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -582,6 +583,8 @@ def write_voice_pack(spec_path: str, root_dir: str) -> str:
         for moment, (rwav, wav) in files.items():
             sound_packs.set_clip(pack, moment, rwav, wav, origin=spec.get('origin'))
     except (sound_packs.PackError, OSError, ValueError) as exc:
+        # the folder is this call's own (the name was free): no half-written pack stays behind
+        shutil.rmtree(sound_packs.pack_folder(root_dir, candidate), ignore_errors=True)
         raise slot_plan.PlanError(f'the voice pack {candidate!r} could not be written: {exc}') from exc
     slogger.info(f'voice pack {candidate!r} written to {pack.folder} ({len(files)} clips)', source=SOURCE)
     return candidate
@@ -676,10 +679,10 @@ def main(argv=None) -> int:
         parser.error('--no-gear goes with --patch')
     if args.icon and args.icon[1] not in slot_plan.ICON_VIEWS:
         parser.error('--icon VIEW must be front, side or side_alt')
-    if os.path.exists(plan_path(args.output_dir)):
-        os.remove(plan_path(args.output_dir))       # a failed planner leaves no stale chain behind
     prepared = None
     try:
+        if os.path.exists(plan_path(args.output_dir)):
+            os.remove(plan_path(args.output_dir))       # a failed planner leaves no stale chain behind
         if args.slgmodel:
             path = os.path.abspath(args.slgmodel)
             if args.target:
@@ -728,7 +731,7 @@ def main(argv=None) -> int:
             edits = read_edits(args.apply)
         batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run, gecko=args.dry_run,
                     prepared=prepared)
-    except (RuntimeError, ValueError, gear.GearError) as exc:        # PlanError, SlotError, StateError, DeriveError, config errors
+    except (RuntimeError, ValueError, OSError, gear.GearError) as exc:   # PlanError, SlotError, StateError, DeriveError, config errors
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1
     for note in batch.notes:

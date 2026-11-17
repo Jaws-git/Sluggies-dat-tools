@@ -695,6 +695,16 @@ class RunnerTests(unittest.TestCase):
         options_runner.run(self.tmp, off=['cpu_vs_cpu'])
         self.assertEqual(go.detect(self.image()), [])
 
+    def test_a_dry_run_from_the_command_line_builds_once(self):
+        with (mock.patch.object(options_runner, 'build', wraps=options_runner.build) as build,
+              mock.patch.object(options_runner.slogger, 'configure'),
+              mock.patch.object(options_runner.slogger, 'info'),
+              mock.patch.object(options_runner.gecko_compat, 'record') as record):
+            self.assertEqual(options_runner.main(['--on', 'cpu_vs_cpu', '--dry-run', '--output-dir', self.tmp]), 0)
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(go.detect(self.image()), [])
+        record.assert_called_once()                      # the break is still recorded for the GUI
+
     def test_refusals(self):
         with self.assertRaisesRegex(options_runner.GameOptionsRunError, 'both on and off'):
             options_runner.run(self.tmp, on=['cpu_vs_cpu'], off=['cpu_vs_cpu'])

@@ -100,8 +100,12 @@ class SLUGGIES_OT_check_goto(bpy.types.Operator):
         if obj is None:
             self.report({'WARNING'}, f"{self.object_name} no longer exists")
             return {'CANCELLED'}
-        _go_to(context, obj)
-        _frame_selected(context)
+        try:
+            _go_to(context, obj)
+            _frame_selected(context)
+        except RuntimeError as exc:   # Blender refused a mode, visibility or selection change
+            self.report({'WARNING'}, f"{self.object_name}: {exc}")
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -176,11 +180,14 @@ class SLUGGIES_OT_check_action(bpy.types.Operator):
         if obj is None:
             self.report({'WARNING'}, f"{name} no longer exists")
             return {'CANCELLED'}
-        _go_to(context, obj)
         try:
+            _go_to(context, obj)
             ACTIONS[self.action_id][2](context, obj, **args)
         except ValueError as exc:
             self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
+        except RuntimeError as exc:   # Blender refused a mode, visibility or selection change
+            self.report({'WARNING'}, f"{name}: {exc}")
             return {'CANCELLED'}
         return {'FINISHED'}
 

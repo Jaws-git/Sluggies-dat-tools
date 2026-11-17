@@ -350,6 +350,22 @@ class CustomClipTests(unittest.TestCase):
         self.assertIsNone(chars[0x01]['char_clips'])
         self.assertEqual(pack.fingerprint(result, chars[0x00], lambda ref: None)['clips'], chars[0x00]['char_clips'])
         self.assertEqual(pack.fingerprint(result, chars[0x0D], lambda ref: None)['species_clips'], toad['clips'])
+        # a clip that cannot be read keeps an unknown hash and is reported, not dropped silently
+        before = len(result['warnings'])
+        with mock.patch.object(brsar_write, 'sound_rwav', side_effect=KeyError('wave')):
+            state.clip_hashes(result, self.out)
+        self.assertIsNone(chars[0x00]['char_clips']['v1'])
+        self.assertTrue(any('cannot be read from the sound archive: KeyError' in w
+                            for w in result['warnings'][before:]))
+
+    def test_an_external_family_file_is_a_config_error(self):
+        class External:
+            def file_bytes(self, fid):
+                return None
+        with self.assertRaisesRegex(char_voices.CharVoiceConfigError, 'family file 7 is not inside the sound archive'):
+            char_voices._wave_length(External(), 7)
+        fid = next(f for f in range(len(self.out.files())) if self.out.file_bytes(f) is not None)
+        self.assertEqual(char_voices._wave_length(self.out, fid), len(self.out.file_bytes(fid)[1]))
 
     def test_deterministic(self):
         image, ctx = build(self.config, clip_dir=self.tmp.name)

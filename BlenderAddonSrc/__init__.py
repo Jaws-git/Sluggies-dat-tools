@@ -49,6 +49,6 @@ def unregister():
     ModelCheckUI.unregister()
     SluggiesToolsPanel.unregister()
     AnmExport.unregister()
-    ImportSluggies.unregister()
     ExportSluggies.unregister()
+    ImportSluggies.unregister()
     SluggiePath.unregister()

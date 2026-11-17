@@ -263,6 +263,11 @@ class LegacyTests(unittest.TestCase):
         self.assertFalse(legacy.is_legacy({'format': 'x', 'starConfig': {}}))
         self.assertFalse(legacy.is_legacy(apply.settings_document(image())))
 
+    def test_a_number_of_hundreds_of_digits_is_a_legacy_error(self):
+        for path in ('starConfig__Power__b5', 'starCostConfig__regular', 'staminaCost'):
+            with self.subTest(path), self.assertRaisesRegex(legacy.LegacyError, 'digits'):
+                legacy.migrate(legacy_doc(**{path: 10 ** 400}), read.values(image()))
+
     def test_stock_file_stages_nothing(self):
         p = prepare(image(), legacy_doc())
         self.assertEqual((p.changes, p.notes, p.legacy), ([], [], True))

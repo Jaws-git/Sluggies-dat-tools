@@ -36,7 +36,7 @@ TOY_FIELD_CHUNK = 16
 SURFACE_TYPES = (
     ('FENCE', 2, "Fence (bounces off)",
      "Type 2, the outfield fence: the ball bounces back and stays in play"),
-    ('STANDS', 3, "Home run)",
+    ('STANDS', 3, "Home run",
      "Type 3, A batted ball that touches it is a home run, wherever it is"),
     ('GROUND', 1, "Ground (grass)", "Type 1, grass and general field ground"),
     ('DIRT', 6, "Infield dirt", "Type 6, infield dirt and mound"),

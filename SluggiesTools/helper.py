@@ -1,3 +1,4 @@
+import bisect
 import numpy as np
 import math
 from base import FileChunk
@@ -151,6 +152,7 @@ class Object(object):
 
 # https://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
 def quaternion_to_axis_angle(w, x, y, z):
+    w = max(-1.0, min(1.0, w))       # a stored w a little over 1 (rounding) is no reason to fail the model
     angle = 2 * math.acos(w) * 180 / math.pi
     s = math.sqrt(1-w*w)
     if s > 0.001:
@@ -186,17 +188,9 @@ class SRT(FileChunk):
             self.transform = np.identity(4)
         return self
 
-    def to_string(self):
-        if self.type == None:
-            return "none"
-        out = "format: " + '{:02x}'.format(self.type)
-        out = "data: " + ', '.join([x for x in self.values])
-        return out
-
-def prior_deletions(deletion_dict, ind):
-    deletion_keys = list(deletion_dict.keys())
-    deletion_keys.sort()
-    key_ind = 0
-    while key_ind + 1 < len(deletion_keys) and ind >= deletion_keys[key_ind + 1]:
-        key_ind += 1
-    return deletion_dict[deletion_keys[key_ind]]
+def prior_deletions(deletion_dict, ind, deletion_keys=None):
+    """The value of the largest key of *deletion_dict* that is not above *ind* (of the smallest key when all are).
+    *deletion_keys*: the sorted keys, for a caller that asks many times."""
+    if deletion_keys is None:
+        deletion_keys = sorted(deletion_dict)
+    return deletion_dict[deletion_keys[max(bisect.bisect_right(deletion_keys, ind) - 1, 0)]]

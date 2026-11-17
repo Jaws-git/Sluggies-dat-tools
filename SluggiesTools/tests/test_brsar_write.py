@@ -81,6 +81,11 @@ class RwavRwarTests(unittest.TestCase):
         with self.assertRaises(brsar_write.WriteError):
             brsar_write.rwar_split(b'RWSD' + bytes(32))
 
+    def test_a_truncated_rwav_is_refused(self):
+        brsar.parse_rwav(self.template)
+        with self.assertRaises(brsar.BrsarError):           # header intact, sample data cut short
+            brsar.parse_rwav(self.template[:-8])
+
     def test_rwav_build_and_coefs(self):
         self.assertEqual(brsar_write.rwav_coefs(self.template), self.coefs)
         np_rng = np.random.default_rng(2)

@@ -714,8 +714,20 @@ def error_message(output: str) -> str:
 # Labels
 # --------------------------------------------------------------------------
 
+_CHAR_INDEX: list = [None, -1, {}]     # [characters list, its length, {id: entry}]
+
+
 def characters(state: dict) -> dict[int, dict]:
-    return {c['id']: c for c in state['characters']}
+    """{id: entry} of the state's characters, built once per loaded list.
+
+    Called several times per cell and tooltip line. The index is rebuilt when
+    the state brings another list or the list changed length; entries edited
+    in place stay valid because the index holds the same dicts."""
+    chars = state['characters']
+    cached = _CHAR_INDEX
+    if cached[0] is not chars or cached[1] != len(chars):
+        cached[:] = [chars, len(chars), {c['id']: c for c in chars}]
+    return cached[2]
 
 
 def name_of(state: dict, cid: int) -> str:
@@ -821,7 +833,6 @@ CHAR_VOICE = 'char_voice'                     # the edit op (Roster/slot_plan.CH
 SPECIES_CLIP = 'species_clip'                 # one moment of a stock voice (Roster/slot_plan.SPECIES_CLIP)
 SPECIES_CLIPS = 'species_clips'               # its effects key
 CHAR_VOICE_DEFAULT = 'Default: its square\'s voice'
-MOMENT_KEYS = ('v1', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v10', 'v11', 'v12', 'v13', 'v14')   # Sound/sound_packs, pinned
 
 
 def char_voice_choices(state: dict, cid: int, packs=()) -> list[tuple[str, str | None, str | None]]:
@@ -963,13 +974,14 @@ def icon_ref(state: dict, cid: int, view: str) -> dict | None:
     return ((characters(state).get(cid) or {}).get('icon') or {}).get(view)
 
 
-def icon_file(state: dict, state_path: str, cid: int, view: str) -> str | None:
-    """The crop PNG of a portrait (``_gui/icons/...``), or None when there is none on disk."""
+def icon_file(state: dict, state_path: str, cid: int, view: str, check: bool = True) -> str | None:
+    """The crop PNG of a portrait (``_gui/icons/...``), or None when there is none on disk. ``check=False``:
+    the path the state names, not looked up on disk (for a caller that opens or stats it anyway)."""
     ref = icon_ref(state, cid, view)
     if not ref or not ref.get('file'):
         return None
     path = os.path.join(os.path.dirname(state_path), state.get('icon_dir') or 'icons', ref['file'])
-    return path if os.path.isfile(path) else None
+    return path if not check or os.path.isfile(path) else None
 
 
 def is_fallback(state: dict, cid: int, view: str) -> bool:
@@ -1084,7 +1096,6 @@ IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tga', '.webp')   
 IMAGE_PATTERNS = ';'.join('*' + ext for ext in IMAGE_EXTENSIONS)
 IMAGE_FILTERS = [('Images', IMAGE_PATTERNS), ('All files', '*.*')]
 FIT_CHOICES = (('contain', 'Fit inside'), ('cover', 'Fill and crop'), ('strict', 'Exact 48x51'))
-ICON_SIZE = (48, 51)
 
 
 def can_replace_portrait(cid: int) -> bool:
@@ -1164,7 +1175,16 @@ class IconPreview:
         digest = hashlib.sha1(image.tobytes()).hexdigest()[:12]
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f'{cid:02X}_{view}_{digest}.png')
-        image.save(path, 'PNG')
+        tmp = f'{path}.{os.getpid()}.tmp'       # the staging check reads it next: never a half-written PNG
+        try:
+            image.save(tmp, 'PNG')
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
         return path
 
     def edit(self, cid: int, view: str, staged: str) -> dict:
@@ -1434,6 +1454,18 @@ class PendingEdits:
                                                     and e.get('moment') == moment)]
         self.sections = [s for s in self.sections if not (int(s['target'], 16) == head and s['action'] == SPECIES_CLIP
                                                           and (s.get('edit') or {}).get('moment') == moment)]
+
+    def drop_equip(self, cid: int, file: int) -> None:
+        """Drop the slot's pending equipment edit for slot file ``file`` (the tile's Reset). The slot's red marks
+        go with it: they came from a staging check that still had this edit (a bat or glove counts towards the
+        player memory), so they may no longer hold. The next staging check and Patch Game's summary work them
+        out again."""
+        self.edits = [e for e in self.edits if not (int(e['id'], 16) == cid and e['op'] in EQUIP_OPS
+                                                    and e.get('file') == file)]
+        self.sections = [s for s in self.sections if not (int(s['target'], 16) == cid and s['action'] in EQUIP_OPS
+                                                          and (s.get('edit') or {}).get('file') == file)]
+        self.gecko.discard(cid)
+        self.memory.pop(cid, None)
 
     def char_voice_users(self, pack: str) -> list[int]:
         """The slots whose pending voice edit assigns the pack ``pack``."""
@@ -1966,17 +1998,32 @@ def game_dir_problem(game_dir: str) -> str | None:
     return None
 
 
+def _write_whole(path: str, text: str, encoding: str = 'utf-8') -> None:
+    """Write a file a child process reads next: into a temp file beside it, then renamed over it. A write that
+    fails halfway (disk full, encoding) leaves the file as it was, never a cut-off one; the OSError goes to
+    the caller."""
+    tmp = f'{path}.{os.getpid()}.tmp'
+    try:
+        with open(tmp, 'w', encoding=encoding) as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_game_dir(path: str, game_dir: str) -> None:
     """Store the game directory (CopyFilesToGameDir.bat reads the first line with ``set /p``, hence the
     encoding)."""
-    with open(path, 'w', encoding=_GAME_DIR_ENCODING) as f:
-        f.write(game_dir + '\n')
+    _write_whole(path, game_dir + '\n', _GAME_DIR_ENCODING)
 
 
 def write_edits(path: str, data: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
+    _write_whole(path, json.dumps(data, ensure_ascii=False, indent=1))
 
 
 def build_sizes(output: str) -> dict[str, int]:
@@ -2438,8 +2485,7 @@ def write_size_file(root_dir: str, doc: dict, now: float | None = None) -> str:
     path, n = os.path.join(folder, f'{SIZE_FILE_PREFIX}{stamp}.json'), 2
     while os.path.exists(path):
         path, n = os.path.join(folder, f'{SIZE_FILE_PREFIX}{stamp}-{n}.json'), n + 1
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(doc, f, indent=1)
+    _write_whole(path, json.dumps(doc, indent=1))
     return path
 
 

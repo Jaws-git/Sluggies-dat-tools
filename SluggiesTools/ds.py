@@ -12,6 +12,10 @@ class Tree(FileChunk):
         self.crawl()
 
     def node(self, addr):
+        # Every node of a tree is reached once; a second visit means the sibling or child pointers loop
+        # (damaged data), and following them would never end.
+        if addr in self.nodes:
+            raise ValueError(f'display tree at 0x{self.absolute:X}: node 0x{addr:X} is linked twice (the tree loops)')
         newNode = TreeNode(self.f, self.absolute + addr - 0x4, 0x10, "Node").analyze()
         newNode.addr = addr
         self.nodes[addr] = newNode

@@ -430,6 +430,18 @@ class MatrixHelperTests(unittest.TestCase):
         absolute = cse.bone_absolute_matrices(bones)
         self.assertEqual(cse.transform_point(absolute[1], (0.0, 0.0, 0.0)), (2.0, 2.0, 0.0))
 
+    def test_bone_with_unknown_parent_is_refused(self):
+        bone = {'Translation': [0.0, 0.0, 0.0], 'Scale': [1.0, 1.0, 1.0], 'Quaternion': [-1.0, 0.0, 0.0, 0.0]}
+        bones = [dict(bone, BoneId=0, ParentBoneId=None), dict(bone, BoneId=1, ParentBoneId=7)]
+        with self.assertRaisesRegex(ValueError, 'bone 1 has unknown parent 7'):
+            cse.bone_absolute_matrices(bones)
+
+    def test_parent_id_of_another_number_type_is_found(self):
+        bone = {'Translation': [1.0, 0.0, 0.0], 'Scale': [1.0, 1.0, 1.0], 'Quaternion': [-1.0, 0.0, 0.0, 0.0]}
+        bones = [dict(bone, BoneId='0', ParentBoneId=None), dict(bone, BoneId=1, ParentBoneId='0')]
+        absolute = cse.bone_absolute_matrices(bones)
+        self.assertEqual(cse.transform_point(absolute[1], (0.0, 0.0, 0.0)), (2.0, 0.0, 0.0))
+
     def test_quaternion_is_stored_with_negated_w(self):
         # Stored [-qw, qx, qy, qz]: 90 degrees about Z is w=cos45, z=sin45.
         half = math.sqrt(0.5)

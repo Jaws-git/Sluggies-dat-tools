@@ -112,6 +112,11 @@ class TableTests(unittest.TestCase):
         with self.assertRaises(names.NameConfigError):
             names.names_table(stock_table(), {0x66: 'X'}, extend=False)
 
+    def test_a_message_without_terminator_is_refused(self):
+        table = names.build_table([b'\0A', b'\0B'])
+        with self.assertRaises(names.NameConfigError):         # it used to loop forever past the end
+            names.messages(table[:-2])
+
     def test_wrong_table_refused(self):
         with self.assertRaises(names.NameConfigError):
             names.names_table(names.build_table([b'\0A'] * 10), {})

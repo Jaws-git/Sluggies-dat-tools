@@ -24,6 +24,18 @@ def _binds_name(node, names):
     return False
 
 
+def _sluggie_path_module():
+    """SluggiePath's bpy-free ``load_model`` (the panel's helpers read the
+    .sluggie through it), loaded the same way as the panel's names."""
+    import types
+    path = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiePath.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    nodes = [node for node in tree.body if _binds_name(node, {'os', '_MODELS', '_MODELS_MAX', 'load_model'})]
+    namespace = {'FieldCodec': FieldCodec}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
+    return types.SimpleNamespace(load_model=namespace['load_model'])
+
+
 def _extract(names, path=PANEL_PATH):
     """Load the given top-level names (imports/assignments/functions) from
     SluggiesToolsPanel.py (or *path*) into an executable module, in source
@@ -31,7 +43,7 @@ def _extract(names, path=PANEL_PATH):
     tree = ast.parse(path.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if _binds_name(node, names)]
     module = ast.Module(body=nodes, type_ignores=[])
-    namespace = {'FieldCodec': FieldCodec}
+    namespace = {'FieldCodec': FieldCodec, 'SluggiePath': _sluggie_path_module()}
     exec(compile(module, str(PANEL_PATH), 'exec'), namespace)
     return namespace
 

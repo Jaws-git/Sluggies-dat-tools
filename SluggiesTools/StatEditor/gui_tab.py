@@ -23,6 +23,7 @@ edit uses any more, and keeps the buttons' state current.
 import os
 import subprocess
 import threading
+import time
 import webbrowser
 
 import dearpygui.dearpygui as dpg
@@ -63,6 +64,7 @@ class StatEditorTab:
         self._pruned = None                  # the kept set the last prune ran with
         self._shown = None                   # the button state last applied
         self._started = False                # the start-up cleanup ran (first frame: the log pane exists then)
+        self._python = None                  # (time, editor_install.python_command()) of the last lookup
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -216,7 +218,7 @@ class StatEditorTab:
             return 'Writing the bridge file...'
         if self.app.busy:
             return 'A command is running (see the log).'
-        if self.install.kind == ei.SOURCE_KIND and ei.python_command() is None:
+        if self.install.kind == ei.SOURCE_KIND and self._python_command() is None:
             return 'This is a source folder (editor.py) and no Python was found on PATH to run it.'
         if not bridge:
             return None
@@ -230,6 +232,14 @@ class StatEditorTab:
         if self.received or self.offering:
             return 'The values the Stat Editor sent are being checked.'
         return None
+
+    def _python_command(self):
+        """``editor_install.python_command()``, asked at most every two seconds: ``_open_problem`` runs every
+        frame, and in the packaged build each call is up to three PATH searches."""
+        now = time.monotonic()
+        if self._python is None or now - self._python[0] > 2.0:
+            self._python = (now, ei.python_command())
+        return self._python[1]
 
     def _on_open_bridge(self):
         if self._open_problem(True):

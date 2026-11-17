@@ -72,8 +72,13 @@ def read_bank(data: bytes) -> Bank:
     magic, seq_ptr, _bank_id, seq_count = struct.unpack_from('>IIHH', data, 0)
     if magic not in MAGICS:
         raise AnimError(f'not an animation bank (magic 0x{magic:08X})')
-    if seq_count == 0 or seq_ptr + SEQUENCE_SIZE * seq_count > len(data):
+    if seq_count == 0:
+        raise AnimError('it holds no animations')
+    if seq_ptr + SEQUENCE_SIZE * seq_count > len(data):
         raise AnimError(f'the sequence table ({seq_count} sequences) runs past the end of the file')
+    most = max(max(counts) for counts in SEQUENCES.values())
+    if seq_count > most:        # no stock bank has more; also bounds the work on a crafted file
+        raise AnimError(f'it holds {seq_count} animations; the largest animation bank has {most}')
     sequences = []
     for s in range(seq_count):
         _name, track_ptr, track_count, _pad = struct.unpack_from('>IIHH', data, seq_ptr + SEQUENCE_SIZE * s)

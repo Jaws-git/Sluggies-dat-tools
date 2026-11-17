@@ -355,12 +355,12 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
         return {"BoneId": bone_id, "ParentBoneId": parent_id}
 
     def test_no_edited_field_is_clean(self):
-        self.assertEqual(self.fn({"BoneHierarchy": [self._donor(0)]}, []), [])
+        self.assertEqual(self.fn({"BoneHierarchy": [self._donor(0)]}), [])
 
     def test_deleted_donor_bone_is_rejected(self):
         model = {"BoneHierarchy": [self._donor(0), self._donor(1, 0)],
                   "BoneHierarchyEdited": [dict(self._donor(0), UserAdded=False)]}
-        errors = self.fn(model, [])
+        errors = self.fn(model)
         self.assertTrue(any('missing' in e for e in errors))
 
     def test_reparented_donor_bone_is_rejected(self):
@@ -372,7 +372,7 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
                 dict(self._donor(2, 1), UserAdded=False),
             ],
         }
-        errors = self.fn(model, [])
+        errors = self.fn(model)
         self.assertTrue(any('reparented' in e for e in errors))
 
     def test_new_bone_spliced_mid_chain_is_rejected(self):
@@ -384,7 +384,7 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
                 dict(BoneId=2, ParentBoneId=0, UserAdded=True),
             ],
         }
-        errors = self.fn(model, [])
+        errors = self.fn(model)
         self.assertTrue(any('inserted between' in e for e in errors))
 
     def test_new_root_bone_is_rejected(self):
@@ -395,7 +395,7 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
                 dict(BoneId=1, ParentBoneId=None, UserAdded=True),
             ],
         }
-        errors = self.fn(model, [])
+        errors = self.fn(model)
         self.assertTrue(any('may not be roots' in e for e in errors))
 
     def test_stadium_takes_new_root_and_child_bones(self):
@@ -410,7 +410,7 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
                         dict(BoneId=1, ParentBoneId=parent, UserAdded=True),
                     ],
                 }
-                self.assertEqual(self.fn(model, []), [])
+                self.assertEqual(self.fn(model), [])
 
     def test_valid_leaf_append_has_no_errors(self):
         model = {
@@ -420,7 +420,7 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
                 dict(BoneId=1, ParentBoneId=0, UserAdded=True),
             ],
         }
-        self.assertEqual(self.fn(model, []), [])
+        self.assertEqual(self.fn(model), [])
 
 
 if __name__ == '__main__':

@@ -255,7 +255,10 @@ def parse_latest_release(data) -> Release:
     version = parse_version(tag)
     if version is None:
         raise ValueError(f'the latest release has no version tag ({tag!r})')
-    return Release(version, tag, data.get('html_url') or RELEASES_PAGE)
+    page = data.get('html_url')
+    if not isinstance(page, str) or not page.startswith('https://github.com/'):     # it goes to the web browser
+        page = RELEASES_PAGE
+    return Release(version, tag, page)
 
 
 def fetch_latest_release(timeout: float = 10.0) -> Release:

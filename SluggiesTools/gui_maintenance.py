@@ -54,6 +54,7 @@ class MaintenanceTab:
         self.app = app                       # gui.SluggiesGui
         self.scanning = False
         self.dat_size_before = None          # dt_na.dat size when Defragment started
+        self.ffmpeg_install_failed = None    # why the last winget install did not finish, until it is shown
         self.picks = gui_audio.FilePicks(app)
 
     def build(self):
@@ -110,7 +111,10 @@ class MaintenanceTab:
             self._ffmpeg_status(f'ffmpeg: found, {version or "version unknown"} ({path})', _OK)
             dpg.configure_item('maintenance_ffmpeg_install', show=False)
         elif has_winget:
-            self._ffmpeg_status('ffmpeg: not found.', _WARN)
+            failed, self.ffmpeg_install_failed = self.ffmpeg_install_failed, None
+            self._ffmpeg_status('ffmpeg: not found.' + (f' The winget install did not finish: {failed} (the '
+                                                        'console has winget\'s output).' if failed else ''),
+                                _ERROR if failed else _WARN)
             dpg.configure_item('maintenance_ffmpeg_install', show=True, enabled=True)
         else:
             self._ffmpeg_status('ffmpeg: not found, and winget isn\'t available to install it (get "App Installer" '
@@ -130,11 +134,14 @@ class MaintenanceTab:
     def _ffmpeg_installed(self, ok, output):
         # winget redraws progress bars with \r; log only the lines that settled
         lines = [line.rsplit('\r', 1)[-1].strip() for line in output.splitlines()]
-        for line in lines:
-            if line and not set(line) <= set('-\\|/ █▒'):
-                self.app.log_line('  ' + line)
+        settled = [line for line in lines if line and not set(line) <= set('-\\|/ █▒')]
+        for line in settled:
+            self.app.log_line('  ' + line)
         if not ok:
-            self.app.log_line('winget did not finish the install (see above).')
+            self.app.log_line('winget did not finish the install (see above).', _WARN)
+            # winget's last line is its reason; the status line shows it once the check below finds no ffmpeg
+            self.ffmpeg_install_failed = settled[-1] if settled else 'winget gave no reason'
+            self.app.toast.error('ffmpeg was not installed.')
         self.check_ffmpeg()
 
     def _ffmpeg_status(self, text, color):
@@ -195,7 +202,9 @@ class MaintenanceTab:
         path = self._dat_path()
         self.dat_size_before = os.path.getsize(path) if os.path.isfile(path) else None
         self._report('', _DIM)
-        self.app.run_chain([('--defrag-hammerspace',)], on_done=self._defrag_done)
+        if not self.app.run_chain([('--defrag-hammerspace',)], on_done=self._defrag_done):
+            self._report('Not started: another command or a sound write is running. Try again when it is done.',
+                         _WARN)
 
     def _defrag_done(self, code, output):
         path = self._dat_path()

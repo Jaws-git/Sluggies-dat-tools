@@ -67,7 +67,7 @@ class BankTests(unittest.TestCase):
 
     def test_refusals(self):
         for data, message in ((b'\x00' * 8, 'too short'), (bank(7, {1}, magic=0x12345678), 'not an animation bank'),
-                              (bank(7, {1})[:0x40], 'runs past')):
+                              (bank(7, {1})[:0x40], 'runs past'), (bank(7, {1}, count=0), 'holds no animations')):
             with self.assertRaisesRegex(anim.AnimError, message):
                 anim.read_bank(data)
         with self.assertRaisesRegex(anim.AnimError, '3 animations, which matches none'):

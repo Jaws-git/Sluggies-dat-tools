@@ -130,6 +130,18 @@ class ACTRebuildSyntheticTests(unittest.TestCase):
         mirror = next(d for d in reparsed.user_data if d.kind == act_rebuild.KIND_MIRROR)
         self.assertEqual((mirror.payload[4], mirror.payload[5]), (2, 3))
 
+    def test_append_leaf_bone_refuses_a_looping_sibling_chain(self):
+        parsed = act_rebuild.parse_act(self._build_minimal_act(bone_count=2, with_user_data=True))
+        first = act_rebuild.append_leaf_bone(parsed, parent_id=None, srt_blob=None)   # two roots: 0 -> 2
+        roots = [b for b in first.bones if b.parent == 0]
+        self.assertEqual(len(roots), 2)
+        roots[1].next = act_rebuild.HEADER_SIZE + roots[0].id * act_rebuild.BONE_RECORD_SIZE
+        with self.assertRaisesRegex(ValueError, 'loops'):
+            act_rebuild.append_leaf_bone(first, parent_id=None, srt_blob=None)
+        roots[1].next = act_rebuild.HEADER_SIZE + 3
+        with self.assertRaisesRegex(ValueError, 'not a bone record'):
+            act_rebuild.append_leaf_bone(first, parent_id=None, srt_blob=None)
+
     def test_append_root_bone_joins_the_root_sibling_chain(self):
         """Stadiums (2026-10-01): parent_id=None links the new bone after the
         last root, with a null parent, and leaves the header alone."""

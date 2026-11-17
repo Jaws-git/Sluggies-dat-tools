@@ -139,8 +139,14 @@ def resplit_retangled(find_model=None) -> tuple[list, list]:
 
     repaired, failed = [], []
     for route in retangled_routes():
-        baseline, _notes = UntangledTextures.split_baseline(*route, find_model(*route))
-        success, _offset, _length = hh.restoreSplitBaseline(*route, baseline)
+        try:
+            baseline, _notes = UntangledTextures.split_baseline(*route, find_model(*route))
+            success, _offset, _length = hh.restoreSplitBaseline(*route, baseline)
+        except (OSError, ValueError, KeyError) as exc:      # this route fails; the later ones are still repaired
+            import slogger      # on sys.path once HammerspaceHelper is loaded
+            slogger.warning(f'Could not re-split route ({route[0]},{route[1]}): {type(exc).__name__}: {exc}',
+                            source='untangle.policy')
+            success = False
         (repaired if success else failed).append(route)
     return repaired, failed
 
