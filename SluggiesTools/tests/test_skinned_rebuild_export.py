@@ -25,6 +25,7 @@ import BlockValidator  # noqa: E402
 import CustomSubmeshExport as cse  # noqa: E402
 import FieldCodec  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
+import BlockAssembly  # noqa: E402
 import RigidRebuildExport as rre  # noqa: E402
 import SkinnedRebuildExport as sre  # noqa: E402
 import synthetic_donor  # noqa: E402
@@ -438,10 +439,10 @@ class EntryTests(unittest.TestCase):
             ]
             model['Submeshes'][0]['SkinnedRebuild'] = entry
             main._validate_skinned_rebuild(model)
-            donor_header = bytearray(main.CloneHEADER(env.model_offset))
+            donor_header = bytearray(main.CloneHEADER(main.Donor.in_dat(env.model_offset)))
             struct.pack_into('>I', donor_header, 0x18, 0x1000)
             from unittest import mock
-            with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+            with mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=bytes(donor_header)):
                 result = main.BuildModelBlock(data, main.SectionModes(gpl='build', skn='build'), sluggie_path=env.sluggie_path)
             self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
             ptr7 = struct.unpack_from('>I', result.block, 0x18)[0]

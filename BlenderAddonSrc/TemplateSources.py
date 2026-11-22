@@ -6,7 +6,7 @@ caller (``SluggiesToolsPanel.py``) scans scene materials into
 list of ``rigid:<SurfaceId>`` / ``derived:<SurfaceId>`` / ``builtin:<name>``
 choices the dialog offers, matching the resolution order and hand/visibility
 exclusion in the "Template sources" section of the plan and
-``HammerspaceMain._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES`` /
+``SubmeshTemplates._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES`` /
 ``_CUSTOM_SUBMESH_BUILTIN_TEMPLATES`` (the authoritative, `.sluggie`-side
 validation this dialog only has to approximate).
 """
@@ -17,12 +17,12 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, List, Tuple
 
-# Mirrors HammerspaceMain._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES. A rigid
+# Mirrors SubmeshTemplates._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES. A rigid
 # template drawn with one of these Type-7 shader modes inherits hand or
 # ghost visibility behaviour and is excluded.
 HAND_VISIBILITY_ROLES = frozenset({"RhSp", "LhSp", "SpRf", "GhSp"})
 
-# Mirrors HammerspaceMain._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES: Type-7 modes
+# Mirrors SubmeshTemplates._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES: Type-7 modes
 # whose param byte 0 is a specular strength. A custom surface whose template
 # draws with any other mode gets no SpecularStrength property.
 SPECULAR_SHADER_MODES = frozenset({"Spec", "LhSp", "RhSp", "GhSp"})
@@ -53,7 +53,7 @@ SHADER_MODE_DESCRIPTIONS = {
 LIT_SHADER_MODES = ('Spec', 'RhSp', 'LhSp', 'GhSp', 'SpRf')
 UNLIT_SHADER_MODES = ('Shdw', 'Audi', 'Oeka')
 
-# Mirrors HammerspaceMain.STADIUM_CHUNKS (= export.STADIUM_DIR_INDICES): the
+# Mirrors SluggieModel.STADIUM_CHUNKS (= export.STADIUM_DIR_INDICES): the
 # .sluggie ChunkNumber of the stadium models, 7 Mario Stadium ... 16 Toy
 # Field. In a stadium a custom submesh must hang on a root bone (Dolphin,
 # 2026-10-01); the patcher refuses anything else.
@@ -85,7 +85,7 @@ class BuiltinTemplate:
     stadium_only: bool = False  # offered (and accepted) only on stadium models
 
 
-# Mirrors HammerspaceMain._CUSTOM_SUBMESH_BUILTIN_TEMPLATES, which is
+# Mirrors SubmeshTemplates._CUSTOM_SUBMESH_BUILTIN_TEMPLATES, which is
 # authoritative -- the addon cannot import the tools package, so the layer
 # counts and verification flags are duplicated here and the registry names
 # this module as its mirror. `layers` caps the UV channels a custom submesh
@@ -132,7 +132,7 @@ BUILTIN_TEMPLATES = {
 }
 
 # Only templates confirmed in game are offered; the others stay hidden, and
-# HammerspaceMain._validate_template_source refuses them at patch time.
+# HammerspaceValidate._validate_template_source refuses them at patch time.
 BUILTIN_TEMPLATE_NAMES: Tuple[str, ...] = tuple(
     name for name, template in BUILTIN_TEMPLATES.items() if template.verified_in_game
 )
@@ -241,7 +241,7 @@ def build_template_source_choices(
 
     Only built-ins verified in game are listed
     (``BUILTIN_TEMPLATE_NAMES``; all are today), so an unverified capture is
-    unselectable here; ``HammerspaceMain._validate_custom_submeshes`` refuses one too.
+    unselectable here; ``HammerspaceValidate._validate_custom_submeshes`` refuses one too.
 
     Stadium-only built-ins are listed only when *stadium* is true, and then
     first, so a stadium preselects ``builtin:stadium_shdw_opaque_v1``.

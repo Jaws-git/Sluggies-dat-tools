@@ -596,7 +596,7 @@ def untracked_keys_warnings(candidates, context):
 
 
 # --- Blender-side pre-check for the donor-topology rules
-# HammerspaceMain._validate_bone_hierarchy_edited enforces authoritatively
+# HammerspaceValidate._validate_bone_hierarchy_edited enforces authoritatively
 # (act_section.html#appending-bones). This is a courtesy check so a mistake
 # is visible while the user can still see and undo it in Blender; it is not
 # a substitute for the patcher's own gate. Sibling-chain order is not in the
@@ -2964,7 +2964,7 @@ def _resolve_material_texture_changes(
 def _custom_submesh_texture_layer(mode):
     """Decode a Type-1 ShaderMode hex string into (layer, texture_index).
     Bits 13-15 are the texture layer, bits 0-12 are the texture index. Duplicated from
-    HammerspaceMain._custom_submesh_texture_layer because the add-on stays
+    SubmeshTemplates._custom_submesh_texture_layer because the add-on stays
     standalone (no SluggiesTools imports)."""
     setting = int(mode, 16)
     return ((setting >> 13) & 7, setting & 0x1FFF)
@@ -2975,7 +2975,7 @@ def _custom_submesh_template_texture_index(model, template_source):
     its new descriptor should clone the GX format from. A custom submesh has no donor material of its own, so
     this walks the same donor DisplayStates a `rigid:`/`derived:`/`builtin:`
     template resolves against at build time (mirroring
-    HammerspaceMain._custom_submesh_rigid_records/_derived_records/
+    SubmeshTemplates._custom_submesh_rigid_records/_derived_records/
     _builtin_records) to find the effective layer-0 Type-1 texture index:
 
     - `rigid:<SurfaceId>`: the template submesh's own effective layer-0

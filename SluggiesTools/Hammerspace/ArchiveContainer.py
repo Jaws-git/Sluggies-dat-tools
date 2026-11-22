@@ -23,7 +23,7 @@ understand (ANM blocks, padding, unreferenced slack) survives untouched.
 
 Only one member can be rewritten per call.  Editing several members of the
 same archive works because the patcher rebuilds the archive the output routes
-to now (``HammerspaceMain._live_archive``), which holds the earlier edits.
+to now (``Donor._live_archive``), which holds the earlier edits.
 """
 
 import struct

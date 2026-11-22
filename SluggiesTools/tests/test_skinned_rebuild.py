@@ -19,6 +19,7 @@ for import_path in (ROOT_DIR, TOOLS_DIR, HAMMERSPACE_DIR, ADDON_DIR, pathlib.Pat
 import ExportMode  # noqa: E402
 import FacialPoseRebuild as fpr  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
+import BlockAssembly  # noqa: E402
 import SkinnedRebuild as sr  # noqa: E402
 from SluggiesTools import patch_dispatch  # noqa: E402
 import synthetic_donor  # noqa: E402
@@ -688,7 +689,7 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
         self.data = self.env.reload()
         self.model = self.data['SluggiesModel']
         self.model['UseHammerspace'] = True
-        self.donor_gpl = main.CloneGPL(self.env.model_offset, self.env.model_length)
+        self.donor_gpl = main.CloneGPL(main.Donor.in_dat(self.env.model_offset, self.env.model_length))
 
     def _build(self, **modes):
         modes.setdefault('skn', 'build')
@@ -849,9 +850,9 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
         self.model['Submeshes'][0]['SkinnedRebuild'] = _rebuild(self.model, [[(BONE_A, 1.0)]] * N)
         # The synthetic donor header has no ptr7; give it one so the header
         # builder places the section (the pointer is recomputed from it).
-        donor_header = bytearray(main.CloneHEADER(self.env.model_offset))
+        donor_header = bytearray(main.CloneHEADER(main.Donor.in_dat(self.env.model_offset)))
         struct.pack_into('>I', donor_header, 0x18, 0x1000)
-        with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+        with mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=bytes(donor_header)):
             result, _gpl, _skn = self._build()
             self.assertEqual(struct.unpack_from('>I', result.block, 0x18)[0], 0)
             # Poses on another submesh are kept (the stub section itself is
@@ -878,9 +879,9 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
         rebuild = _rebuild(self.model, [[(BONE_B, 1.0)]] * 3 + [[(BONE_A, 1.0)]] * 4)
         rebuild['FacialPoses'] = _facial_poses([1, 3, 4])
         self.model['Submeshes'][0]['SkinnedRebuild'] = rebuild
-        donor_header = bytearray(main.CloneHEADER(self.env.model_offset))
+        donor_header = bytearray(main.CloneHEADER(main.Donor.in_dat(self.env.model_offset)))
         struct.pack_into('>II', donor_header, 0x18, 0x1000, 0x1000 + len(section))
-        with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+        with mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=bytes(donor_header)):
             result, gpl, _skn = self._build()
         block = result.block
         ptr7_new, ptr8_new = struct.unpack_from('>II', block, 0x18)

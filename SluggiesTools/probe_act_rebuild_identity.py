@@ -3,7 +3,7 @@
 Parses every ACT-bearing player model in INPUT dt_na.dat with
 ``act_rebuild.parse_act`` and re-emits it with ``act_rebuild.rebuild_act_bytes``,
 checking byte-identical output. This gates the ACT writer that
-``HammerspaceMain.BuildACTBoneHierarchy`` builds on: if it cannot faithfully
+``ActBuild.BuildACTBoneHierarchy`` builds on: if it cannot faithfully
 reproduce every donor's ACT section unchanged, it cannot be trusted to append
 a bone to one.
 
@@ -91,7 +91,7 @@ def _iter_input_model_blocks():
 
 
 def _safe_clone_act(offset: int, length: int) -> bytes | None:
-    """Bounds-checked variant of ``HammerspaceMain.CloneACT``.
+    """Bounds-checked variant of ``Donor.CloneACT``.
 
     Not every DOL directory entry is a GPL/ACT/TEX/SKN model block -- some
     directories (not in export.py's ``folderNameMap``) hold differently

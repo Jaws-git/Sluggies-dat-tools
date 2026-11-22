@@ -21,6 +21,7 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import HammerspaceHelper as hh
 import HammerspaceMain as main
+import RouteWriter
 import UntanglePolicy as policy
 
 OWNER = (24, 0)
@@ -67,7 +68,7 @@ class UntangleCycleTests(unittest.TestCase):
             mock.patch.object(hh, 'BASE_SIZE', BASE_SIZE),
             mock.patch.object(hh, '_readDirPtrs', return_value=pointers),
             mock.patch.object(hh, 'writeDebugDumps'),
-            mock.patch.object(main, 'CheckLodPartner'),
+            mock.patch.object(RouteWriter, 'CheckLodPartner'),
             mock.patch.object(main.LodTextureSync, 'sync_low_block', side_effect=lambda block, *_a, **_k: block),
             mock.patch.object(main.LodTextureSync, 'sync_partner_of_high'),
             mock.patch.object(main.LodPartnerGuard, 'read_current_block', return_value=None),

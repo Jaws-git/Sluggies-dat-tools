@@ -297,7 +297,7 @@ def bone_local_geometry(vertex_cos, triangles, obj_world, arm_world, host_bind):
 # ---------------------------------------------------------------------------
 # position range check and quantization
 # ---------------------------------------------------------------------------
-# Canonical rigid attribute formats (CompCount, QuantizeInfo). Mirrors HammerspaceMain._CUSTOM_SUBMESH_*_FORMAT: the builder writes
+# Canonical rigid attribute formats (CompCount, QuantizeInfo). Mirrors SluggieModel._CUSTOM_SUBMESH_*_FORMAT: the builder writes
 # these headers for every CustomSubmeshes entry whatever its template source,
 # so the exporter must encode in exactly these formats.
 POSITION_FORMAT = (3, 59)
@@ -512,7 +512,7 @@ def _rigid_attribute_plan(model, surface_id, template_source):
 def attribute_plan(model, template_source):
     """The attributes a custom submesh must export for *template_source*,
     resolved against the target .sluggie the same way the hammerspace builder
-    resolves the template (HammerspaceMain._resolve_custom_submesh_records):
+    resolves the template (SubmeshTemplates._resolve_custom_submesh_records):
 
     - `rigid:` draws with the template surface's active Type-3 layout, index
       widths included.
@@ -521,7 +521,7 @@ def attribute_plan(model, template_source):
     - `builtin:` uses two UV channels when submesh 0 binds a layer-1 texture
       anywhere, capped by the template's own layer count -- the 1-layer
       `Shdw` built-in exports one channel whatever the host binds, matching
-      HammerspaceMain._custom_submesh_builtin_records.
+      SubmeshTemplates._custom_submesh_builtin_records.
 
     `derived:`/`builtin:` get one color channel and normals, the canonical
     rigid attribute set -- except a built-in flagged without normals
@@ -584,7 +584,7 @@ def encode_loop_uvs(object_name, geometry, loop_uvs, uv_format=UV_FORMAT):
 def encode_color_rgba4444(rgba):
     """One entry of the canonical ``(4, 48)`` color array: a big-endian 16-bit
     RGBA4444 value, matching the builder's 2-byte color stride
-    (HammerspaceMain._CUSTOM_SUBMESH_COLOR_STRIDE). QuantizeInfo 48 is
+    (SubmeshTemplates._CUSTOM_SUBMESH_COLOR_STRIDE). QuantizeInfo 48 is
     RGBA4444 in the engine, not RGBA8 (confirmed in Dolphin)."""
     return rc.encode_color_entry(COLOR_FORMAT[1], rgba)
 

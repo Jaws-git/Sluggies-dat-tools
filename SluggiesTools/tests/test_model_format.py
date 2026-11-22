@@ -15,7 +15,7 @@ for import_path in (HAMMERSPACE_DIR, BLENDER_ADDON_DIR, INPLACE_PATCHER_DIR):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
-from ModelFormat import compute_mem_clear_range, conservative_flush_indices
+from ModelFormat import compute_mem_clear_range
 from SkinWeights import quantize_skin_weights
 import root_scale as _root_scale
 import patch_skn_inplace as _skn
@@ -26,12 +26,6 @@ class ModelFormatTests(unittest.TestCase):
         self.assertEqual(
             compute_mem_clear_range({0, 24}, {24, 48, 72}, 24),
             (48, 64),
-        )
-
-    def test_conservative_flush_is_deterministic(self):
-        self.assertEqual(
-            conservative_flush_indices({0, 24, 48}, 24, 48, 32, 4),
-            [0, 1, 2, 3],
         )
 
     def test_weight_target_256_emits_observed_255_plus_1_duplicate(self):

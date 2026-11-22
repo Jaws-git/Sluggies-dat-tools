@@ -110,8 +110,6 @@ def copy_object(obj, collection):
     collection.objects.link(copy)
     if copy.data.shape_keys is not None:
         copy.shape_key_clear()
-    if 'FacialShapeKeyCount' in copy:
-        copy['FacialShapeKeyCount'] = 0
     copy.parent = None
     copy.matrix_world = obj.matrix_world.copy()
     copy.hide_viewport = False

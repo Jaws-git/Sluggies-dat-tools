@@ -10,7 +10,7 @@ where its *base model* lies in ``1_Input``: the vanilla file the slot's model di
 slot's own, a new ID's model source). So ``ChunkNumber`` / ``FileIndex`` / ``ModelOffset`` are the base model's
 and the ``.sluggie`` can go into any slot the base model fits (``--patch-slot``, ``--target-id``), not just the
 one it came from. The block itself rides along as ``DonorEntry`` (``{"Offset", "Data"}``: the whole DOL entry,
-archive prefix included): it is the donor every patch of this file builds from (``HammerspaceMain.donor_entry``),
+archive prefix included): it is the donor every patch of this file builds from (``Donor.donor_entry``),
 because the bytes in ``1_Input`` at those offsets are the base model's, not this one's. A slot export therefore
 always goes through Hammerspace (``start._needs_hammerspace``; the in-place patcher refuses it). ``SlotExport``
 records where it came from (informational only).
@@ -59,7 +59,7 @@ ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 MODELS_DIR = os.path.join(ROOT, '2_Output_Assets')
 RESULT_FILE = 'slot_export.json'           # in _gui: what the last export wrote, or why it failed (the GUI reads it)
 FOLDER_PREFIX = 'Custom '
-DONOR_KEY = 'DonorEntry'                   # HammerspaceMain.DONOR_ENTRY_KEY
+DONOR_KEY = 'DonorEntry'                   # Donor.DONOR_ENTRY_KEY
 META_KEY = 'SlotExport'
 MAX_NUMBER = 999
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

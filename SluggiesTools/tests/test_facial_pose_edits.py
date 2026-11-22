@@ -10,6 +10,7 @@ import test_rigid_rebuild as trr  # noqa: E402  (sets up the import paths)
 import test_skinned_rebuild  # noqa: E402
 import facial_pose_edits  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
+import BlockAssembly  # noqa: E402
 import synthetic_donor  # noqa: E402
 
 RIGID = trr.RIGID
@@ -91,9 +92,9 @@ class HammerspaceBuildTests(unittest.TestCase):
         ]
 
     def _build(self):
-        donor_header = bytearray(main.CloneHEADER(self.env.model_offset))
+        donor_header = bytearray(main.CloneHEADER(main.Donor.in_dat(self.env.model_offset)))
         struct.pack_into('>I', donor_header, 0x18, 0x1000)
-        with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+        with mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=bytes(donor_header)):
             result = main.BuildModelBlock(self.data, main.SectionModes(), sluggie_path=self.env.sluggie_path)
         self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
         ptr7 = struct.unpack_from('>I', result.block, 0x18)[0]

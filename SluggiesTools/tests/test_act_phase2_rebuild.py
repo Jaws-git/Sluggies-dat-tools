@@ -38,6 +38,7 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import act_rebuild  # noqa: E402
 import HammerspaceMain as hammerspace  # noqa: E402
+import ActBuild  # noqa: E402
 
 #: ``BoneId -> ParentBoneId`` for the synthetic donor skeleton.
 DONOR_PARENTS = {0: None, 1: 0, 2: 1, 3: 1, 4: 1, 5: 3, 6: 4, 7: 2, 8: 0}
@@ -170,8 +171,8 @@ class ACTPhase2RebuildTests(unittest.TestCase):
     def _build(self, data: dict) -> bytes:
         """Run the real rebuilder with the donor ACT injected in place of the
         ``CloneACT`` read of ``1_Input/dt_na.dat``."""
-        with mock.patch.object(hammerspace, 'CloneACT', return_value=self.donor_act_bytes):
-            return hammerspace.BuildACTBoneHierarchy(data, MODEL_OFFSET, MODEL_LENGTH)
+        with mock.patch.object(ActBuild, 'CloneACT', return_value=self.donor_act_bytes):
+            return hammerspace.BuildACTBoneHierarchy(data, hammerspace.Donor.in_dat(MODEL_OFFSET, MODEL_LENGTH))
 
     def test_no_new_bones_is_byte_identical_to_clone_route(self):
         """BoneHierarchyEdited with every entry UserAdded=False (nothing to

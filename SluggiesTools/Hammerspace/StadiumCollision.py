@@ -445,11 +445,11 @@ def write(chunk_number: int, file_index: int, data: bytes, name: str) -> int:
     if file_index not in collision_files_of_dir(chunk_number):
         raise ValueError(f'dir {chunk_number} file {file_index} is not a collision file the game loads')
     parse(data)
-    import HammerspaceMain
+    import RouteWriter
     if not hh.ensureOutputDat():
         raise RuntimeError('Unable to prepare output dt_na.dat')
-    return HammerspaceMain._write_route(data, chunk_number, file_index, name,
-                                        log_suffix=' | Stadium collision')
+    return RouteWriter._write_route(data, chunk_number, file_index, name,
+                                    log_suffix=' | Stadium collision')
 
 
 def unpatch(chunk_number: int, file_index: int) -> bool:

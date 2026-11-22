@@ -71,7 +71,7 @@ class _DonorCase(unittest.TestCase):
         self.faces = self.entry['FacesCount']
 
     def _build(self, **modes):
-        modes = dict(dict(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone'), **modes)
+        modes = dict(dict(gpl='build', tex='clone', skn='clone'), **modes)
         result = main.BuildModelBlock(self.data, main.SectionModes(**modes), sluggie_path=self.env.sluggie_path)
         self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
         return result, trr._gpl_section(result.block)
@@ -207,7 +207,7 @@ class BuildTests(_DonorCase):
         entry.pop('AdditionalSurfaces', None)
         entry.pop('FaceSurfaceIndices', None)
         data['SluggiesModel']['CustomSubmeshes'] = [entry]
-        modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
+        modes = main.SectionModes(gpl='build', tex='clone', skn='clone')
         return main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path).block
 
     def test_three_surfaces_each_get_their_faces(self):

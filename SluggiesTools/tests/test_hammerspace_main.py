@@ -17,6 +17,10 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(import_path))
 
 import HammerspaceMain as main
+import ActBuild
+import BlockAssembly
+import RigidSubmesh
+import RouteWriter
 import texture_helper
 
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
@@ -112,7 +116,7 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
             preserve_source_layout=True,
         )
 
-        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning), None)
+        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning))
         sk1_offset = struct.unpack_from('>I', block, 0x08)[0]
         first_source = struct.unpack_from('>I', block, sk1_offset + 0x30)[0]
         second_source = struct.unpack_from('>I', block, sk1_offset + 0x40 + 0x30)[0]
@@ -147,7 +151,7 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
             sk_accs=[],
         )
 
-        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning), None)
+        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning))
         sk2_offset = struct.unpack_from('>I', block, 0x0C)[0]
         first_source = struct.unpack_from('>I', block, sk2_offset + 0x60)[0]
         first_weight = struct.unpack_from('>I', block, sk2_offset + 0x64)[0]
@@ -192,7 +196,7 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
         skinning = self._rebuilt_skinning(
             [self._sk1(0x00, 0, 2, 0x01), self._sk1(0x40, 4, 1, 0x02)], [sk2])
 
-        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning), None)
+        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning))
 
         base = 0x24 + 2 * 0x40 + 0x74       # struct end 0x118
         base = (base + 31) & ~31             # 0x120
@@ -214,7 +218,7 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
             [self._sk1(0x00, 0, 1, 0x01), self._sk1(0x0C, 0, 1, 0x02)], [])
 
         with mock.patch.object(main._slogger, 'warning') as warning:
-            block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning), None)
+            block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning))
 
         sk1_offset = struct.unpack_from('>I', block, 0x08)[0]
         second_source = struct.unpack_from('>I', block, sk1_offset + 0x40 + 0x30)[0]
@@ -229,7 +233,7 @@ class BuildModelBlockTests(unittest.TestCase):
         # WriteModelBlock's high-/low-poly partner checks read the real DOL/DAT
         # (absent in CI); they have their own tests, so keep them out of these.
         for patcher in (
-            mock.patch.object(main, 'CheckLodPartner'),
+            mock.patch.object(RouteWriter, 'CheckLodPartner'),
             mock.patch.object(main.LodTextureSync, 'sync_low_block',
                               side_effect=lambda block, *_args, **_kwargs: block),
             mock.patch.object(main.LodTextureSync, 'sync_partner_of_high'),
@@ -241,14 +245,14 @@ class BuildModelBlockTests(unittest.TestCase):
     def _patch_common(self):
         return (
             mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
-            mock.patch.object(main, 'ParseSluggie', return_value=self.parsed),
-            mock.patch.object(main, 'CloneGPL', return_value=b'GPL'),
+            mock.patch.object(BlockAssembly, 'ParseSluggie', return_value=self.parsed),
+            mock.patch.object(BlockAssembly, 'CloneGPL', return_value=b'GPL'),
             contextlib.nullcontext(),          # (free slot: the tests index this tuple)
-            mock.patch.object(main, 'CloneACT', return_value=b'ACT'),
-            mock.patch.object(main, 'CloneTEX', return_value=b'TEX'),
-            mock.patch.object(main, 'CloneSKN', return_value=b'SKN'),
-            mock.patch.object(main, 'CloneTrailingSections', return_value=(b'TAIL', 0x80)),
-            mock.patch.object(main, 'CloneHEADER', return_value=b'\x00' * 0x20),
+            mock.patch.object(ActBuild, 'CloneACT', return_value=b'ACT'),
+            mock.patch.object(BlockAssembly, 'CloneTEX', return_value=b'TEX'),
+            mock.patch.object(BlockAssembly, 'CloneSKN', return_value=b'SKN'),
+            mock.patch.object(BlockAssembly, 'CloneTrailingSections', return_value=(b'TAIL', 0x80)),
+            mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=b'\x00' * 0x20),
         )
 
     def test_clone_gpl_reads_hammerspace_source_from_output_dat(self):
@@ -267,7 +271,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
                 mock.patch.object(main.hh, 'OUTPUT_DAT', str(output_dat)),
             ):
-                cloned = main.CloneGPL(model_offset, 0x40)
+                cloned = main.CloneGPL(main.Donor.in_dat(model_offset, 0x40))
 
         self.assertEqual(cloned, b'GPL!')
 
@@ -312,7 +316,7 @@ class BuildModelBlockTests(unittest.TestCase):
             struct.pack_into('>I', block_header, 0x04, 0x20)
             input_dat.write_bytes(block_header)
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main.PatchGPLPositionArrays(original_gpl, model, 0)
+                patched = main.PatchGPLPositionArrays(original_gpl, model, main.Donor.in_dat(0))
 
         self.assertEqual(patched[:0x10], original_gpl[:0x10])
         self.assertEqual(patched[0x10:0x16], bytes([0, 3, 0, 1, 0, 2]))
@@ -338,7 +342,7 @@ class BuildModelBlockTests(unittest.TestCase):
             struct.pack_into('>I', block_header, 0x04, 0x20)
             input_dat.write_bytes(block_header)
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main.PatchGPLUVArrays(original_gpl, model, 0)
+                patched = main.PatchGPLUVArrays(original_gpl, model, main.Donor.in_dat(0))
 
         self.assertEqual(patched[:0x14], original_gpl[:0x14])
         self.assertEqual(patched[0x14:0x18], bytes([0, 2, 0, 1]))
@@ -373,7 +377,7 @@ class BuildModelBlockTests(unittest.TestCase):
             struct.pack_into('>I', block_header, 0x04, 0x20)
             input_dat.write_bytes(block_header)
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main.PatchGPLUVRebuild(original_gpl, model, 0)
+                patched = main.PatchGPLUVRebuild(original_gpl, model, main.Donor.in_dat(0))
 
         changed_header_ranges = set(range(0x30, 0x36)) | set(range(0x40, 0x48))
         self.assertTrue(all(
@@ -393,7 +397,7 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -469,7 +473,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x60)),
                 patches[1], patches[2], patches[3], patches[4], patches[5],
                 patches[6], patches[7], patches[8],
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -512,7 +516,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x100)),
                 patches[1], patches[2], patches[3], patches[4], patches[5],
                 patches[6], patches[7], patches[8],
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -576,7 +580,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(live_offset, len(live_entry))),
                 patches[1], patches[2], patches[3], patches[4], patches[5],
                 patches[6], patches[7], patches[8],
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -653,14 +657,14 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'BuildSKNSkinningData', return_value=b'BUILT_SKN') as build_skn,
+                mock.patch.object(BlockAssembly, 'BuildSKNSkinningData', return_value=b'BUILT_SKN') as build_skn,
             ):
                 result = main.BuildModelBlock(
                     self.data,
                     main.SectionModes(gpl='build', skn='build'),
                 )
 
-        build_skn.assert_called_once_with(self.parsed, main.GPLBuildResult(b'GPL'))
+        build_skn.assert_called_once_with(self.parsed)
         self.assertEqual(result.section_sizes['GPL'], len(b'GPL'))
         self.assertEqual(result.section_modes.gpl, 'build')
         self.assertEqual(result.section_modes.skn, 'build')
@@ -671,8 +675,8 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
-                mock.patch.object(main, 'rebuild_edited_uvs', return_value=False),
+                mock.patch.object(BlockAssembly, 'rebuild_surface_assignments', return_value=False),
+                mock.patch.object(BlockAssembly, 'rebuild_edited_uvs', return_value=False),
             ):
                 with self.assertRaisesRegex(ValueError, 'sub0 ds0.*no patch route'):
                     main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
@@ -684,9 +688,9 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, '_validate_hammerspace_contract'),
-                mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
-                mock.patch.object(main, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
+                mock.patch.object(BlockAssembly, '_validate_hammerspace_contract'),
+                mock.patch.object(BlockAssembly, 'rebuild_surface_assignments', return_value=False),
+                mock.patch.object(BlockAssembly, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
             ):
                 result = main.BuildModelBlock(
                     self.data,
@@ -709,9 +713,9 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, '_validate_hammerspace_contract'),
-                mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
-                mock.patch.object(main, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
+                mock.patch.object(BlockAssembly, '_validate_hammerspace_contract'),
+                mock.patch.object(BlockAssembly, 'rebuild_surface_assignments', return_value=False),
+                mock.patch.object(BlockAssembly, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
             ):
                 main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
 
@@ -743,7 +747,7 @@ class BuildModelBlockTests(unittest.TestCase):
             }]}}
 
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main.PatchGPLMaterialStates(b'\x00' * 0x40, data, 0)
+                patched = main.PatchGPLMaterialStates(b'\x00' * 0x40, data, main.Donor.in_dat(0))
 
         self.assertEqual(patched[0x11:0x18], bytes.fromhex('01020311110000'))
         self.assertEqual(patched[0x21:0x28], b'\x04\x05\x06Spec')
@@ -763,7 +767,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 ]},
             ]}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main.PatchGPLExcludeSubmeshes(bytes(gpl), model, 0)
+                patched = main.PatchGPLExcludeSubmeshes(bytes(gpl), model, main.Donor.in_dat(0))
 
         self.assertEqual(patched[0x0C:0x14], b'\0' * 8)          # pointer and size of ds0
         self.assertEqual(patched[:0x0C], b'\xAA' * 0x0C)
@@ -943,8 +947,8 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'ParseSluggie', return_value=fake_parsed),
-                mock.patch.object(main, 'CloneTrailingSections', side_effect=AssertionError('should not read donor trailing data')),
+                mock.patch.object(BlockAssembly, 'ParseSluggie', return_value=fake_parsed),
+                mock.patch.object(BlockAssembly, 'CloneTrailingSections', side_effect=AssertionError('should not read donor trailing data')),
             ):
                 result = main.BuildModelBlock(self.data)
 
@@ -1044,10 +1048,10 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('>I', block, 0x18)[0], 0)
         self.assertEqual(struct.unpack_from('>I', block, 0x1C)[0], 0)
 
-    def test_unimplemented_section_build_is_rejected_before_parsing(self):
-        with mock.patch.object(main, 'ParseSluggie') as parse:
-            with self.assertRaisesRegex(ValueError, 'ACT=build is not implemented'):
-                main.BuildModelBlock(self.data, main.SectionModes(act='build'))
+    def test_unknown_section_mode_is_rejected_before_parsing(self):
+        with mock.patch.object(BlockAssembly, 'ParseSluggie') as parse:
+            with self.assertRaisesRegex(ValueError, "TEX mode must be 'clone' or 'build'"):
+                main.BuildModelBlock(self.data, main.SectionModes(tex='rebuild'))
         parse.assert_not_called()
 
     def test_hammerspace_rebuild_rejects_missing_required_properties(self):
@@ -1062,7 +1066,7 @@ class BuildModelBlockTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'missing required rebuild properties'):
                 main.BuildModelBlock(data, main.SectionModes(gpl='build'))
 
-    def test_skn_only_rebuilds_tolerate_missing_primlistdata(self):
+    def test_skn_only_rebuild_passes_the_contract_with_empty_primitive_lists(self):
         data = {'SluggiesModel': {
             'ChunkNumber': 18,
             'FileIndex': 0,
@@ -1086,13 +1090,13 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
                     'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
                 }),
-                mock.patch.object(main, 'BuildSKNSkinningData', return_value=b'SKN'),
+                mock.patch.object(BlockAssembly, 'BuildSKNSkinningData', return_value=b'SKN'),
             ):
                 result = main.BuildModelBlock(data, main.SectionModes(skn='build'))
 
@@ -1108,7 +1112,7 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -1128,7 +1132,7 @@ class BuildModelBlockTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -1634,7 +1638,7 @@ class BuildTEXTests(unittest.TestCase):
             buf[0x2000:0x2000 + 2] = cloned_palette
             input_dat.write_bytes(bytes(buf))
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                section = main.BuildTEX(parsed, plan)
+                section = main.BuildTEX(parsed, plan, main.Donor.in_dat(0))
 
         # --- Header ---
         texture_count = struct.unpack_from('>H', section, 0x00)[0]
@@ -1710,7 +1714,7 @@ class BuildTEXTests(unittest.TestCase):
             buf[0x100:0x108] = b'\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD'
             input_dat.write_bytes(bytes(buf))
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                section = main.BuildTEX(parsed, None)
+                section = main.BuildTEX(parsed, None, main.Donor.in_dat(0))
 
         texture_count = struct.unpack_from('>H', section, 0x00)[0]
         self.assertEqual(texture_count, 1)
@@ -1734,11 +1738,11 @@ class BuildTEXTests(unittest.TestCase):
         )
         plan = texture_helper.TexturePlan(entries=(entry,))
         with self.assertRaisesRegex(ValueError, 'encoded image payload'):
-            main.BuildTEX(parsed, plan)
+            main.BuildTEX(parsed, plan, main.Donor.in_dat(0))
 
     def test_build_tex_empty_returns_empty(self):
         parsed = self._make_parsed([])
-        self.assertEqual(main.BuildTEX(parsed, None), b'')
+        self.assertEqual(main.BuildTEX(parsed, None, main.Donor.in_dat(0)), b'')
 
     def test_build_tex_aligns_data_region_with_naturally_aligned_payloads(self):
         """The TEX data region starts aligned; these payload sizes preserve it."""
@@ -1757,7 +1761,7 @@ class BuildTEXTests(unittest.TestCase):
                 buf[0x100 + i * 0x100 : 0x100 + i * 0x100 + 128] = bytes([i]) * 128
             input_dat.write_bytes(bytes(buf))
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                section = main.BuildTEX(parsed, None)
+                section = main.BuildTEX(parsed, None, main.Donor.in_dat(0))
 
         # These naturally aligned image payloads keep every pointer aligned.
         for i in range(5):
@@ -1806,7 +1810,7 @@ class BuildTEXTests(unittest.TestCase):
             for index in range(2)
         )
 
-        section = main.BuildTEX(parsed, texture_helper.TexturePlan(entries=entries))
+        section = main.BuildTEX(parsed, texture_helper.TexturePlan(entries=entries), main.Donor.in_dat(0))
 
         data_start = (4 + 2 * 0x20 + 31) & ~31
         first_ptr = struct.unpack_from('>I', section, 4)[0]
@@ -1848,7 +1852,7 @@ class BuildTEXTests(unittest.TestCase):
             input_dat.write_bytes(bytes(buf))
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 section = main.BuildTEX(
-                    parsed, texture_helper.TexturePlan(entries=(addition,))
+                    parsed, texture_helper.TexturePlan(entries=(addition,)), main.Donor.in_dat(0)
                 )
 
         self.assertEqual(struct.unpack_from('>H', section, 0)[0], 2)
@@ -1893,7 +1897,7 @@ class BuildTEXTests(unittest.TestCase):
             input_dat.write_bytes(bytes(buf))
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 section = main.BuildTEX(
-                    parsed, texture_helper.TexturePlan(entries=(addition,))
+                    parsed, texture_helper.TexturePlan(entries=(addition,)), main.Donor.in_dat(0)
                 )
 
         donor_desc = 4
@@ -1927,15 +1931,16 @@ class BuildTEXTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(ValueError, 'must be contiguous'):
-            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(2),)))
+            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(2),)), main.Donor.in_dat(0))
         with self.assertRaisesRegex(ValueError, 'invalid template texture'):
-            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(1, 4),)))
+            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(1, 4),)), main.Donor.in_dat(0))
         with self.assertRaisesRegex(ValueError, 'does not match template format'):
-            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(1, fmt=0x6),)))
+            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(1, fmt=0x6),)), main.Donor.in_dat(0))
         with self.assertRaisesRegex(ValueError, 'duplicate texture plan index'):
             main.BuildTEX(
                 parsed,
                 texture_helper.TexturePlan(entries=(addition(1), addition(1))),
+                main.Donor.in_dat(0),
             )
 
 
@@ -1950,22 +1955,22 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
     def _patch_common(self):
         return (
             mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
-            mock.patch.object(main, 'ParseSluggie', return_value=self.parsed),
-            mock.patch.object(main, 'CloneGPL', return_value=b'GPL'),
+            mock.patch.object(BlockAssembly, 'ParseSluggie', return_value=self.parsed),
+            mock.patch.object(BlockAssembly, 'CloneGPL', return_value=b'GPL'),
             contextlib.nullcontext(),          # (free slot: the tests index this tuple)
-            mock.patch.object(main, 'CloneACT', return_value=b'ACT'),
-            mock.patch.object(main, 'CloneTEX', return_value=b'TEX'),
-            mock.patch.object(main, 'CloneSKN', return_value=b'SKN'),
-            mock.patch.object(main, 'CloneTrailingSections', return_value=(b'TAIL', 0x80)),
-            mock.patch.object(main, 'CloneHEADER', return_value=b'\x00' * 0x20),
+            mock.patch.object(ActBuild, 'CloneACT', return_value=b'ACT'),
+            mock.patch.object(BlockAssembly, 'CloneTEX', return_value=b'TEX'),
+            mock.patch.object(BlockAssembly, 'CloneSKN', return_value=b'SKN'),
+            mock.patch.object(BlockAssembly, 'CloneTrailingSections', return_value=(b'TAIL', 0x80)),
+            mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=b'\x00' * 0x20),
         )
 
     def _run(self, modes, **kwargs):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, '_validate_hammerspace_contract'),
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, '_validate_hammerspace_contract'),
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -1988,8 +1993,8 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
                 texture_helper, 'build_hammerspace_texture_plan',
                 return_value=plan,
             ) as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
-            mock.patch.object(main, 'CloneTEX') as clone_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'CloneTEX') as clone_tex,
         ):
             result = self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
@@ -2000,7 +2005,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             png_overrides=None,
             reimport_donor_textures=True,
         )
-        build_tex.assert_called_once_with(self.parsed, plan)
+        build_tex.assert_called_once_with(self.parsed, plan, mock.ANY)
         clone_tex.assert_not_called()
         self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
         self.assertEqual(result.section_modes.tex, 'build')
@@ -2015,7 +2020,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         })
         with (
             mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
-            mock.patch.object(main, 'BuildTEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX') as build_tex,
         ):
             with self.assertRaisesRegex(ValueError, 'sluggie path'):
                 self._run(main.SectionModes(tex='build'))
@@ -2036,8 +2041,8 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
                 texture_helper, 'build_hammerspace_texture_plan',
                 return_value=plan,
             ) as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
-            mock.patch.object(main, 'CloneTEX') as clone_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'CloneTEX') as clone_tex,
         ):
             result = self._run(
                 main.SectionModes(tex='build'),
@@ -2053,7 +2058,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             # Without ReimportTextures only the override is encoded.
             reimport_donor_textures=False,
         )
-        build_tex.assert_called_once_with(self.parsed, plan)
+        build_tex.assert_called_once_with(self.parsed, plan, mock.ANY)
         clone_tex.assert_not_called()
         self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
 
@@ -2066,12 +2071,12 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         })
         with (
             mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
         ):
             result = self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
         build_plan.assert_not_called()
-        build_tex.assert_called_once_with(self.parsed, None)
+        build_tex.assert_called_once_with(self.parsed, None, mock.ANY)
         self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
 
     def test_tex_build_plans_additional_texture_descriptors(self):
@@ -2092,7 +2097,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             mock.patch.object(
                 texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
             ) as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
         ):
             self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
@@ -2106,7 +2111,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
                 texture_helper.AdditionalTextureDescriptor('new.png', 0),
             ),
         )
-        build_tex.assert_called_once_with(self.parsed, plan)
+        build_tex.assert_called_once_with(self.parsed, plan, mock.ANY)
 
     def test_tex_build_refills_texture_replacements(self):
         """A TextureReplacements slot is encoded from its PNG without
@@ -2124,7 +2129,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             mock.patch.object(
                 texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
             ) as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
         ):
             self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
@@ -2132,7 +2137,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             1: texture_helper.resolve_texture_path('model.sluggies', 'new.png'),
         })
         self.assertFalse(build_plan.call_args.kwargs['reimport_donor_textures'])
-        build_tex.assert_called_once_with(self.parsed, plan)
+        build_tex.assert_called_once_with(self.parsed, plan, mock.ANY)
 
     def test_texture_replacements_refuse_bad_slots(self):
         descriptors = [
@@ -2166,7 +2171,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             mock.patch.object(
                 texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
             ) as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
         ):
             self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
@@ -2175,7 +2180,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             build_plan.call_args.kwargs['additional_descriptors'],
             (texture_helper.AdditionalTextureDescriptor('new.png', 0),),
         )
-        build_tex.assert_called_once_with(self.parsed, plan)
+        build_tex.assert_called_once_with(self.parsed, plan, mock.ANY)
 
     def test_tex_build_merges_duplicate_additional_texture_descriptors(self):
         """Tiny Kong, 2026-09-27: one PNG appended once per surface stored four
@@ -2199,7 +2204,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             mock.patch.object(
                 texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
             ) as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX'),
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX'),
         ):
             self._run(main.SectionModes(tex='build'), sluggie_path='missing/model.sluggies')
 
@@ -2238,15 +2243,15 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, '_validate_hammerspace_contract'),
-                mock.patch.object(main, '_validate_custom_submeshes'),
+                mock.patch.object(BlockAssembly, '_validate_hammerspace_contract'),
+                mock.patch.object(BlockAssembly, '_validate_custom_submeshes'),
                 mock.patch.object(
                     texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
                 ),
-                mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX'),
-                mock.patch.object(main, 'PatchGPLAppendSubmesh', return_value=b'GPL2') as patch_append,
-                mock.patch.object(main, '_apply_geo_id_patches', side_effect=lambda act, *a, **k: act),
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX'),
+                mock.patch.object(BlockAssembly, 'PatchGPLAppendSubmesh', return_value=b'GPL2') as patch_append,
+                mock.patch.object(ActBuild, '_apply_geo_id_patches', side_effect=lambda act, *a, **k: act),
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -2269,8 +2274,8 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             'CustomSubmeshes': [{'TextureAssignment': {'AdditionalTextureFileName': 'new.png'}}],
         })
         with (
-            mock.patch.object(main, '_validate_hammerspace_contract'),
-            mock.patch.object(main, '_validate_custom_submeshes'),
+            mock.patch.object(BlockAssembly, '_validate_hammerspace_contract'),
+            mock.patch.object(BlockAssembly, '_validate_custom_submeshes'),
         ):
             with self.assertRaisesRegex(ValueError, 'AdditionalTextureFileName'):
                 main.BuildModelBlock(
@@ -2288,7 +2293,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         plan = mock.Mock(skipped=())
         with (
             mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
-            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(BlockAssembly, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
         ):
             result = self._run(
                 main.SectionModes(tex='build'),
@@ -2297,7 +2302,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             )
 
         build_plan.assert_not_called()
-        build_tex.assert_called_once_with(self.parsed, plan)
+        build_tex.assert_called_once_with(self.parsed, plan, mock.ANY)
         self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
 
     def test_tex_build_rejects_supplied_plan_with_automatic_reimport(self):
@@ -2319,11 +2324,11 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[6], patches[7], patches[8]:
             with (
-                mock.patch.object(main, '_validate_hammerspace_contract'),
-                mock.patch.object(main, 'CloneTEX', return_value=b'TEX') as clone_tex,
-                mock.patch.object(main, 'BuildTEX') as build_tex,
+                mock.patch.object(BlockAssembly, '_validate_hammerspace_contract'),
+                mock.patch.object(BlockAssembly, 'CloneTEX', return_value=b'TEX') as clone_tex,
+                mock.patch.object(BlockAssembly, 'BuildTEX') as build_tex,
                 mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
-                mock.patch.object(main, 'validate_model_block', return_value={
+                mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
                     'valid': True,
                     'errors': [],
                     'warnings': [],
@@ -2381,7 +2386,7 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
                 'BoneHierarchy': self._bones(),
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                patched = main._apply_root_scale_patch(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
         # Scale lands at orientationPTR + 0x04 within the ACT section.
         scale_offset = self.ORIENTATION_PTR + 0x04
@@ -2399,7 +2404,7 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
             act_bytes = b'\x11' * 0x80
             data = {'SluggiesModel': {'BoneHierarchy': self._bones()}}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                result = main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                result = main._apply_root_scale_patch(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(result, act_bytes)
 
     def test_no_act_section_returns_unchanged(self):
@@ -2411,7 +2416,7 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
                 'BoneHierarchy': self._bones(),
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                result = main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                result = main._apply_root_scale_patch(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(result, act_bytes)
 
     def test_mismatched_srt_offset_raises(self):
@@ -2427,7 +2432,7 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_root_scale_patch(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
 
 class ApplyGeoIdPatchesTests(unittest.TestCase):
@@ -2471,7 +2476,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                patched = main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
         self.assertEqual(patched[0x20:0x22], struct.pack('>H', 2))
         self.assertEqual(patched[:0x20], act_bytes[:0x20])
@@ -2490,7 +2495,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 ],
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                patched = main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
         self.assertEqual(patched[0x20:0x22], struct.pack('>H', 1))
         self.assertEqual(patched[0x28:0x2A], struct.pack('>H', 2))
@@ -2501,7 +2506,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             act_bytes = b'\xff' * 0x80
             data = {'SluggiesModel': {'Submeshes': [], 'BoneHierarchy': []}}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                result = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                result = main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(result, act_bytes)
 
     def test_no_act_section_returns_unchanged(self):
@@ -2514,7 +2519,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                result = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                result = main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(result, act_bytes)
 
     def test_missing_geo_id_field_offset_raises(self):
@@ -2530,7 +2535,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
     def test_stale_geo_id_field_raises(self):
         # The field doesn't read 0xFFFF (e.g. already claimed) -> reject
@@ -2549,7 +2554,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_geo_id_patches(bytes(act_bytes), data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
     def test_field_offset_before_act_section_raises(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2564,7 +2569,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
     # -- GeoIdEdited retargets --------
 
@@ -2580,7 +2585,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 'BoneHierarchy': [bone],
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+                patched = main._apply_geo_id_patches(bytes(act_bytes), data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(patched[0x20:0x22], struct.pack('>H', 0xFFFF))
 
     def test_geo_id_edited_no_op_when_equal_to_original_leaves_bytes_untouched(self):
@@ -2595,7 +2600,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 'BoneHierarchy': [bone],
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+                patched = main._apply_geo_id_patches(bytes(act_bytes), data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(patched, bytes(act_bytes))
 
     def test_geo_id_edited_missing_field_offset_raises(self):
@@ -2606,7 +2611,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             data = {'SluggiesModel': {'Submeshes': [{}], 'BoneHierarchy': [bone]}}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
     def test_geo_id_edited_out_of_range_raises(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2617,7 +2622,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             data = {'SluggiesModel': {'Submeshes': [{}], 'BoneHierarchy': [bone]}}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
     def test_geo_id_edited_frees_bone_that_custom_submesh_then_claims(self):
         # A retarget frees bone 5 (GeoIdEdited 0xFFFF) in the same build that
@@ -2636,7 +2641,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                patched = main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+                patched = main._apply_geo_id_patches(bytes(act_bytes), data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         # donor_count (2) + index 0 -> new submesh index 2
         self.assertEqual(patched[0x20:0x22], struct.pack('>H', 2))
 
@@ -2659,7 +2664,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             }}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
-                    main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+                    main._apply_geo_id_patches(bytes(act_bytes), data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
 
     def test_no_geo_id_edits_or_custom_submeshes_returns_unchanged(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2668,7 +2673,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
             bone = self._bone(5, 0x20)  # GeoIdEdited not set
             data = {'SluggiesModel': {'Submeshes': [{}], 'BoneHierarchy': [bone]}}
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
-                result = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+                result = main._apply_geo_id_patches(act_bytes, data, main.Donor.in_dat(self.SOURCE_MODEL_OFFSET))
         self.assertEqual(result, act_bytes)
 
 
@@ -3634,7 +3639,7 @@ class StadiumCustomSubmeshAlphaWarningTests(unittest.TestCase):
             records = [[1, b'\x00\x01\x98', '11110020'], [6, b'\x01\x00\x00', type6],
                        [7, b'\x00\x00\x00', 'Shdw']]
             with (
-                mock.patch.object(main, '_resolve_custom_submesh_records',
+                mock.patch.object(RigidSubmesh, '_resolve_custom_submesh_records',
                                   return_value=(records, 2, 'rigid')),
                 mock.patch.object(main._slogger, 'warning') as warning,
             ):
@@ -3693,7 +3698,7 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
         parsed = SimpleNamespace(custom_submeshes=[SimpleNamespace(
             custom_submesh_id='custom0', host_bone_id=5, template_source='builtin:rigid_spec_v1',
         )])
-        with mock.patch.object(main, '_build_custom_submesh', return_value=new_sub):
+        with mock.patch.object(RigidSubmesh, '_build_custom_submesh', return_value=new_sub):
             patched = main.PatchGPLAppendSubmesh(gpl_bytes, {'Submeshes': []}, parsed)
 
         magic, ud_len, ud_ptr, count, out_desc_ptr = struct.unpack_from('>5I', patched, 0x00)
@@ -3735,7 +3740,7 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
         parsed = SimpleNamespace(custom_submeshes=[SimpleNamespace(
             custom_submesh_id='custom0', host_bone_id=5, template_source='builtin:rigid_spec_v1',
         )])
-        with mock.patch.object(main, '_build_custom_submesh', return_value=self._new_sub()):
+        with mock.patch.object(RigidSubmesh, '_build_custom_submesh', return_value=self._new_sub()):
             return main.PatchGPLAppendSubmesh(
                 gpl_bytes, {'Submeshes': []}, parsed, donor_gpl_length=donor_gpl_length,
             )
@@ -3939,7 +3944,7 @@ class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
         model['CustomSubmeshes'] = [
             _cube_custom_submesh('custom0', host_bone_id, template_source, use_compression)
         ]
-        modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
+        modes = main.SectionModes(gpl='build')
         return main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path), model
 
     def _rigid_surface_id(self, model: dict) -> str:
@@ -3970,7 +3975,7 @@ class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
     def test_changed_submesh_count_is_refused(self):
         # New geometry is a CustomSubmesh; an entry added to or taken from Submeshes has no route.
         import copy
-        modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
+        modes = main.SectionModes(gpl='build')
         for change in ('added', 'removed'):
             data, model = self._load()
             if change == 'added':
@@ -3997,7 +4002,7 @@ class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
         offset = model['ModelOffset']
         offset = int(offset, 16) if isinstance(offset, str) else int(offset)
         length = int(model.get('ModelLength', 0))
-        donor_gpl = main.CloneGPL(offset, length)
+        donor_gpl = main.CloneGPL(main.Donor.in_dat(offset, length))
         donor_count, donor_desc_ptr = struct.unpack_from('>I', donor_gpl, 0x0c)[0], struct.unpack_from('>I', donor_gpl, 0x10)[0]
         donor_pointers = sorted(
             struct.unpack_from('>II', donor_gpl, donor_desc_ptr + i * 8)[0] for i in range(donor_count)

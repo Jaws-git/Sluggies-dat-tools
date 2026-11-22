@@ -28,13 +28,9 @@ import math
 from dataclasses import dataclass, field
 
 from binfmt import SKN_MAX_SOURCE_BYTES, SKN_MIN_DIRECT_VERTICES
+from ModelFormat import CACHE_LINE_SIZE as CACHE_LINE, align_up as align32
 
-CACHE_LINE = 32
 WEIGHT_UNITS = 256
-
-
-def align32(value: int) -> int:
-    return (value + CACHE_LINE - 1) & ~(CACHE_LINE - 1)
 
 
 # ---------------------------------------------------------------------------

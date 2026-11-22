@@ -19,6 +19,7 @@ import ExportMode  # noqa: E402
 import FacialPoseRebuild as fpr  # noqa: E402
 import GeometryRebuild  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
+import BlockAssembly  # noqa: E402
 from SluggiesTools import patch_dispatch  # noqa: E402
 import synthetic_donor  # noqa: E402
 import test_skinned_rebuild  # noqa: E402
@@ -408,7 +409,7 @@ class RigidRebuildBuildTests(unittest.TestCase):
         self.data = self.env.reload()
         self.model = self.data['SluggiesModel']
         self.model['UseHammerspace'] = True
-        self.donor_gpl = main.CloneGPL(self.env.model_offset, self.env.model_length)
+        self.donor_gpl = main.CloneGPL(main.Donor.in_dat(self.env.model_offset, self.env.model_length))
 
     def _build(self, **modes):
         result = main.BuildModelBlock(
@@ -434,9 +435,9 @@ class RigidRebuildBuildTests(unittest.TestCase):
         if poses is not None:
             rebuild['FacialPoses'] = poses
         self.model['Submeshes'][RIGID]['RigidRebuild'] = rebuild
-        donor_header = bytearray(main.CloneHEADER(self.env.model_offset))
+        donor_header = bytearray(main.CloneHEADER(main.Donor.in_dat(self.env.model_offset)))
         struct.pack_into('>I', donor_header, 0x18, 0x1000)
-        with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+        with mock.patch.object(BlockAssembly, 'CloneHEADER', return_value=bytes(donor_header)):
             result, gpl = self._build()
         ptr7 = struct.unpack_from('>I', result.block, 0x18)[0]
         self.assertNotEqual(ptr7, 0)

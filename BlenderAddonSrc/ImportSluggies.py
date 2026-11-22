@@ -435,7 +435,6 @@ def _add_rebuild_facial_shape_keys(obj, rebuild_poses, record_stride=12):
     order."""
     decoded = _decode_rebuild_facial_poses(rebuild_poses, obj.get("VertexBufferQuantizeInfo", 0), record_stride)
     if not any(poses for _object_index, poses in decoded):
-        obj["FacialShapeKeyCount"] = 0
         return 0
     basis_key = obj.shape_key_add(name="Basis", from_mix=False)
     shape_key_count = 0
@@ -448,7 +447,6 @@ def _add_rebuild_facial_shape_keys(obj, rebuild_poses, record_stride=12):
                     basis = basis_key.data[vertex_index].co
                     key.data[vertex_index].co = tuple(basis[axis] + delta[axis] for axis in range(3))
             shape_key_count += 1
-    obj["FacialShapeKeyCount"] = shape_key_count
     return shape_key_count
 
 
@@ -497,6 +495,8 @@ def add_facial_shape_keys(obj, submesh_index, facial_data, facial_edited=None, r
         for vertex_index, coordinate in zip(indices, coordinates):
             if vertex_index < len(basis_key.data):
                 basis_key.data[vertex_index].co = coordinate
+                # The mesh's own vertices too, so Basis and the mesh agree in Object Mode.
+                obj.data.vertices[vertex_index].co = coordinate
 
     shape_key_count = 0
     for facial_object in expression_objects:
@@ -533,7 +533,6 @@ def add_facial_shape_keys(obj, submesh_index, facial_data, facial_edited=None, r
                     )
             shape_key_count += 1
 
-    obj["FacialShapeKeyCount"] = shape_key_count
     return shape_key_count
 
 
@@ -1185,6 +1184,11 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     cumulative ``FaceCount`` ranges. *surface_texture_files* ({SurfaceId:
     PNG name}, ``_assigned_surface_texture_files``) overrides the image of a
     new surface material; its ``TextureIndex`` stays the donor's."""
+    # Checked before the mesh exists: a face that names a vertex the buffer does not have makes a mesh
+    # Blender can crash on. No exported model has one (all of 2_Output_Assets, 2026-11-22).
+    highest = max((index for face in faces for index in face), default=-1)
+    if highest >= len(positions):
+        raise ValueError(f"{name}: a face uses vertex {highest}, but the submesh has {len(positions)} vertices")
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
     mesh.update()
@@ -2045,9 +2049,24 @@ def build_collision_object(entry, arm_obj, collection):
     back from), drawn as wire, with its collision settings restored. A model
     mesh or custom submesh that was solid comes back without the setting; this
     object carries it instead."""
+    # Everything is read from the entry before anything is built, so a bad entry leaves nothing behind.
     region = entry.get('Region')
-    mesh = bpy.data.meshes.new(entry['Name'] if region is not None else f"{entry['Name']}_collision")
-    mesh.from_pydata([tuple(p) for p in entry['Positions']], [], [tuple(f) for f in entry['Faces']])
+    name = entry['Name'] if region is not None else f"{entry['Name']}_collision"
+    positions = [tuple(p) for p in entry['Positions']]
+    faces = [tuple(f) for f in entry['Faces']]
+    highest = max((index for face in faces for index in face), default=-1)
+    if highest >= len(positions):
+        raise ValueError(f"{name}: a face uses vertex {highest}, but it has {len(positions)} vertices")
+    number = int(entry['SurfaceType'])
+    sides = next((i for i, v, _l, _d in StadiumCollisionExport.SIDES if v == entry.get('Sides', 'both')), None)
+    territory = next(
+        (i for i, v, _l, _d in StadiumCollisionExport.TERRITORIES if v == entry.get('Territory', 'auto')), None)
+    if sides is None or territory is None:
+        raise ValueError(
+            f"{name}: unknown Sides {entry.get('Sides')!r} or Territory {entry.get('Territory')!r}")
+
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(positions, [], faces)
     mesh.update()
     obj = bpy.data.objects.new(mesh.name, mesh)
     collection.objects.link(obj)
@@ -2061,14 +2080,12 @@ def build_collision_object(entry, arm_obj, collection):
     if region is not None:
         obj[StadiumCollisionExport.REGION_PROP] = int(region)
         obj.hide_render = True
-    number = int(entry['SurfaceType'])
     named = next((ident for ident, n, _l, _d in StadiumCollisionExport.SURFACE_TYPES if n == number), None)
     settings.surface_type = named or 'CUSTOM'
     if named is None:
         settings.custom_type = number
-    settings.sides = next(i for i, v, _l, _d in StadiumCollisionExport.SIDES if v == entry.get('Sides', 'both'))
-    settings.territory = next(
-        i for i, v, _l, _d in StadiumCollisionExport.TERRITORIES if v == entry.get('Territory', 'auto'))
+    settings.sides = sides
+    settings.territory = territory
     return obj
 
 
@@ -2232,14 +2249,18 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                 _apply_import_rotation(obj)
             if bone_list:
                 _apply_nonskinned_transform(obj, i, bone_list, abs_bone_mats, original_owner)
+            # Facial pose edits belong to the `_edit` object when there is one (the donor object is the
+            # "before" view); without one the donor object is the only place for them.
+            ev = _edited_submesh_view(submesh) if make_edit else None
+            has_edit_object = bool(ev and ev.get("VertexBuffer"))
             add_facial_shape_keys(
-                obj, i, model.get("FacialPoseData"), model.get("FacialPoseDataEdited")
+                obj, i, model.get("FacialPoseData"),
+                None if has_edit_object else model.get("FacialPoseDataEdited")
             )
             imported += 1
 
             # Import the edited version of this submesh when one exists
             if make_edit:
-                ev = _edited_submesh_view(submesh)
                 ev_vb = ev.get("VertexBuffer")
                 if ev_vb:
                     edit_positions, edit_normals = decode_vertex_buffer(ev_vb)

@@ -50,28 +50,36 @@ def _remove_loose(mesh):
             and len({v for p in mesh.polygons for v in p.vertices}) == len(mesh.vertices):
         return 0, 0
 
-    custom_normals = mesh.has_custom_normals
-    if custom_normals:
-        attr = mesh.attributes.new(_NORMALS_ATTR, 'FLOAT_VECTOR', 'CORNER')
-        attr.data.foreach_set('vector', [c for n in mesh.corner_normals for c in n.vector])
-
+    # The helper attribute is found again by the name it got (a stale one
+    # left by an earlier failure would make Blender add a suffix) and is
+    # removed whatever happens.
+    attr_name = None
     bm = bmesh.new()
-    bm.from_mesh(mesh)
-    before = len(bm.verts)
-    loose_edges = [e for e in bm.edges if not e.link_faces]
-    bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
-    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_edges], context='VERTS')
-    loose_verts = before - len(bm.verts)
+    try:
+        if mesh.has_custom_normals:
+            attr = mesh.attributes.new(_NORMALS_ATTR, 'FLOAT_VECTOR', 'CORNER')
+            attr_name = attr.name
+            attr.data.foreach_set('vector', [c for n in mesh.corner_normals for c in n.vector])
 
-    bm.to_mesh(mesh)
-    bm.free()
+        bm.from_mesh(mesh)
+        before = len(bm.verts)
+        loose_edges = [e for e in bm.edges if not e.link_faces]
+        bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_edges], context='VERTS')
+        loose_verts = before - len(bm.verts)
+        bm.to_mesh(mesh)
 
-    if custom_normals:
-        attr = mesh.attributes[_NORMALS_ATTR]
-        flat = [0.0] * (len(mesh.loops) * 3)
-        attr.data.foreach_get('vector', flat)
-        mesh.attributes.remove(attr)
-        mesh.normals_split_custom_set([flat[i:i + 3] for i in range(0, len(flat), 3)])
+        if attr_name is not None:
+            attr = mesh.attributes[attr_name]
+            flat = [0.0] * (len(mesh.loops) * 3)
+            attr.data.foreach_get('vector', flat)
+            mesh.attributes.remove(attr)
+            attr_name = None
+            mesh.normals_split_custom_set([flat[i:i + 3] for i in range(0, len(flat), 3)])
+    finally:
+        bm.free()
+        if attr_name is not None and attr_name in mesh.attributes:
+            mesh.attributes.remove(mesh.attributes[attr_name])
     mesh.update()
     return loose_verts, len(loose_edges)
 
@@ -84,16 +92,23 @@ def _remove_modifiers(obj, types):
     return len(doomed)
 
 
-def _remove_physics(obj):
+def _remove_physics(obj, failed=None):
     """Delete *obj*'s physics simulations: the Physics tab's modifiers
     (cloth, soft body, collision, fluid, dynamic paint), its rigid body and
-    rigid body constraint, and its force field. Returns how many."""
+    rigid body constraint, and its force field. Returns how many. A rigid
+    body operator that refuses (its poll) is skipped and *obj*'s name goes
+    into *failed*, so the run goes on."""
     removed = _remove_modifiers(obj, _PHYSICS_MODIFIERS)
     for attr, op in (('rigid_body', bpy.ops.rigidbody.object_remove),
                      ('rigid_body_constraint', bpy.ops.rigidbody.constraint_remove)):
         if getattr(obj, attr) is not None:
-            with bpy.context.temp_override(object=obj, active_object=obj):
-                op()
+            try:
+                with bpy.context.temp_override(object=obj, active_object=obj):
+                    op()
+            except RuntimeError:
+                if failed is not None and obj.name not in failed:
+                    failed.append(obj.name)
+                continue
             removed += 1
     if obj.field is not None and obj.field.type != 'NONE':
         obj.field.type = 'NONE'
@@ -197,11 +212,11 @@ def run_cleanup(targets):
     convert_material_nodes, belongs to the Convert Materials step). Returns
     the counts for the summary."""
     counts = dict(objects=len(targets), smooth_modifiers=0, mask_modifiers=0, physics=0,
-                  loose_verts=0, loose_edges=0, vertex_groups=0, material_slots=0)
+                  loose_verts=0, loose_edges=0, vertex_groups=0, material_slots=0, physics_failed=[])
     for obj in targets:
         counts['smooth_modifiers'] += _remove_modifiers(obj, _SMOOTH_MODIFIERS)
         counts['mask_modifiers'] += _remove_modifiers(obj, _MASK_MODIFIERS)
-        counts['physics'] += _remove_physics(obj)
+        counts['physics'] += _remove_physics(obj, counts['physics_failed'])
     meshes = list(dict.fromkeys(obj.data for obj in targets))
     for mesh in meshes:
         loose_verts, loose_edges = _remove_loose(mesh)
@@ -228,6 +243,10 @@ def summary_lines(counts):
         (counts['material_slots'], "unused material slots removed"),
     ]
     lines += [f"{count:,} {text}" for count, text in done if count]
-    if len(lines) == 1:
+    failed = counts.get('physics_failed') or []
+    if len(lines) == 1 and not failed:
         lines.append("Nothing to clean")
+    if failed:
+        lines.append(f"Rigid body not removed (Blender refused) from: {', '.join(failed)}; "
+                     "remove it in the Physics tab")
     return lines

@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pathlib
+import struct
 import sys
 import tempfile
 import unittest
@@ -108,25 +109,24 @@ class EmbeddedDonorTests(unittest.TestCase):
         self.assertTrue(build.validation_report['valid'])
         self.assertEqual(build.block, self.block)
         self.assertEqual(build.donor_block, self.block)
-        self.assertIsNone(main._EMBEDDED_DONOR)                          # reset after the build
 
     def test_gpl_build_reads_the_embedded_donor(self):
         build = main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
         self.assertTrue(build.validation_report['valid'], build.validation_report['errors'])
 
     def test_reads_outside_the_entry_are_refused(self):
-        main._EMBEDDED_DONOR = (BLOCK_BASE, self.block)
-        try:
-            with self.assertRaises(ValueError):
-                main._open_source(BLOCK_BASE - 1)
-            with self.assertRaises(ValueError):
-                main._open_source(BLOCK_BASE + len(self.block))
-            with main._open_source(BLOCK_BASE + 0x20) as source:
-                source.seek(BLOCK_BASE + 0x20)
-                self.assertEqual(source.read(8), self.block[0x20:0x28])
-                self.assertEqual(source.tell(), BLOCK_BASE + 0x28)
-        finally:
-            main._EMBEDDED_DONOR = None
+        donor = main.Donor.of_entry(BLOCK_BASE, self.block)
+        with self.assertRaises(ValueError):
+            donor.read(BLOCK_BASE - 1, 4)
+        with self.assertRaises(ValueError):
+            donor.read(BLOCK_BASE + len(self.block), 4)
+        self.assertEqual(donor.read(BLOCK_BASE + 0x20, 8), self.block[0x20:0x28])
+
+    def test_a_clone_outside_a_build_reads_the_embedded_donor(self):
+        # The DAT files hold zeros where the donor would be (setUp): a read of them would return no GPL.
+        donor = main.Donor.of_entry(*main.donor_entry(self.data['SluggiesModel']))
+        gpl_offset, act_offset = struct.unpack_from('>II', self.block, 4)
+        self.assertEqual(main.CloneGPL(donor), self.block[gpl_offset:act_offset])
 
 
 class ExportReaderTests(unittest.TestCase):

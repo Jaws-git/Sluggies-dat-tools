@@ -24,48 +24,78 @@ class ReadDonorTests(unittest.TestCase):
         self.dat.write_bytes(bytes(range(256)) * 4)
         self.enterContext(mock.patch.object(main.hh, 'INPUT_DAT', str(self.dat)))
         self.enterContext(mock.patch.object(main.hh, 'BASE_SIZE', 0x10000))
-        self.addCleanup(setattr, main, '_PRELOADED_DONOR', None)
 
-    def test_reads_the_file_without_a_preload(self):
-        self.assertEqual(main._read_donor(0x10, 4), bytes([0x10, 0x11, 0x12, 0x13]))
-        self.assertEqual(len(main._read_donor(1020, 16)), 4)              # short at the end of the file
+    def test_reads_the_file_when_nothing_is_loaded(self):
+        donor = main.Donor.in_dat(0x10, 0x40)
+        self.assertIsNone(donor.data)
+        self.assertEqual((donor.model_offset, donor.model_length, donor.embedded), (0x10, 0x40, False))
+        self.assertEqual(donor.read(0x10, 4), bytes([0x10, 0x11, 0x12, 0x13]))
+        self.assertEqual(len(donor.read(1020, 16)), 4)                    # short at the end of the file
 
-    def test_preloaded_entry_serves_the_ranges_it_holds(self):
-        main._preload_donor(0x100, 0x80)
-        self.assertEqual(main._PRELOADED_DONOR, (0x100, self.dat.read_bytes()[0x100:0x180]))
+    def test_loaded_entry_serves_the_ranges_it_holds(self):
+        donor = main.Donor.load(0x100, 0x80)
+        self.assertEqual((donor.base, donor.data), (0x100, self.dat.read_bytes()[0x100:0x180]))
         with mock.patch.object(builtins, 'open', side_effect=AssertionError('the file was opened')):
-            self.assertEqual(main._read_donor(0x100, 0x80), self.dat.read_bytes()[0x100:0x180])
-            self.assertEqual(main._read_donor(0x17C, 4), self.dat.read_bytes()[0x17C:0x180])
+            self.assertEqual(donor.read(0x100, 0x80), self.dat.read_bytes()[0x100:0x180])
+            self.assertEqual(donor.read(0x17C, 4), self.dat.read_bytes()[0x17C:0x180])
         # before it, past it, or only partly inside: the file
         for offset, length in ((0xFC, 8), (0x180, 4), (0x17C, 8)):
             with self.subTest(offset=offset):
-                self.assertEqual(main._read_donor(offset, length), self.dat.read_bytes()[offset:offset + length])
+                self.assertEqual(donor.read(offset, length), self.dat.read_bytes()[offset:offset + length])
 
     def test_unreadable_or_short_entry_is_not_kept(self):
-        main._preload_donor(1000, 100)                                    # runs past the end of the file
-        self.assertIsNone(main._PRELOADED_DONOR)
+        self.assertIsNone(main.Donor.load(1000, 100).data)                # runs past the end of the file
+        self.assertIsNone(main.Donor.load(0, 0).data)
         with mock.patch.object(main.hh, 'INPUT_DAT', str(self.root / 'none.dat')):
-            main._preload_donor(0, 16)
-        self.assertIsNone(main._PRELOADED_DONOR)
+            self.assertIsNone(main.Donor.load(0, 16).data)
 
-    def test_embedded_donor_wins_over_a_preload(self):
-        main._PRELOADED_DONOR = (0, b'\xAA' * 64)
-        with mock.patch.object(main, '_EMBEDDED_DONOR', (0, b'\xBB' * 64)):
-            self.assertEqual(main._read_donor(8, 4), b'\xBB' * 4)
-            main._preload_donor(0, 16)
-            self.assertIsNone(main._PRELOADED_DONOR)
+    def test_embedded_entry_never_reads_the_file(self):
+        donor = main.Donor.of_entry(0x40, b'\xBB' * 64)
+        self.assertTrue(donor.embedded)
+        self.assertEqual((donor.model_offset, donor.model_length), (0x40, 64))
+        with mock.patch.object(builtins, 'open', side_effect=AssertionError('the file was opened')):
+            self.assertEqual(donor.read(0x48, 4), b'\xBB' * 4)
+            self.assertEqual(len(donor.read(0x7C, 16)), 4)                # short at the end of the entry
+            for offset in (0x3F, 0x80):
+                with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, 'outside the embedded donor'):
+                    donor.read(offset, 4)
 
-    def test_header_and_gpl_offset(self):
+    def test_for_model_keeps_the_source(self):
+        entry = main.Donor.load(0x100, 0x80)
+        donor = entry.for_model(0x120, 0x40)
+        self.assertEqual((donor.base, donor.data, donor.embedded), (entry.base, entry.data, False))
+        self.assertEqual((donor.model_offset, donor.model_length), (0x120, 0x40))
+
+    def test_header_and_section_offsets(self):
         self.dat.write_bytes(struct.pack('>8I', 0, 0x20, 0x40, 0x60, 0x80, 0, 0xA0, 0) + bytes(0x100))
-        self.assertEqual(main._donor_header(0), (0, 0x20, 0x40, 0x60, 0x80, 0, 0xA0, 0))
-        self.assertEqual(main._donor_gpl_absolute(0), 0x20)
-        self.assertEqual(main._act_section_absolute(0), 0x40)
+        donor = main.Donor.in_dat(0)
+        self.assertEqual(donor.header(), (0, 0x20, 0x40, 0x60, 0x80, 0, 0xA0, 0))
+        self.assertEqual(donor.gpl_absolute(), 0x20)
+        self.assertEqual(donor.act_absolute(), 0x40)
         with self.assertRaises(IOError):
-            main._donor_gpl_absolute(0x120 - 2)
+            main.Donor.in_dat(0x120 - 2).gpl_absolute()
+        self.assertEqual(main.Donor.in_dat(0x120 - 2).act_absolute(), 0)   # no whole header: no ACT
+
+
+class EmbeddedDonorCloneTests(unittest.TestCase):
+    """A section clone called on its own reads the donor it is given, never a DAT."""
+
+    def test_clones_read_the_embedded_entry(self):
+        block = (struct.pack('>8I', 0, 0x20, 0x24, 0x28, 0x2C, 0, 0x30, 0)
+                 + b'GPL!' + b'ACT!' + b'TEX!' + b'SKN!' + b'TAIL')
+        donor = main.Donor.of_entry(0x5000, bytes(8) + block).for_model(0x5008, len(block))
+        with mock.patch.object(builtins, 'open', side_effect=AssertionError('a file was opened')):
+            self.assertEqual(main.CloneHEADER(donor), block[:0x20])
+            self.assertEqual(main.CloneGPL(donor), b'GPL!')
+            self.assertEqual(main.CloneACT(donor), b'ACT!')
+            self.assertEqual(main.CloneTEX(donor), b'TEX!')
+            self.assertEqual(main.CloneSKN(donor), b'SKN!')
+            self.assertEqual(main.CloneTrailingSections(donor), (b'TAIL', 0x30))
+            self.assertEqual(donor.gpl_absolute(), 0x5028)
 
 
 class BuildReadsTheDonorOnceTests(unittest.TestCase):
-    def test_a_build_opens_the_input_dat_once_and_leaves_no_preload(self):
+    def test_a_build_opens_the_input_dat_once(self):
         env = self.enterContext(synthetic_donor.donor_environment())
         data = env.reload()
         data['SluggiesModel']['UseHammerspace'] = True
@@ -78,12 +108,11 @@ class BuildReadsTheDonorOnceTests(unittest.TestCase):
                 opened.append(path)
             return real_open(path, *args, **kwargs)
 
-        modes = main.SectionModes(gpl='build', act='clone', tex='build', skn='build', trailing='clone')
+        modes = main.SectionModes(gpl='build', tex='build', skn='build')
         with mock.patch.object(builtins, 'open', side_effect=counting_open):
             build = main.BuildModelBlock(data, modes, sluggie_path=env.sluggie_path)
         self.assertTrue(build.validation_report['valid'], build.validation_report.get('errors'))
         self.assertEqual(len(opened), 1)
-        self.assertIsNone(main._PRELOADED_DONOR)
 
 
 if __name__ == '__main__':

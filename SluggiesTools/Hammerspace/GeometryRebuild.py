@@ -215,41 +215,47 @@ def apply_desired_texture_assignments(data: dict) -> bool:
 # Draw list / UV / color rebuild per submesh
 # ---------------------------------------------------------------------------
 
+_DECODED_STATES = {}
+_DECODED_STATES_MAX = 64
+
+
+def _hashable(value):
+    return tuple(value) if isinstance(value, (list, bytearray)) else value
+
+
 def _decode_original_states(sub: dict, use_compression):
-    """Decode every original prim list.  Returns
-    (state_faces, face_lookup, first_state_by_tex, type3_index)
+    """Decode every original prim list.  Returns (state_faces, type3_index)
 
     state_faces:  {ds_index: decoded faces}
-    face_lookup:  {(p0,p1,p2): (ds_index, face_dict_list)}  original routing
-    first_state_by_tex: {tex_index: ds_index}
     type3_index:  display-state index of the Type-3 descriptor state
+
+    The three rebuild steps of one build ask for the same submesh, so the result is kept by what it is
+    decoded from (the prim lists and their layouts). Callers only read it.
     """
+    states = sub['DisplayStates']
+    key = (bool(use_compression), tuple(
+        (ds['DisplayStateId'], _hashable(ds.get('PrimListData')), tuple(
+            (d['key'], d['index_size']) for d in ds.get('VertexStreamLayout') or []))
+        for ds in states
+    ))
+    cached = _DECODED_STATES.get(key)
+    if cached is not None:
+        return cached
     state_faces = {}
-    face_lookup = {}
-    first_state_by_tex = {}
     type3_index = None
-    cur_tex = 0
-    for k, ds in enumerate(sub['DisplayStates']):
-        sid = ds['DisplayStateId']
-        setting = _setting_int(ds['ShaderMode'])
-        if sid == 1:
-            coord = (setting >> 13) & 7
-            if coord == 0:
-                cur_tex = setting & 0x1FFF
-        elif sid == 3:
+    for k, ds in enumerate(states):
+        if ds['DisplayStateId'] == 3:
             type3_index = k
         pl = ds.get('PrimListData')
         if not pl or not ds.get('VertexStreamLayout'):
             continue
         descs = [{'key': d['key'], 'direct': False, 'index_size': d['index_size']}
                  for d in ds['VertexStreamLayout']]
-        faces = decodeDrawList(_dec(pl, use_compression), descs)
-        state_faces[k] = faces
-        first_state_by_tex.setdefault(cur_tex, k)
-        for f in faces:
-            key = (f[0]['position'], f[1]['position'], f[2]['position'])
-            face_lookup.setdefault(key, (k, f))
-    return state_faces, face_lookup, first_state_by_tex, type3_index
+        state_faces[k] = decodeDrawList(_dec(pl, use_compression), descs)
+    if len(_DECODED_STATES) >= _DECODED_STATES_MAX:
+        _DECODED_STATES.clear()
+    _DECODED_STATES[key] = (state_faces, type3_index)
+    return state_faces, type3_index
 
 
 def _primitive_blocks(raw: bytes, descriptors: list, what: str) -> list[tuple[bytes, list]]:
@@ -448,7 +454,7 @@ def rebuild_surface_assignments(data: dict) -> bool:
                 f'sub{sub_idx}: FaceSurfaceIdsEdited has odd byte length '
                 f'{len(raw_assignments)}; expected big-endian uint16 values')
         target_states = _u16s(raw_assignments)
-        state_faces, _, _, _ = _decode_original_states(sub, use_compression)
+        state_faces, _ = _decode_original_states(sub, use_compression)
         original_faces = [
             (state_idx, face)
             for state_idx, faces in state_faces.items()
@@ -740,7 +746,6 @@ def _compact_shared_color_array(
     for index, entry in enumerate(slots):
         slot_for.setdefault(entry, index)
     required = {entry for entries in edited_by_channel.values() for entry in entries}
-    reused = set()
     # Slots an unedited channel still points at keep their donor value: that
     # channel keeps its donor indices, so repurposing one would recolour it.
     pinned = {
@@ -750,18 +755,22 @@ def _compact_shared_color_array(
         for index in indices
     }
 
+    # A slot that was passed over stays unusable (pinned and required do not change, a reused slot
+    # stays reused), so the search for a free one never has to look below where it last stopped.
+    cursor = 0
+
     def assign(entry: bytes) -> int:
+        nonlocal cursor
         index = slot_for.get(entry)
         if index is not None:
             return index
-        for candidate in range(len(donor_entries)):
-            if candidate in reused or candidate in pinned:
-                continue
-            if donor_entries[candidate] in required:
+        while cursor < len(donor_entries):
+            candidate = cursor
+            cursor += 1
+            if candidate in pinned or donor_entries[candidate] in required:
                 continue
             slots[candidate] = entry
             slot_for[entry] = candidate
-            reused.add(candidate)
             return candidate
         slots.append(entry)
         slot_for[entry] = len(slots) - 1
@@ -1094,7 +1103,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
         if not changed_indices:
             continue
 
-        state_faces, _, _, type3_index = _decode_original_states(sub, use_compression)
+        state_faces, type3_index = _decode_original_states(sub, use_compression)
         edited_state_faces = {}
         face_cursor = 0
         for state_index, faces in state_faces.items():

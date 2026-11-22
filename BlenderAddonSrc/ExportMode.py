@@ -36,7 +36,7 @@ except ImportError:  # imported flat by the unit tests
 UNUSED_CHARACTER_CHUNKS = (89, 90, 91, 92, 93, 94)
 
 # A slot export (the tools' "Export as .sluggie") carries its own donor block
-# under this key (SluggiesTools/Hammerspace/HammerspaceMain.DONOR_ENTRY_KEY):
+# under this key (SluggiesTools/Hammerspace/Donor.DONOR_ENTRY_KEY):
 # its offsets are that block's, not the game file's, so only Hammerspace can
 # patch it.
 DONOR_ENTRY_KEY = "DonorEntry"
@@ -129,7 +129,7 @@ def stale_hammerspace_submeshes(submeshes: Sequence[dict], exported_offsets) -> 
 # A donor submesh the export left out on purpose (the "Exclude all unselected
 # meshes" option): the Hammerspace builder keeps its data, bone and display
 # states but empties its primitive lists, so the game draws nothing for it
-# (SluggiesTools/Hammerspace/HammerspaceMain.PatchGPLExcludeSubmeshes).
+# (SluggiesTools/Hammerspace/GplPatch.PatchGPLExcludeSubmeshes).
 EXCLUDED_KEY = "Excluded"
 # Per display state edits that would draw again what is excluded.
 _STATE_EDIT_FIELDS = ("ShaderModeEdited", "DisplayStateParamBytesEdited", "PrimListDataEdited")

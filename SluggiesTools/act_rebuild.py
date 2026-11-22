@@ -3,7 +3,7 @@
 Parses an ACT section into a fully-decoded representation and re-emits it
 byte-for-byte (``probe_act_rebuild_identity.py`` checks this over the whole
 player corpus), or re-emits it with new leaf bones appended (via
-``append_leaf_bone``). ``HammerspaceMain.BuildACTBoneHierarchy``'s rebuild
+``append_leaf_bone``). ``ActBuild.BuildACTBoneHierarchy``'s rebuild
 route is built on it. Format and Dolphin evidence:
 ``_docs/_docs_model_format/act_section.html`` (#layout, #user-data,
 #appending-bones, #section-tail).
@@ -400,7 +400,7 @@ def append_leaf_bone(
     ``mirror_bone_id``/``mirror_role`` override the mirror entry. Overriding
     ``mirror_bone_id`` away from the new bone's own id exists only to build
     test fixtures with a deliberately broken involution (the game tolerates
-    one silently); ``HammerspaceMain._validate_bone_hierarchy_edited`` rejects
+    one silently); ``HammerspaceValidate._validate_bone_hierarchy_edited`` rejects
     this for any real build.
 
     Handles two donor shapes for the per-bone user-data arrays: exactly one

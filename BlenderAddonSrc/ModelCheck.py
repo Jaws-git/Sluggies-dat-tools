@@ -1545,19 +1545,29 @@ def _safe_stem(name):
 
 def fix_image_to_tex(context, image, tex_dir):
     """Save an image without a usable PNG file (generated, packed, not a
-    PNG) as a PNG into tex/ and point it there."""
+    PNG) as a PNG into tex/ and point it there. A packed image is saved
+    too (unpacking would write its packed bytes, a JPEG under a .png name)
+    and then unpacked onto that PNG. On a failure the image keeps its old
+    path and format, and no half-written file stays in tex/."""
     img = _image(image)
     os.makedirs(tex_dir, exist_ok=True)
     file_name = core.free_file_name(_safe_stem(img.name) + ".png", os.listdir(tex_dir))
     path = os.path.join(tex_dir, file_name)
-    img.filepath_raw = path
-    img.file_format = 'PNG'
-    if img.packed_file is not None:
-        img.unpack(method='WRITE_ORIGINAL')
-        if not os.path.isfile(path):
-            img.save()
-    else:
+    old_path, old_format = img.filepath_raw, img.file_format
+    try:
+        img.filepath_raw = path
+        img.file_format = 'PNG'
         img.save()
+        if img.packed_file is not None:
+            # Drop the packed bytes without writing them (every other unpack
+            # method writes them over the PNG) and read the PNG back.
+            img.unpack(method='REMOVE')
+            img.reload()
+    except BaseException:
+        img.filepath_raw, img.file_format = old_path, old_format
+        if os.path.isfile(path):
+            os.remove(path)     # a free name: the file is this fix's own
+        raise
 
 
 def fix_copy_to_tex(context, image, tex_dir, reserved=()):
@@ -1667,6 +1677,14 @@ def run_fixes(context, requests):
 
 
 def _run_fixes(context, requests):
+    # Any fix runs in Object Mode: the dialog's "Go to bones" enters Edit Mode
+    # under it, where vertex group and bone writes fail or are overwritten.
+    requests = list(requests)
+    if requests and context.mode != 'OBJECT':
+        try:
+            fix_object_mode(context)
+        except RuntimeError as exc:     # no fix can run safely then
+            return 0, len(requests), [f"object mode: {exc}"]
     calls = {}
     for fix_id, args in requests:
         if fix_id == "remove_slots":

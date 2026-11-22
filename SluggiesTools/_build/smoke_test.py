@@ -21,6 +21,8 @@ COMMANDS = (
     # Hammerspace/. Its "missing ..." path has to lie in the release: a child script that takes the bundled
     # copy of a module instead of the loose file resolves 3_Output_Dat somewhere else.
     (('--defrag-hammerspace', '--dry-run'), RELEASE_OUTPUT, (0, 1)),
+    # HammerspaceMain.py as a child script: its sibling modules (Donor, BlockAssembly, RouteWriter, ...) import.
+    (('--_run-script', 'SluggiesTools/Hammerspace/HammerspaceMain.py', '--help'), 'usage', (0,)),
     (('--export-sounds',), None, (0, 1)),                         # Sound/
     (('--apply-gameplay', 'reset', '--dry-run'), None, (0, 1)),   # Gameplay/
     (('--save-roster', 'smoke_test.sluggiesroster'), None, (0, 1)),   # Roster/ packs

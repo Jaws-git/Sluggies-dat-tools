@@ -48,7 +48,8 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
-CACHE_LINE = 32
+from ModelFormat import align_up as _align32
+
 ACCUMULATION_KIND = 0
 POSITION_KIND = 1
 NORMAL_KIND = 2
@@ -57,10 +58,6 @@ RECORD_FIXED = 0x0C
 HEADER_FIXED = 0x14
 TYPE_DESCRIPTOR = 16
 RUN_TERMINATOR = b'\x00\x00\x00\x00'
-
-
-def _align32(value: int) -> int:
-    return (value + CACHE_LINE - 1) & ~(CACHE_LINE - 1)
 
 
 @dataclass

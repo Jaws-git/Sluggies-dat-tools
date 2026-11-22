@@ -1043,7 +1043,7 @@ class ExportedEntryBuildsTests(unittest.TestCase):
             warnings,
         )
         model['CustomSubmeshes'] = [entry]
-        modes = self.main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
+        modes = self.main.SectionModes(gpl='build', tex='clone', skn='clone')
         return self.main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path), entry, plan
 
     def test_every_template_source_builds_a_valid_block(self):

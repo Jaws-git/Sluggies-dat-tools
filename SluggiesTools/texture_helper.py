@@ -1682,11 +1682,12 @@ def encode_png_to_tpl(
     """
     target = wimgt_target_for(gx_format, palette_format)
 
+    file_size = None
     if expected_width is not None and expected_height is not None:
-        file_width, file_height = read_png_dimensions(png_path)
-        if clamp_texture_dimensions(file_width, file_height) != (expected_width, expected_height):
+        file_size = read_png_dimensions(png_path)
+        if clamp_texture_dimensions(*file_size) != (expected_width, expected_height):
             raise ValueError(
-                f"PNG dimensions {file_width}x{file_height} do not match descriptor "
+                f"PNG dimensions {file_size[0]}x{file_size[1]} do not match descriptor "
                 f"{expected_width}x{expected_height} for {png_path}"
             )
 
@@ -1698,7 +1699,8 @@ def encode_png_to_tpl(
         except (OSError, ValueError, struct.error, IndexError):
             parsed = None                  # an unreadable entry: encode again, the write below replaces it
         if parsed is not None:
-            file_size = read_png_dimensions(png_path)
+            if file_size is None:
+                file_size = read_png_dimensions(png_path)
             if clamp_texture_dimensions(*file_size) != file_size:
                 slogger.warning(
                     f"{os.path.basename(os.fspath(png_path))}: "

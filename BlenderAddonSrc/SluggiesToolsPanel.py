@@ -660,15 +660,34 @@ def _mark_cube_uv_seams(bm):
         edge.seam = edge not in tree_edges
 
 
-def _unwrap_cube_angle_based(context, obj):
-    """Angle-based unwrap along the seams _mark_cube_uv_seams set, so the
-    cube ships with a real UV layout instead of the default single-square
-    projection from bmesh.ops.create_cube."""
-    _select_new_object(context, obj)
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.01)
-    bpy.ops.object.mode_set(mode='OBJECT')
+# Cube net cells (column, row) of a 4 x 3 grid of 0.25 squares, by face
+# normal: the four sides in a row, top above and bottom below the -Y side.
+_CUBE_NET_CELLS = {
+    (-1, 0, 0): (0, 1), (0, -1, 0): (1, 1), (1, 0, 0): (2, 1), (0, 1, 0): (3, 1),
+    (0, 0, 1): (1, 2), (0, 0, -1): (1, 0),
+}
+_CUBE_NET_MARGIN = 0.01
+
+
+def _unwrap_cube_net(bm, uv_layer):
+    """Lay the six faces of a bmesh cube out as a cross-shaped net in
+    *uv_layer* (seams as _mark_cube_uv_seams set them), each face unmirrored
+    (u x v = its normal). Pure bmesh: no operator, selection or mode switch."""
+    cell = 0.25
+    inner = cell - 2 * _CUBE_NET_MARGIN
+    for face in bm.faces:
+        normal = tuple(int(round(c)) for c in face.normal)
+        column, row = _CUBE_NET_CELLS[normal]
+        n = Vector(normal)
+        v_axis = Vector((0, 0, 1)) if n.z == 0 else Vector((0, n.z, 0))
+        u_axis = v_axis.cross(n)
+        us = [loop.vert.co.dot(u_axis) for loop in face.loops]
+        vs = [loop.vert.co.dot(v_axis) for loop in face.loops]
+        u_min, u_span = min(us), (max(us) - min(us)) or 1.0
+        v_min, v_span = min(vs), (max(vs) - min(vs)) or 1.0
+        for loop, u, v in zip(face.loops, us, vs):
+            loop[uv_layer].uv = (column * cell + _CUBE_NET_MARGIN + (u - u_min) / u_span * inner,
+                                 row * cell + _CUBE_NET_MARGIN + (v - v_min) / v_span * inner)
 
 
 def _create_custom_submesh_cube(context, arm_obj, bone_id, custom_submesh_id, submesh_name, template_source):
@@ -679,15 +698,16 @@ def _create_custom_submesh_cube(context, arm_obj, bone_id, custom_submesh_id, su
     obj_name = submesh_name
     mesh = bpy.data.meshes.new(obj_name)
     bm = bmesh.new()
-    bmesh.ops.create_cube(bm, size=_CUSTOM_SUBMESH_CUBE_HALF_EXTENT * 2)
-    _mark_cube_uv_seams(bm)
-    bm.to_mesh(mesh)
-    bm.free()
-    mesh.uv_layers.new(name='uv0')
+    try:
+        bmesh.ops.create_cube(bm, size=_CUSTOM_SUBMESH_CUBE_HALF_EXTENT * 2)
+        _mark_cube_uv_seams(bm)
+        _unwrap_cube_net(bm, bm.loops.layers.uv.new('uv0'))
+        bm.to_mesh(mesh)
+    finally:
+        bm.free()
 
     obj = bpy.data.objects.new(obj_name, mesh)
     context.collection.objects.link(obj)
-    _unwrap_cube_angle_based(context, obj)
 
     obj['SluggiesCustomSubmesh'] = True
     obj['CustomSubmeshId'] = custom_submesh_id
@@ -713,6 +733,20 @@ def _create_custom_submesh_cube(context, arm_obj, bone_id, custom_submesh_id, su
         obj.location = arm_obj.matrix_world @ bone.head_local
 
     return obj
+
+
+def _collection_in_view_layer(context):
+    """Whether context.collection (where new objects are linked) is part of
+    the view layer and not excluded: an object linked into an excluded
+    collection cannot be selected or made active."""
+    target = context.collection
+    stack = [context.view_layer.layer_collection]
+    while stack:
+        layer = stack.pop()
+        if layer.collection == target:
+            return not layer.exclude
+        stack.extend(child for child in layer.children if not child.exclude)
+    return False
 
 
 def _select_new_object(context, obj):
@@ -771,16 +805,22 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
             return None, False, f"Could not load existing {file_name} from tex/: {exc}"
         return image, True, None
 
-    os.makedirs(tex_dir, exist_ok=True)
-    image = bpy.data.images.new(
-        name=file_name,
-        width=_CUSTOM_SUBMESH_TEXTURE_SIZE,
-        height=_CUSTOM_SUBMESH_TEXTURE_SIZE,
-        alpha=True,
-    )
-    image.filepath_raw = file_path
-    image.file_format = 'PNG'
-    image.save()
+    image = None
+    try:
+        os.makedirs(tex_dir, exist_ok=True)
+        image = bpy.data.images.new(
+            name=file_name,
+            width=_CUSTOM_SUBMESH_TEXTURE_SIZE,
+            height=_CUSTOM_SUBMESH_TEXTURE_SIZE,
+            alpha=True,
+        )
+        image.filepath_raw = file_path
+        image.file_format = 'PNG'
+        image.save()
+    except (OSError, RuntimeError) as exc:
+        if image is not None:   # no image datablock without its file
+            bpy.data.images.remove(image)
+        return None, False, f"Could not write tex/{file_name}: {exc}"
     return image, False, None
 
 
@@ -951,7 +991,7 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         if arm_obj is None or obj is None:
             self.report({"ERROR"}, _no_target_armature_message(context))
             return {"CANCELLED"}
-        _renumber_added_bones_reporting(self, arm_obj)
+        _renumber_added_bones_reporting(self, arm_obj, undo_step=True)
 
         ordered = _reassign_choices(context, arm_obj, obj)
         if not ordered:
@@ -1412,11 +1452,25 @@ def _renumber_added_bones(arm_obj):
     return renames
 
 
-def _renumber_added_bones_reporting(op, arm_obj):
+def _stopped_after(changed):
+    """The return of an operator that stops on an error: CANCELLED tells
+    Blender nothing happened (no undo step), so once it *changed* something
+    (renamed bones, reweighted a body, unhid objects) it finishes instead;
+    the error is reported either way."""
+    return {"FINISHED"} if changed else {"CANCELLED"}
+
+
+def _renumber_added_bones_reporting(op, arm_obj, undo_step=False):
+    """Rename added bones to their export ids and report it. *undo_step*: the
+    caller is a dialog's invoke, which changes data before the user
+    confirmed: the rename gets an undo step of its own, so Cancel leaves it
+    as a step that can be undone instead of merging it into the next one."""
     renames = _renumber_added_bones(arm_obj)
     if renames:
         op.report({"INFO"}, "Renumbered added bones: " + ", ".join(
             f"{old} -> {new}" for old, new in sorted(renames.items())))
+        if undo_step:
+            bpy.ops.ed.undo_push(message="Renumber added bones")
     return renames
 
 
@@ -1656,7 +1710,7 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
         if not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
-        _renumber_added_bones_reporting(self, arm_obj)
+        _renumber_added_bones_reporting(self, arm_obj, undo_step=True)
         _drop_enum_items('add_bone.parent_bone')
         active_bone = arm_obj.data.bones.active
         if _model_is_stadium(arm_obj):
@@ -1738,6 +1792,10 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if _find_target_armature(context) is None:
             cls.poll_message_set(_no_target_armature_message(context))
             return False
+        if not _collection_in_view_layer(context):
+            cls.poll_message_set("The active collection is excluded from the view layer: "
+                                 "pick another one in the Outliner")
+            return False
         return True
 
     def invoke(self, context, event):
@@ -1751,7 +1809,7 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if not SluggiePath.resolve(arm_obj):
             self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Add New Submesh"))
             return {"CANCELLED"}
-        _renumber_added_bones_reporting(self, arm_obj)
+        _renumber_added_bones_reporting(self, arm_obj, undo_step=True)
 
         ordered = _ordered_host_bone_choices(context, arm_obj)
         if not ordered:
@@ -1810,18 +1868,31 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
                 self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Add New Submesh"))
                 return {"CANCELLED"}
 
+            # The cube first, the PNG last: a failure removes the cube, and
+            # no blank PNG is left in tex/ for a submesh that does not exist.
             custom_submesh_id = _next_custom_submesh_id(context)
-            image, texture_reused, error = _write_custom_submesh_texture(sluggie_path, submesh_name)
-            if error:
-                self.report({"ERROR"}, error)
-                return {"CANCELLED"}
-
             obj = _create_custom_submesh_cube(
                 context, arm_obj, bone_id, custom_submesh_id, submesh_name, self.template_source)
-            _create_custom_submesh_material(
-                obj, custom_submesh_id, image,
-                _template_shader_mode(context, arm_obj, self.template_source),
-                _template_specular_strength(context, arm_obj, self.template_source))
+
+            def remove_cube():
+                mesh = obj.data
+                bpy.data.objects.remove(obj)
+                bpy.data.meshes.remove(mesh)
+                _UNIFORM_BONE_CACHE.clear()
+
+            image, texture_reused, error = _write_custom_submesh_texture(sluggie_path, submesh_name)
+            if error:
+                remove_cube()
+                self.report({"ERROR"}, error)
+                return {"CANCELLED"}
+            try:
+                _create_custom_submesh_material(
+                    obj, custom_submesh_id, image,
+                    _template_shader_mode(context, arm_obj, self.template_source),
+                    _template_specular_strength(context, arm_obj, self.template_source))
+            except BaseException:
+                remove_cube()   # the PNG stays: it is a valid file and reused on the next try
+                raise
             _select_new_object(context, obj)
 
             message = f"Added {obj.name} on bone_{bone_id} ({self.template_source})"
@@ -2215,7 +2286,7 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         # names the bones export with.
         for armature in armatures:
             if _bone_metadata_is_current(armature):
-                _renumber_added_bones_reporting(self, armature)
+                _renumber_added_bones_reporting(self, armature, undo_step=True)
         _drop_enum_items(*_MAKE_SUBMESH_ENUMS)
         self.armature = arm_obj.name
         _update_make_submesh_armature(self, context)
@@ -2320,6 +2391,15 @@ def _convert_to_custom_submesh(context, obj, arm_obj, bone_id, template_source, 
     obj['CustomSubmeshId'] = custom_submesh_id
     obj['TemplateSource'] = template_source
 
+    # The materials first: this is the step that writes files (a PNG per surface without one), and a
+    # failed write must not find the mesh already stripped of its vertex groups and re-parented.
+    material_notes = []
+    if set_up_materials:
+        try:
+            material_notes = _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of, ensure_textures)
+        except ValueError as exc:
+            material_notes = [f"materials not finished: {exc}"]
+
     obj.vertex_groups.clear()
     group = obj.vertex_groups.new(name=f'bone_{bone_id}')
     group.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
@@ -2332,11 +2412,7 @@ def _convert_to_custom_submesh(context, obj, arm_obj, bone_id, template_source, 
     uv_layers = obj.data.uv_layers
     if not uv_layers:
         notes.append("no UV map: add one and unwrap it before exporting")
-    if set_up_materials:
-        try:
-            notes += _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of, ensure_textures)
-        except ValueError as exc:
-            notes.append(f"materials not finished: {exc}")
+    notes += material_notes
     if len(uv_layers) == 1:
         _rename_uv_map(obj, _MADE_SUBMESH_UV_NAME)
     return custom_submesh_id, notes
@@ -2671,7 +2747,7 @@ class SLUGGIES_OT_make_main_body(bpy.types.Operator):
         if body is None:
             self.report({"ERROR"}, "This model's submesh 0 is not a skinned body")
             return {"CANCELLED"}
-        _renumber_added_bones_reporting(self, arm_obj)
+        renamed = _renumber_added_bones_reporting(self, arm_obj)
 
         # Everything that can fail is checked before the scene changes.
         try:
@@ -2679,7 +2755,7 @@ class SLUGGIES_OT_make_main_body(bpy.types.Operator):
             old_bodies = _plan_old_bodies(context, arm_obj, body, obj)
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
+            return _stopped_after(renamed)
 
         notes = _make_body(obj, arm_obj, model, plans)
         notes += _demote_old_bodies(context, arm_obj, model, tex_dir, old_bodies)
@@ -3003,6 +3079,7 @@ def _start_assign_preview(context, targets):
     _ASSIGN_PREVIEW.clear()
     AdaptTransform.begin_cache()    # weights and topology do not change under the dialog
     _ASSIGN_PREVIEW['targets'] = list(targets)
+    _ASSIGN_PREVIEW['selected'] = list(context.selected_objects)
     # The old rigs too: Align and scale only moves them.
     _ASSIGN_PREVIEW['saved'] = {
         obj: (obj.matrix_basis.copy(), obj.data,
@@ -3053,11 +3130,14 @@ def _apply_assign_preview(context, settings):
         return
     targets = _ASSIGN_PREVIEW['targets']
     try:
-        _ASSIGN_PREVIEW['backups'] = _bake_assign_poses(context, targets, settings)
+        # Filled while baking: a failure half way still leaves every baked
+        # mesh where _restore_assign_state (and Cancel) puts it back.
+        _bake_assign_poses(context, targets, settings, _ASSIGN_PREVIEW['backups'])
         matrix, lines = _assign_fit(context, arm_obj, targets, settings)
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001 - a timer has no caller to report to: show it in the dialog
         _restore_assign_state()
-        _ASSIGN_PREVIEW['error'] = str(exc)
+        _ASSIGN_PREVIEW['error'] = str(exc).strip().splitlines()[-1] if str(exc).strip() \
+            else type(exc).__name__
         return
     if not settings['align_only']:
         for obj in targets:
@@ -3107,11 +3187,14 @@ def _depth(obj):
 
 
 def _old_rigs(context, targets):
-    """The non-Sluggies armatures *targets* follow, plus selected ones, by name."""
+    """The non-Sluggies armatures *targets* follow, plus selected ones, by
+    name. While the Assign dialog is open the selection is the one its
+    invoke saw (the preview timer's context may not have the member)."""
     armatures = set(_sluggies_armatures(context))
     old_rigs = {a for obj in targets for a in _followed_armatures(obj)
                 if a is not None and a.type == 'ARMATURE' and a not in armatures}
-    old_rigs.update(o for o in context.selected_objects if o.type == 'ARMATURE' and o not in armatures)
+    selected = _ASSIGN_PREVIEW['selected'] if 'selected' in _ASSIGN_PREVIEW else context.selected_objects
+    old_rigs.update(o for o in selected if o.type == 'ARMATURE' and o not in armatures)
     return sorted(old_rigs, key=lambda a: a.name)
 
 
@@ -3120,14 +3203,17 @@ def _restore_meshes(backups):
         AdaptTransform.restore_mesh(obj, backup)
 
 
-def _bake_assign_poses(context, targets, settings):
+def _bake_assign_poses(context, targets, settings, backups=None):
     """With 'Use pose', the old rig's current pose written into each target
     that follows a posed one (not with Align and scale only: the rig keeps
-    posing it). Returns {object: backup}."""
+    posing it). Returns {object: backup}. With *backups* (a dict) each
+    backup goes in as soon as it is taken and the caller restores them on
+    failure; without, a failure restores the baked meshes here."""
+    own = backups is None
+    backups = {} if own else backups
     if settings['pose'] != 'POSE' or settings['align_only']:
-        return {}
+        return backups
     posed = {rig for rig in _old_rigs(context, targets) if AdaptTransform.is_posed(rig)}
-    backups = {}
     try:
         for obj in targets:
             if any(m.type == 'ARMATURE' and m.object in posed and m.show_viewport for m in obj.modifiers):
@@ -3136,8 +3222,9 @@ def _bake_assign_poses(context, targets, settings):
                 backup = AdaptTransform.bake_pose(context, obj)
                 if backup is not None:
                     backups[obj] = backup
-    except ValueError:
-        _restore_meshes(backups)
+    except BaseException:
+        if own:
+            _restore_meshes(backups)
         raise
     return backups
 
@@ -3344,13 +3431,16 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
         backups = {}
         settings = _assign_settings(self)
         try:
-            backups = _bake_assign_poses(context, targets, settings)
+            _bake_assign_poses(context, targets, settings, backups)
             if self.align:
                 matrix, fit_lines = _assign_fit(context, arm_obj, targets, settings)
         except ValueError as exc:
             _restore_meshes(backups)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        except BaseException:
+            _restore_meshes(backups)    # an unexpected error: still nothing half baked
+            raise
 
         if settings['align_only']:
             moved = _aligned_objects(context, targets, settings)
@@ -3603,34 +3693,52 @@ def _adapt_mesh_faults(wm):
     return faulty, messages
 
 
-def _join_into_body(context, body_obj, obj):
-    """Merge *obj* into the skinned body object *body_obj*: its render UV map
-    joins the body's channel 0, its vertex groups the skin weights. Its
-    materials stay plain until Convert Materials. Returns notes."""
+def _join_into_body(context, body_obj, objs):
+    """Merge the meshes *objs* into the skinned body object *body_obj*: their
+    render UV maps join the body's channel 0, their vertex groups the skin
+    weights. Their materials stay plain until Convert Materials. One join for
+    all of them, so a refused join leaves none of them merged. Returns notes."""
     notes = []
-    if obj.data.users > 1:
-        obj.data = obj.data.copy()
-    if not any(slot.material is not None for slot in obj.material_slots):
-        # Joining adds an empty slot for a mesh without material: give it the
-        # body's first one instead.
-        first = next((m for m in body_obj.data.materials if m is not None), None)
-        if first is not None:
-            obj.data.materials.clear()
-            obj.data.materials.append(first)
-        notes.append(f"{obj.name} had no material: its faces take the body's first one")
-    notes += [f"{obj.name}: {note}" for note in _use_body_uv_name(obj)]
-    with context.temp_override(active_object=body_obj, object=body_obj, selected_objects=[body_obj, obj],
-                               selected_editable_objects=[body_obj, obj]):
+    objs = list(objs)
+    if not objs:
+        return notes
+    for obj in objs:
+        if obj.data.users > 1:
+            obj.data = obj.data.copy()
+        if not any(slot.material is not None for slot in obj.material_slots):
+            # Joining adds an empty slot for a mesh without material: give it the
+            # body's first one instead.
+            first = next((m for m in body_obj.data.materials if m is not None), None)
+            if first is not None:
+                obj.data.materials.clear()
+                obj.data.materials.append(first)
+            notes.append(f"{obj.name} had no material: its faces take the body's first one")
+        notes += [f"{obj.name}: {note}" for note in _use_body_uv_name(obj)]
+    with context.temp_override(active_object=body_obj, object=body_obj, selected_objects=[body_obj, *objs],
+                               selected_editable_objects=[body_obj, *objs]):
         bpy.ops.object.join()
     return notes
 
 
+# The window Join or Replace was confirmed in, for _reopen_adapt_meshes.
+_REOPEN_WINDOW = [None]
+
+
 def _reopen_adapt_meshes():
-    """Timer: show the Join or Replace dialog again with its rows as they were."""
+    """Timer: show the Join or Replace dialog again with its rows as they
+    were, in the window it was open in (else the first one)."""
     wm = bpy.context.window_manager
-    if len(wm.windows):
-        with bpy.context.temp_override(window=wm.windows[0]):
-            bpy.ops.sluggies.adapt_meshes('INVOKE_DEFAULT', reopen=True)
+    window = _REOPEN_WINDOW[0]
+    _REOPEN_WINDOW[0] = None
+    windows = list(wm.windows)
+    if window not in windows:
+        window = windows[0] if windows else None
+    if window is not None:
+        try:
+            with bpy.context.temp_override(window=window, screen=window.screen):
+                bpy.ops.sluggies.adapt_meshes('INVOKE_DEFAULT', reopen=True)
+        except RuntimeError as exc:     # its poll refused: the armature or the mode changed
+            print(f"Sluggies: Join or Replace could not reopen: {exc}")
     return None
 
 
@@ -3671,7 +3779,7 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
             self.report({"ERROR"}, error)
             return {"CANCELLED"}
 
-        _renumber_added_bones_reporting(self, arm_obj)
+        _renumber_added_bones_reporting(self, arm_obj, undo_step=True)
         ordered = _ordered_host_bone_choices(context, arm_obj)
         _set_enum_items(_ADAPT_MESH_BONE_ENUM, _pointer(arm_obj), _host_bone_items(context, arm_obj, ordered))
         if not self.reopen:
@@ -3756,6 +3864,7 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
         if messages:
             # A props dialog cannot disable its OK button: show it again.
             self.report({"ERROR"}, messages[0])
+            _REOPEN_WINDOW[0] = context.window
             bpy.app.timers.register(_reopen_adapt_meshes, first_interval=0.01)
             return {"CANCELLED"}
         try:
@@ -3837,8 +3946,7 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
                 lines.append(f"Set aside (off the armature, not exported): {', '.join(backups)}")
         if joins:
             names = ", ".join(obj.name for obj in joins)
-            for obj in joins:
-                notes += _join_into_body(context, body_obj, obj)
+            notes += _join_into_body(context, body_obj, joins)
             lines.append(f"Joined into {body_obj.name}: {names}")
         for obj, bone_id in rigid:
             custom_submesh_id, obj_notes = _convert_to_custom_submesh(
@@ -4329,10 +4437,12 @@ class SLUGGIES_OT_adapt_weights(bpy.types.Operator):
             return {"CANCELLED"}
 
         lines, results = [], []
+        changed = False     # an earlier body was reweighted, or got its own mesh data
         try:
             for obj in objects:
                 if obj.data.users > 1:
                     obj.data = obj.data.copy()
+                    changed = True
                     lines.append(f"{obj.name}'s mesh data was shared, so it got its own copy")
                 if self.method == 'MAP':
                     weights = AdaptWeights.read_weights(obj)    # one pass for both
@@ -4344,11 +4454,14 @@ class SLUGGIES_OT_adapt_weights(bpy.types.Operator):
                     result = AdaptWeights.autorig(context, obj, arm_obj, self.whole_body, self.remove_old_groups)
                     _ensure_armature_modifier(obj, arm_obj)
                     _parent_keeping_world(obj, arm_obj)
+                changed = True
                 lines += AdaptWeights.summary_lines(result)
                 results.append(result)
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
+            for line in lines if changed else ():
+                self.report({"INFO"}, line)     # what was done before the error stays done
+            return _stopped_after(changed)
         title = "Map Weights" if self.method == 'MAP' else "Automatic Weights"
         _report_adapt_summary(self, context, title, lines, AdaptWeights.warning_lines(objects, arm_obj, results))
         return {"FINISHED"}
@@ -4613,15 +4726,16 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
         if not chosen:
             self.report({"INFO"}, "Nothing to copy: every mesh is set to Ignore")
             return {"CANCELLED"}
-        _renumber_added_bones_reporting(self, high)
-        _renumber_added_bones_reporting(self, low)
+        renamed = bool(_renumber_added_bones_reporting(self, high))
+        renamed = bool(_renumber_added_bones_reporting(self, low)) or renamed
         # Everything that can fail is checked before the Low model changes.
         try:
             plan = self._plan(context, high, low, low_model, chosen)
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        return self._apply(context, high, low, low_model, low_tex_dir, plan)
+            return _stopped_after(renamed)
+        result = self._apply(context, high, low, low_model, low_tex_dir, plan)
+        return _stopped_after(renamed) if result == {"CANCELLED"} else result
 
     @staticmethod
     def _plan(context, high, low, low_model, chosen):
@@ -4936,15 +5050,23 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
             return {"CANCELLED"}
         # The exporter skips hidden meshes and a hidden armature can't be
         # selected: unhide both models, then check both before writing either.
-        unhidden = []
+        # A failed export hides them again: CANCELLED must leave the scene as it was.
+        unhidden = []       # (object, hide_get, hide_viewport) before
         for arm_obj in (high, low):
             for obj in [arm_obj] + model_meshes(context, arm_obj)[1]:
                 if not obj.visible_get():
+                    unhidden.append((obj, obj.hide_get(), obj.hide_viewport))
                     obj.hide_set(False)
                     obj.hide_viewport = False
-                    unhidden.append(obj.name)
+
+        def hide_again():
+            for obj, hidden, hidden_viewport in unhidden:
+                obj.hide_viewport = hidden_viewport
+                obj.hide_set(hidden)
+
         for arm_obj in (high, low):
             if not arm_obj.visible_get() or not model_meshes(context, arm_obj)[0]:
+                hide_again()
                 self.report({"ERROR"}, f"{arm_obj.name} or its meshes are in a hidden collection: "
                                        "show it and export again")
                 return {"CANCELLED"}
@@ -4978,7 +5100,9 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
                 if obj.name in context.view_layer.objects:
                     obj.select_set(True)
             context.view_layer.objects.active = active
-        shown = f" (unhid {', '.join(unhidden)})" if unhidden else ""
+            if len(written) < 2:    # failed (or raised): selection first, then hide again
+                hide_again()
+        shown = f" (unhid {', '.join(obj.name for obj, _h, _v in unhidden)})" if unhidden else ""
         self.report({"INFO"}, f"Exported {high.name} to {written[0]} and {low.name} to {written[1]}{shown}")
         return {"FINISHED"}
 
@@ -5307,6 +5431,11 @@ def register():
 
 
 def unregister():
+    for timer in (_run_assign_preview, _reopen_adapt_meshes):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
+    _end_assign_preview()
+    _REOPEN_WINDOW[0] = None
     for name, handler in _UNIFORM_BONE_HANDLERS:
         handlers = getattr(bpy.app.handlers, name)
         if handler in handlers:

@@ -455,7 +455,7 @@ def added_bone_renames(
 # 0x00-0x8C, 0x100-0x127 and 0x180-0x199 plus flag-style ids at 0x4000 and up
 # (every High model and every bank 6-14 of dt_na.dat, surveyed 2026-10-12), so
 # no stock animation drives an id in this range. Mirrors
-# HammerspaceMain.ADDED_TRACK_IDS, which the patcher checks against.
+# HammerspaceValidate.ADDED_TRACK_IDS, which the patcher checks against.
 ADDED_TRACK_IDS = range(0xC0, 0x100)
 NO_TRACK = 0xFFFF
 

@@ -146,6 +146,12 @@ def hammerspace_section_args(model):
         and decode_binary(entry['WeightDataEdited']) != decode_binary(entry.get('WeightData'))
         for entry in (skin.get('SK2s') or []) + (skin.get('SKAccs') or [])
     )
+    # The same for an in-place bind-pose edit (``BindPoseDataEdited`` on the donor entries).
+    skin_weights_edited = skin_weights_edited or any(
+        entry.get('BindPoseDataEdited') is not None and entry.get('VertexCntEdited') is None
+        and decode_binary(entry['BindPoseDataEdited']) != decode_binary(entry.get('BindPoseData'))
+        for entry in (skin.get('SK1s') or []) + (skin.get('SK2s') or []) + (skin.get('SKAccs') or [])
+    )
 
     args = []
     if model.get('DesiredTextureAssignments') or any(

@@ -41,7 +41,7 @@ archive members; the skeleton rule is the prefix rule (at least the target's
 vanilla bones, same parent chain; an empty file 5 has none to compare). There
 is no ``L_`` partner, so none of the LOD checks apply, and a shared vanilla
 bat or glove is never repointed for its other users: only the target's own
-route changes (``HammerspaceMain.WriteModelBlock`` skips the sharers).
+route changes (``RouteWriter.WriteModelBlock`` skips the sharers).
 """
 
 from __future__ import annotations

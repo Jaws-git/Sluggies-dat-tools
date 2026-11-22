@@ -234,7 +234,17 @@ def parse_block(blk: bytes) -> dict:
 # Comparison
 # ---------------------------------------------------------------------------
 
-def compare(o: dict, r: dict) -> None:
+def compare(o: dict, r: dict) -> tuple[int, int]:
+    """Compare two parsed blocks. Returns ``(checks passed, checks failed)`` of this comparison; the notes
+    are in ``_notes``."""
+    global _pass, _fail
+    _pass = _fail = 0
+    _notes.clear()
+    _compare(o, r)
+    return _pass, _fail
+
+
+def _compare(o: dict, r: dict) -> None:
     _slogger.info('--- Header ---', source="compare.blocks")
     for k in ('gpl', 'act', 'tex', 'skn', 'p6', 'p7', 'p8'):
         check(f'header {k} presence', bool(o['hdr'][k]) == bool(r['hdr'][k]),
@@ -401,12 +411,12 @@ def main() -> None:
 
     o = parse_block(orig)
     r = parse_block(rebuilt)
-    compare(o, r)
+    passed, failed = compare(o, r)
 
-    _slogger.info(f'===== {_pass} checks passed, {_fail} failed =====', source="compare.blocks")
+    _slogger.info(f'===== {passed} checks passed, {failed} failed =====', source="compare.blocks")
     for n in _notes:
         _slogger.info(f'NOTE: {n}', source="compare.blocks")
-    sys.exit(1 if _fail else 0)
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == '__main__':
