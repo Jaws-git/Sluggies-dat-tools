@@ -12,6 +12,9 @@ from dataclasses import replace
 
 import slogger as _slogger
 import HammerspaceHelper as hh
+import DatAllocation
+import DolRecords
+import RouteOps
 import LodPartnerGuard
 import LodTextureSync
 import SlotTarget
@@ -133,7 +136,7 @@ def WriteModelBlock(
     # Last, and never fatal: the game files are complete at this point, and a dump that cannot
     # be written (disk full, the file open in another program) must not look like a failed patch.
     try:
-        hh.writeDebugDumps(
+        DatAllocation.writeDebugDumps(
             model_name,
             build.original_offset,
             build.original_length,
@@ -150,7 +153,7 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
     """Write *block* to hammerspace and route ``(chunk_number, file_index)`` (and its sharers) to it; the route's
     vanilla block is zeroed when nothing else uses it, a replaced hammerspace block when it is unrouted.
     ``share_route=False`` routes only this entry (equipment targets: other routes that share the block keep it)."""
-    current_offset, current_length = hh.readOutputDolEntry(chunk_number, file_index)
+    current_offset, current_length = DolRecords.readOutputDolEntry(chunk_number, file_index)
     replacing_hammerspace_block = current_offset >= hh.BASE_SIZE
     if replacing_hammerspace_block:
         _slogger.info(
@@ -162,20 +165,20 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
     # Live hammerspace blocks can end in zero padding, which the zero-byte scan
     # would otherwise treat as free. Placing the new block over the old block's
     # zero tail let the zeroRange below wipe the new block's header.
-    reserved_ranges = list(hh.routedHammerspaceRanges())
+    reserved_ranges = list(DolRecords.routedHammerspaceRanges())
     if replacing_hammerspace_block:
         reserved_ranges.append((current_offset, current_length))
     if output_offset is None:
-        new_offset = hh.findFreeMemoryChunk(len(block), reserved_ranges=reserved_ranges)
+        new_offset = DatAllocation.findFreeMemoryChunk(len(block), reserved_ranges=reserved_ranges)
         if new_offset == -1:
-            if not hh.ensureOutputDat():
+            if not DatAllocation.ensureOutputDat():
                 raise RuntimeError('Unable to prepare output dt_na.dat')
             current_size = os.path.getsize(hh.OUTPUT_DAT)
             next_region_start = (current_size + hh.HS_ALIGN_BYTES - 1) & ~(hh.HS_ALIGN_BYTES - 1)
             required_size = next_region_start + len(block) + hh.HS_BUFFER_BYTES
-            if not hh.ensureOutputDat(required_size):
+            if not DatAllocation.ensureOutputDat(required_size):
                 raise RuntimeError('Unable to prepare output dt_na.dat')
-            new_offset = hh.findFreeMemoryChunk(len(block), reserved_ranges=reserved_ranges)
+            new_offset = DatAllocation.findFreeMemoryChunk(len(block), reserved_ranges=reserved_ranges)
             if new_offset == -1:
                 raise RuntimeError('No contiguous hammerspace region found after expansion')
     else:
@@ -211,7 +214,7 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
             'write, because zeroing the old block would corrupt the new one'
         )
 
-    found_sharers = hh.findSharedEntries(chunk_number, file_index) if share_route else []
+    found_sharers = DolRecords.findSharedEntries(chunk_number, file_index) if share_route else []
     shared_entries = UntanglePolicy.independent_sharers(chunk_number, file_index, found_sharers)
     kept = [route for route in found_sharers if route not in shared_entries]
     if kept:
@@ -226,18 +229,18 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
     routes = [(chunk_number, file_index)] + [tuple(route) for route in shared_entries]
     previous = {}
     for route in routes:
-        entry = hh.readOutputDolEntry(*route)
+        entry = DolRecords.readOutputDolEntry(*route)
         if entry[0] == -1:
-            entry = hh.readDolEntry(*route)
+            entry = DolRecords.readDolEntry(*route)
         if entry[0] == -1:
             raise RuntimeError(f'chunk {route[0]}, file {route[1]} has no directory record in main.dol')
         previous[route] = entry
 
-    hh.writeModelBlock(block, new_offset)
+    DatAllocation.writeModelBlock(block, new_offset)
     routed = []
     try:
         for route in routes:
-            hh.patchDolEntry(*route, new_offset, len(block))
+            DolRecords.patchDolEntry(*route, new_offset, len(block))
             routed.append(route)
     except Exception as exc:
         # Put the records already switched back on their old block (a re-run finds the sharers
@@ -249,23 +252,23 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
         )
         for route in routed:
             try:
-                hh.patchDolEntry(*route, *previous[route])
+                DolRecords.patchDolEntry(*route, *previous[route])
             except Exception as undo_exc:
                 _slogger.error(
                     f'Could not restore the route of chunk {route[0]}, file {route[1]}: {undo_exc}',
                     source='hammerspace.main',
                 )
         try:
-            hh.zeroRangeIfUnrouted(new_offset, len(block))
+            RouteOps.zeroRangeIfUnrouted(new_offset, len(block))
         except OSError as zero_exc:
             _slogger.error(f'Could not free the new block at 0x{new_offset:08X}: {zero_exc}',
                            source='hammerspace.main')
         raise
 
-    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))    # warns by itself when there is no fst.bin
-    hh.zeroOriginalModel(chunk_number, file_index)
+    DatAllocation.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))    # warns by itself when there is no fst.bin
+    RouteOps.zeroOriginalModel(chunk_number, file_index)
     if replacing_hammerspace_block and current_offset != new_offset:
-        hh.zeroRangeIfUnrouted(current_offset, current_length)
+        RouteOps.zeroRangeIfUnrouted(current_offset, current_length)
         _slogger.info(
             f'Hammerspace Log: Replaced | Model: {model_name} | '
             f'Old address: 0x{current_offset:08X} | '
@@ -293,7 +296,7 @@ def WriteSlotBlocks(character_id: str, high: bytes | None, low: bytes | None, hi
         _slogger.error(f'Slot write refused | {exc}', source='hammerspace.main')
         return False
     where = f'0x{cid:02X} (chunk {chunk_number})'
-    if chunk_number not in SlotTarget.character_dirs() and not hh.isOwnDir(chunk_number):
+    if chunk_number not in SlotTarget.character_dirs() and not DolRecords.isOwnDir(chunk_number):
         _slogger.error(f'Slot write refused | {where} is not a character directory', source='hammerspace.main')
         return False
     blocks = {SlotTarget.HIGH_FILE: high, SlotTarget.LOW_FILE: low}
@@ -330,7 +333,7 @@ def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
     character) gets a verbatim copy of its vanilla block: its untangled
     texture bytes come from its own ``.sluggie``, which a slot unpatch does
     not have."""
-    if hh.isOwnDir(target.chunk_number):
+    if DolRecords.isOwnDir(target.chunk_number):
         _slogger.error(
             f'Slot unpatch refused | Slot: {target.describe()} | a new ID\'s own model directory has no vanilla '
             'block of its own; clear the slot instead (start.py --clear-slot), which gives it a fresh copy of its '
@@ -355,7 +358,7 @@ def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
                 f'[Untangle] slot ({chunk_number},{file_index}) gets a verbatim copy of its vanilla block',
                 source='hammerspace.main',
             )
-        ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
+        ok, removed_offset, removed_length = RouteOps.removeModelFromHammerspace(chunk_number, file_index)
         if not ok:
             _slogger.error(
                 f'Slot unpatch stopped | Slot: {target.describe()} | chunk {chunk_number}, file {file_index} '
@@ -384,21 +387,21 @@ def ClearTarget(character_id: str) -> bool:
         _slogger.error(f'Slot clear refused | {exc}', source='hammerspace.main')
         return False
     target = SlotTarget.Target(chunk_number, SlotTarget.HIGH_FILE, cid, as_low=True)
-    if hh.isOwnDir(chunk_number) or chunk_number not in SlotTarget.character_dirs():
+    if DolRecords.isOwnDir(chunk_number) or chunk_number not in SlotTarget.character_dirs():
         _slogger.error(f'Slot clear refused | Slot: {target.describe()} | not a stock character directory',
                        source='hammerspace.main')
         return False
     success = True
     for file_index in SlotTarget.CHARACTER_FILES:
-        current = hh.readOutputDolEntry(chunk_number, file_index)
-        vanilla = hh.readDolEntry(chunk_number, file_index)
+        current = DolRecords.readOutputDolEntry(chunk_number, file_index)
+        vanilla = DolRecords.readDolEntry(chunk_number, file_index)
         if current == vanilla and not UntanglePolicy.is_split(chunk_number, file_index):
             block = LodPartnerGuard.read_current_block(chunk_number, file_index)
             if block == LodPartnerGuard._vanilla_block(chunk_number, file_index):
                 _slogger.info(f'Slot clear | chunk {chunk_number}, file {file_index} is already vanilla',
                               source='hammerspace.main')
                 continue
-        ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
+        ok, removed_offset, removed_length = RouteOps.removeModelFromHammerspace(chunk_number, file_index)
         success = success and ok
         if not ok:
             _slogger.error(
@@ -432,7 +435,7 @@ def ClearEquipment(character_id: str, file_index: int) -> bool:
                        'animation bank (6-14)', source='hammerspace.main')
         return False
     where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
-    if not hh.isOwnDir(chunk_number) and chunk_number not in SlotTarget.character_dirs():
+    if not DolRecords.isOwnDir(chunk_number) and chunk_number not in SlotTarget.character_dirs():
         _slogger.error(f'Equipment reset refused | {where} is not a character directory', source='hammerspace.main')
         return False
     vanilla = LodPartnerGuard._vanilla_block(chunk_number, file_index)
@@ -441,34 +444,34 @@ def ClearEquipment(character_id: str, file_index: int) -> bool:
                        source='hammerspace.main')
         return False
     current = LodPartnerGuard.read_current_block(chunk_number, file_index)
-    if hh.isOwnDir(chunk_number):
+    if DolRecords.isOwnDir(chunk_number):
         if current == vanilla:
             _slogger.info(f'Equipment reset | {where} is already at its baseline', source='hammerspace.main')
             return True
         _write_route(vanilla, chunk_number, file_index, f'0x{cid:02X} file {file_index} (baseline)',
                      log_suffix=f' | Slot: {where} | baseline copy', share_route=False)
         return True
-    if (hh.readOutputDolEntry(chunk_number, file_index) == hh.readDolEntry(chunk_number, file_index)
+    if (DolRecords.readOutputDolEntry(chunk_number, file_index) == DolRecords.readDolEntry(chunk_number, file_index)
             and not UntanglePolicy.is_split(chunk_number, file_index)):
         # Still on its own vanilla route: nothing was written for this slot. The bytes are left alone (an untangle
         # export changes texture bytes in place; restoring the input's would undo that).
         _slogger.info(f'Equipment reset | {where} is on its vanilla route already', source='hammerspace.main')
         return True
-    original = hh.readDolEntry(chunk_number, file_index)
-    if not UntanglePolicy.is_split(chunk_number, file_index) and hh.liveRoutesInto(*original):
+    original = DolRecords.readDolEntry(chunk_number, file_index)
+    if not UntanglePolicy.is_split(chunk_number, file_index) and DolRecords.liveRoutesInto(*original):
         # Other characters still load the vanilla bytes from their own routes: point this route back at them
         # without rewriting them (removeModelFromHammerspace would restore the input's bytes over theirs).
-        old_offset, old_length = hh.readOutputDolEntry(chunk_number, file_index)
-        hh.patchDolEntry(chunk_number, file_index, *original)
+        old_offset, old_length = DolRecords.readOutputDolEntry(chunk_number, file_index)
+        DolRecords.patchDolEntry(chunk_number, file_index, *original)
         if old_offset >= hh.BASE_SIZE:
-            hh.zeroRangeIfUnrouted(old_offset, old_length)
+            RouteOps.zeroRangeIfUnrouted(old_offset, old_length)
         _slogger.info(
             f'Hammerspace Log: Removed | Slot: {where} | Address: 0x{old_offset:08X} | '
             f'Size: {old_length / (1024 * 1024):.2f} MB | route back on the shared vanilla block',
             source='hammerspace.main',
         )
         return True
-    ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
+    ok, removed_offset, removed_length = RouteOps.removeModelFromHammerspace(chunk_number, file_index)
     if ok:
         _slogger.info(
             f'Hammerspace Log: Removed | Slot: {where} | Address: 0x{removed_offset:08X} | '
@@ -488,7 +491,7 @@ def WriteSlotEquipment(character_id: str, file_index: int, block: bytes) -> bool
         _slogger.error(f'Slot write refused | {exc}', source='hammerspace.main')
         return False
     where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
-    if chunk_number not in SlotTarget.character_dirs() and not hh.isOwnDir(chunk_number):
+    if chunk_number not in SlotTarget.character_dirs() and not DolRecords.isOwnDir(chunk_number):
         _slogger.error(f'Slot write refused | {where} is not a character directory', source='hammerspace.main')
         return False
     errors, warnings = SlotTarget.equipment_block_problems(block, chunk_number, file_index)
@@ -514,7 +517,7 @@ def WriteSlotAnimation(character_id: str, file_index: int, bank: bytes) -> bool:
         _slogger.error(f'Slot write refused | {exc}', source='hammerspace.main')
         return False
     where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
-    if chunk_number not in SlotTarget.character_dirs() and not hh.isOwnDir(chunk_number):
+    if chunk_number not in SlotTarget.character_dirs() and not DolRecords.isOwnDir(chunk_number):
         _slogger.error(f'Slot write refused | {where} is not a character directory', source='hammerspace.main')
         return False
     if file_index not in SlotTarget.ANIMATION_FILES:

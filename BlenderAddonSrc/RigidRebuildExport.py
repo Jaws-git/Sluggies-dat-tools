@@ -1,7 +1,7 @@
 """Pure-Python side of the rigid rebuild export.
 
 bpy-free, like CustomSubmeshExport.py, so the decision rules and the encoding
-can be unit-tested outside Blender. ExportSluggies.py reads the scene and
+can be unit-tested outside Blender. ExportRebuildGlue.py reads the scene and
 hands plain lists here.
 
 A donor rigid (CompCount 3) submesh takes one of two paths per export:

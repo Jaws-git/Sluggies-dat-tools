@@ -3,7 +3,7 @@
 The patcher only reads PNGs, bound by their file names in the model's tex/
 folder. A material image in another format (``FORMATS``) is converted on
 export and goes into tex/ as ``<stem>.png``, through the same copy plan as a
-PNG linked from outside tex/ (ExportSluggies._plan_external_texture_copy).
+PNG linked from outside tex/ (ExportTextures._plan_external_texture_copy).
 
 The format is decided by the file's content, not its extension (TGA, which
 has no signature, by its extension and a plausible header). A format Blender

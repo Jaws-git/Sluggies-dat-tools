@@ -18,9 +18,11 @@ from bpy.props import BoolProperty, CollectionProperty, IntProperty, StringPrope
 from . import ModelCheckCore
 from . import SluggiePath
 from . import TextureSlotsCore
-from .ExportSluggies import _connected_image_texture_nodes
-from .SluggiesToolsPanel import (
-    _find_target_armature as _target_armature, _no_target_armature_message, _sluggies_armatures,
+from .ExportTextures import _connected_image_texture_nodes
+from .SceneModels import (
+    _find_target_armature as _target_armature,
+    _no_target_armature_message,
+    _sluggies_armatures,
 )
 
 

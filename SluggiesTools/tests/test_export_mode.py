@@ -17,7 +17,10 @@ import zlib
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BLENDER_ADDON_DIR = ROOT / 'BlenderAddonSrc'
 TOOLS_DIR = ROOT / 'SluggiesTools'
-EXPORTER_PATH = BLENDER_ADDON_DIR / 'ExportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+EXPORTER_PATH = addon_sources.EXPORT
 for path in (BLENDER_ADDON_DIR, TOOLS_DIR, ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))

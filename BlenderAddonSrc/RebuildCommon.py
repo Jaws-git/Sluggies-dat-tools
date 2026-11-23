@@ -356,7 +356,7 @@ def encode_loop_uvs(object_name, geometry, loop_uvs, uv_format):
 
 def encode_color_entry(quant_info: int, rgba) -> bytes:
     """One colour entry in a channel's format (the same layout
-    ExportSluggies._encode_color_entry writes and ImportSluggies decodes)."""
+    ExportInplaceMesh._encode_color_entry writes and ImportDecode decodes)."""
     fmt = quant_info >> 4
     r, g, b, a = (max(0.0, min(1.0, float(c))) for c in rgba)
     if fmt == 0:  # RGB565

@@ -12,7 +12,10 @@ import sys
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
-IMPORTER_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ImportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+IMPORTER_PATH = addon_sources.IMPORT
 if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 import FieldCodec  # noqa: E402  (bpy-free)

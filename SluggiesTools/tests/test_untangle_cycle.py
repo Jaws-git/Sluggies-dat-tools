@@ -20,6 +20,9 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(_path))
 
 import HammerspaceHelper as hh
+import DatAllocation
+import DolRecords
+import RouteOps
 import HammerspaceMain as main
 import RouteWriter
 import UntanglePolicy as policy
@@ -66,8 +69,8 @@ class UntangleCycleTests(unittest.TestCase):
             mock.patch.object(hh, '_FST_INPUT', str(root / 'missing_fst.bin')),
             mock.patch.object(hh, '_FST_OUTPUT', str(root / 'fst.bin')),
             mock.patch.object(hh, 'BASE_SIZE', BASE_SIZE),
-            mock.patch.object(hh, '_readDirPtrs', return_value=pointers),
-            mock.patch.object(hh, 'writeDebugDumps'),
+            mock.patch.object(DolRecords, '_readDirPtrs', return_value=pointers),
+            mock.patch.object(DatAllocation, 'writeDebugDumps'),
             mock.patch.object(RouteWriter, 'CheckLodPartner'),
             mock.patch.object(main.LodTextureSync, 'sync_low_block', side_effect=lambda block, *_a, **_k: block),
             mock.patch.object(main.LodTextureSync, 'sync_partner_of_high'),
@@ -102,7 +105,7 @@ class UntangleCycleTests(unittest.TestCase):
         return main.WriteModelBlock(build, f'{route}.sluggie')
 
     def unpatch(self, route):
-        success, _offset, _length = hh.removeModelFromHammerspace(*route)
+        success, _offset, _length = RouteOps.removeModelFromHammerspace(*route)
         self.assertTrue(success)
 
     def assert_split_baseline(self, route):

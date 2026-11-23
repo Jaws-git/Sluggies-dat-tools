@@ -48,6 +48,7 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 import act_rebuild  # noqa: E402
 import donor_gpl  # noqa: E402
 import HammerspaceHelper as hh  # noqa: E402
+import DolRecords  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Placement
@@ -576,7 +577,7 @@ def donor_environment(mutate=None):
     """Materialize the donor and point `HammerspaceHelper` at it.
 
     Writes the `.sluggie` and a synthetic `dt_na.dat` into a temp directory,
-    then patches `hh.INPUT_DAT` / `hh.OUTPUT_DAT` and `hh.readDolEntry` so the
+    then patches `hh.INPUT_DAT` / `hh.OUTPUT_DAT` and `DolRecords.readDolEntry` so the
     clone routes (ACT, TEX, SKN and the trailing tail are clone-only) read the
     donor block back out of it. *mutate* is passed to :func:`build_donor`.
     """
@@ -592,6 +593,6 @@ def donor_environment(mutate=None):
             mock.patch.object(hh, 'INPUT_DAT', str(env.input_dat)),
             mock.patch.object(hh, 'OUTPUT_DAT', str(env.output_dat)),
             mock.patch.object(
-                hh, 'readDolEntry', return_value=(DOL_ENTRY_OFFSET, model_length)),
+                DolRecords, 'readDolEntry', return_value=(DOL_ENTRY_OFFSET, model_length)),
         ):
             yield env

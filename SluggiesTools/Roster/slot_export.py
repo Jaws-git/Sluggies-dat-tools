@@ -229,19 +229,20 @@ def document(model, chunk: int, file_index: int, entry_base: int, entry_bytes: b
 def directory_files(model_dir: int) -> list[tuple[int, int, int]]:
     """``(file index, offset, length)`` of every file of ``model_dir`` in the output DOL."""
     import HammerspaceHelper as hh
-    files = [(index, words[2], words[1]) for chunk, index, _record, words in hh._iterDirRecords(hh.OUTPUT_DOL)
+    import DolRecords
+    files = [(index, words[2], words[1]) for chunk, index, _record, words in DolRecords._iterDirRecords(hh.OUTPUT_DOL)
              if chunk == model_dir]
     return sorted(files)
 
 
 def base_entry(model_dir: int, file_index: int) -> tuple[int, int, int, int]:
     """``(chunk, file index, offset, length)`` of the ``1_Input`` file a slot file started from."""
-    import HammerspaceHelper as hh
-    route = hh.vanillaRoute(model_dir, file_index)
+    import DolRecords
+    route = DolRecords.vanillaRoute(model_dir, file_index)
     if route is None:
         raise SlotExportError(f'directory {model_dir} is an own model directory whose source the roster manifest '
                               'does not name')
-    offset, length = hh.readDolEntry(*route)
+    offset, length = DolRecords.readDolEntry(*route)
     if offset == -1 or length <= 0:
         raise SlotExportError(f'file {file_index} of directory {route[0]} is not in 1_Input/main.dol')
     return route[0], route[1], offset, length

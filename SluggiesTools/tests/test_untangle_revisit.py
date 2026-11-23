@@ -10,7 +10,7 @@ TOOLS_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-import model0  # noqa: E402
+import texture_export  # noqa: E402
 
 BLOCK = 0x100
 IMAGE = 0x20
@@ -51,22 +51,22 @@ class UntangleRevisitTests(unittest.TestCase):
         dat.write(b'\x01\x02\x03\x04')
         tex = FakeTex(dat)
         taken = tex.name()                          # the same texture name in another block
-        context = {'enabled': True, 'seen_names': {taken}, 'dat_output_handle': dat}
+        context = texture_export.UntangleContext(seen_names={taken}, dat_output_handle=dat)
         names = []
         for visit in range(4):
-            name, image_override, _tlut = model0._untangle_texture(
+            name, image_override, _tlut = texture_export.untangle_texture(
                 context, tex, tex.name(), BLOCK + IMAGE, BLOCK, 0)
             names.append(name)
             self.assertEqual(image_override, b'\x10\x02\x03\x04')
         self.assertEqual(len(set(names)), 1)
         self.assertNotEqual(names[0], taken)
         self.assertEqual(tex._bytes(), b'\x10\x02\x03\x04')   # one byte flipped once, not on every visit
-        self.assertEqual(sum('untangled:' in line for line in context['report_lines']), 1)
+        self.assertEqual(sum('untangled:' in line for line in context.report_lines), 1)
 
     def test_ignored_names_are_left_alone(self):
-        name = next(iter(model0.UNTANGLE_IGNORE_BASENAME))
+        name = next(iter(texture_export.UNTANGLE_IGNORE_BASENAME))
         tex = FakeTex(io.BytesIO(bytes(0x200)))
-        result = model0._untangle_texture({'enabled': True}, tex, name, BLOCK + IMAGE, BLOCK, 0)
+        result = texture_export.untangle_texture(texture_export.UntangleContext(), tex, name, BLOCK + IMAGE, BLOCK, 0)
         self.assertEqual(result, (name, None, None))
 
 

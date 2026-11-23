@@ -39,6 +39,24 @@ def _helper():
     return HammerspaceHelper
 
 
+def _dol_records():
+    """``DolRecords``, loaded the same way as ``_helper``."""
+    if __package__:
+        from . import DolRecords
+    else:
+        import DolRecords
+    return DolRecords
+
+
+def _route_ops():
+    """``RouteOps``, loaded the same way as ``_helper``."""
+    if __package__:
+        from . import RouteOps
+    else:
+        import RouteOps
+    return RouteOps
+
+
 def is_split_dir(chunk_number) -> bool:
     """True when ``chunk_number`` is an unused-character directory."""
     return chunk_number in UNUSED_CHARACTER_DIRS
@@ -50,7 +68,7 @@ def _input_routes() -> dict[tuple[int, int], tuple[int, int]]:
 
     return {
         (chunk, file_index): (words[2], words[1])
-        for chunk, file_index, _record, words in hh._iterDirRecords(hh.INPUT_DOL)
+        for chunk, file_index, _record, words in _dol_records()._iterDirRecords(hh.INPUT_DOL)
     }
 
 
@@ -114,7 +132,7 @@ def retangled_routes() -> list[tuple[int, int]]:
 
     result = []
     for chunk, file_index in split_routes():
-        offset, _length = hh.readOutputDolEntry(chunk, file_index)
+        offset, _length = _dol_records().readOutputDolEntry(chunk, file_index)
         if offset == -1:
             return []   # no output DOL yet: nothing to repair
         if offset < hh.BASE_SIZE:
@@ -130,7 +148,6 @@ def resplit_retangled(find_model=None) -> tuple[list, list]:
     of ``2_Output_Assets``); without one it is the vanilla bytes verbatim.
     Returns ``(repaired, failed)`` route lists. Owners are never touched.
     """
-    hh = _helper()
     if __package__:
         from . import UntangledTextures
     else:
@@ -141,7 +158,7 @@ def resplit_retangled(find_model=None) -> tuple[list, list]:
     for route in retangled_routes():
         try:
             baseline, _notes = UntangledTextures.split_baseline(*route, find_model(*route))
-            success, _offset, _length = hh.restoreSplitBaseline(*route, baseline)
+            success, _offset, _length = _route_ops().restoreSplitBaseline(*route, baseline)
         except (OSError, ValueError, KeyError) as exc:      # this route fails; the later ones are still repaired
             import slogger      # on sys.path once HammerspaceHelper is loaded
             slogger.warning(f'Could not re-split route ({route[0]},{route[1]}): {type(exc).__name__}: {exc}',

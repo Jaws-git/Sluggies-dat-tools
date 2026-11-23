@@ -118,8 +118,8 @@ def extract_texture_descriptors(model, untangle_context=None):
     palette = model.TEXPalette
     result = []
     model_name_overrides = {}
-    if untangle_context and untangle_context.get('enabled'):
-        model_name_overrides = untangle_context.get('name_overrides', {}).get(model.absolute, {})
+    if untangle_context is not None:
+        model_name_overrides = untangle_context.name_overrides.get(model.absolute, {})
     for tex_ind, desc in enumerate(palette.descriptors):
         img_offset = palette.absolute + desc.dataPtr
         img_length = palette.dataLens.get(desc.dataPtr, 0)

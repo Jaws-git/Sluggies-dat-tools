@@ -22,6 +22,9 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import act_rebuild
 import HammerspaceHelper as hh
+import DatAllocation
+import DolRecords
+import RouteOps
 import HammerspaceMain as main
 import LodPartnerGuard
 import SlotTarget
@@ -107,8 +110,8 @@ class SlotHarness(unittest.TestCase):
             mock.patch.object(hh, '_FST_INPUT', str(root / 'missing_fst.bin')),
             mock.patch.object(hh, '_FST_OUTPUT', str(root / 'fst.bin')),
             mock.patch.object(hh, 'BASE_SIZE', BASE_SIZE),
-            mock.patch.object(hh, '_readDirPtrs', return_value=pointers),
-            mock.patch.object(hh, 'writeDebugDumps'),
+            mock.patch.object(DolRecords, '_readDirPtrs', return_value=pointers),
+            mock.patch.object(DatAllocation, 'writeDebugDumps'),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -282,18 +285,18 @@ class OwnDirectoryTests(SlotHarness):
         self.output_dat.write_bytes(dat)
         for patcher in (
             mock.patch.object(hh, '_DIRS_COUNT', OWN),
-            mock.patch.object(hh, '_extraDirStarts', return_value=[start]),
-            mock.patch.object(hh, 'ownDirSource', side_effect=lambda chunk: SOURCE if chunk == OWN else None),
+            mock.patch.object(DolRecords, '_extraDirStarts', return_value=[start]),
+            mock.patch.object(DolRecords, 'ownDirSource', side_effect=lambda chunk: SOURCE if chunk == OWN else None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def test_routes_of_an_own_directory(self):
-        self.assertTrue(hh.isOwnDir(OWN))
-        self.assertFalse(hh.isOwnDir(SOURCE))
-        self.assertEqual(hh.readOutputDolEntry(OWN, 1), self.copies[1])
-        self.assertEqual(hh.vanillaRoute(OWN, 1), (SOURCE, 1))
-        self.assertEqual(hh.vanillaRoute(TARGET, 1), (TARGET, 1))
+        self.assertTrue(DolRecords.isOwnDir(OWN))
+        self.assertFalse(DolRecords.isOwnDir(SOURCE))
+        self.assertEqual(DolRecords.readOutputDolEntry(OWN, 1), self.copies[1])
+        self.assertEqual(DolRecords.vanillaRoute(OWN, 1), (SOURCE, 1))
+        self.assertEqual(DolRecords.vanillaRoute(TARGET, 1), (TARGET, 1))
 
     def test_block_replaces_the_copy_and_leaves_every_vanilla_block(self):
         edited = model_block('kinopio_r.gpl', TOAD, fill=0x66)
@@ -314,7 +317,7 @@ class OwnDirectoryTests(SlotHarness):
     def test_unpatch_is_refused(self):
         before = (self.output_dol.read_bytes(), self.output_dat.read_bytes())
         self.assertFalse(main.UnpatchTarget(SlotTarget.Target(OWN, 0, 0x66)))
-        self.assertEqual(hh.removeModelFromHammerspace(OWN, 0), (False, 0, 0))
+        self.assertEqual(RouteOps.removeModelFromHammerspace(OWN, 0), (False, 0, 0))
         self.assertEqual((self.output_dol.read_bytes(), self.output_dat.read_bytes()), before)
 
 
@@ -333,7 +336,7 @@ class ClearTargetTests(SlotHarness):
     def test_an_unchanged_slot_is_left_alone(self):
         before = self.output_dat.read_bytes()
         with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)), \
-                mock.patch.object(hh, 'removeModelFromHammerspace') as remove:
+                mock.patch.object(RouteOps, 'removeModelFromHammerspace') as remove:
             self.assertTrue(main.ClearTarget('0x13'))
         remove.assert_not_called()
         self.assertEqual(self.output_dat.read_bytes(), before)

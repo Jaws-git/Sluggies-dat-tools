@@ -10,7 +10,7 @@ saved .blend, into `<blend folder>/<blend name>_Tex/`, and their images point
 there with a relative path, so the .blend and its textures move together.
 
 A copy is byte-identical to its source, so export still binds it to the same
-tex/ texture (ExportSluggies._plan_external_texture_copy matches tex/ files by
+tex/ texture (ExportTextures._plan_external_texture_copy matches tex/ files by
 name and content). Names that are taken by another file get " (1)", " (2)",
 ... as Windows Explorer does; a file that is already there with the same bytes
 is reused, so running the step again copies nothing new.

@@ -14,6 +14,7 @@ if str(HAMMERSPACE_DIR) not in sys.path:
     sys.path.insert(0, str(HAMMERSPACE_DIR))
 
 import HammerspaceHelper as helper
+import DolRecords
 import Defrag
 
 BASE = 0x1000
@@ -73,8 +74,8 @@ class Fixture:
             mock.patch.object(helper, 'BASE_SIZE', BASE),
             mock.patch.object(helper, 'HS_ALIGN_BYTES', 32),
             mock.patch.object(helper, 'HS_BUFFER_BYTES', 0x80),
-            mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
-            mock.patch.object(helper, '_extraDirStarts', return_value=[OWN_DIR_START]),
+            mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0]),
+            mock.patch.object(DolRecords, '_extraDirStarts', return_value=[OWN_DIR_START]),
         ]
 
     def snapshot(self):

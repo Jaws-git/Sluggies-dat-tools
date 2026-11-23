@@ -44,6 +44,7 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import act_rebuild  # noqa: E402
 import HammerspaceHelper as hh  # noqa: E402
+import DolRecords  # noqa: E402
 
 # These donors have oversized, non-involution kind-2 mirror tables and must be
 # refused rather than rebuilt (act_section.html#user-data).
@@ -68,7 +69,7 @@ def _iter_input_model_blocks():
     with the same marker.
     """
     seen: set[int] = set()
-    dir_ptrs = hh._readDirPtrs()
+    dir_ptrs = DolRecords._readDirPtrs()
     with open(hh.INPUT_DOL, 'rb') as dol:
         for chunk_number, dir_ptr in enumerate(dir_ptrs):
             other_dir_ptrs = dir_ptrs[:chunk_number] + dir_ptrs[chunk_number + 1:]

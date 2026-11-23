@@ -17,7 +17,9 @@ from unittest import mock
 from SluggiesTools.tests import test_slot_target as tst
 from SluggiesTools.tests.test_slot_target import OTHER, SOURCE, TARGET, SlotHarness, hh, main, model_block
 
-import LodPartnerGuard  # noqa: E402 (path set up by test_slot_target)
+import DolRecords  # noqa: E402 (path set up by test_slot_target)
+import LodPartnerGuard  # noqa: E402
+import RouteOps  # noqa: E402
 import SlotTarget  # noqa: E402
 
 from SluggiesTools import gui_grid
@@ -128,7 +130,7 @@ class EquipmentWriteTests(EquipmentHarness):
     def test_a_shared_vanilla_bat_stays_for_its_other_users(self):
         self.share((TARGET, 2), (SOURCE, 2))
         shared_offset, shared_length = self.route((TARGET, 2))
-        self.assertEqual(hh.findSharedEntries(TARGET, 2), [(SOURCE, 2)])
+        self.assertEqual(DolRecords.findSharedEntries(TARGET, 2), [(SOURCE, 2)])
         block = equipment_block('bat_r.gpl', fill=0x78)
         self.write(block, source=(SOURCE, 2), target=self.target(TARGET, 2))
         self.assertEqual(self.live((TARGET, 2)), block)
@@ -229,7 +231,7 @@ class EquipmentClearTests(EquipmentHarness):
     def test_an_untouched_file_is_left_alone(self):
         before = (self.output_dol.read_bytes(), self.output_dat.read_bytes())
         with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)), \
-                mock.patch.object(hh, 'removeModelFromHammerspace') as remove:
+                mock.patch.object(RouteOps, 'removeModelFromHammerspace') as remove:
             self.assertTrue(main.ClearEquipment('0x13', 3))
         remove.assert_not_called()
         self.assertEqual((self.output_dol.read_bytes(), self.output_dat.read_bytes()), before)
@@ -272,8 +274,8 @@ class EquipmentOwnDirectoryTests(EquipmentHarness):
         self.output_dat.write_bytes(dat)
         for patcher in (
             mock.patch.object(hh, '_DIRS_COUNT', self.OWN),
-            mock.patch.object(hh, '_extraDirStarts', return_value=[start]),
-            mock.patch.object(hh, 'ownDirSource', side_effect=lambda chunk: SOURCE if chunk == self.OWN else None),
+            mock.patch.object(DolRecords, '_extraDirStarts', return_value=[start]),
+            mock.patch.object(DolRecords, 'ownDirSource', side_effect=lambda chunk: SOURCE if chunk == self.OWN else None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1068,17 +1070,17 @@ class StateFlagTests(unittest.TestCase):
             {'id': 0x66, 'model_dir': 172, 'own_model_dir': True,
              'equipment': {'bat': {'file': 2, 'offset': 700, 'length': 3, 'sha1': hashlib.sha1(b'abc').hexdigest()},
                            'glove_l': {'file': 3, 'offset': 800, 'length': 3, 'sha1': 'zzz'}}}]}
-        import HammerspaceHelper as helper
+        import DolRecords
         import LodPartnerGuard as guard
         import UntanglePolicy
-        with mock.patch.object(helper, 'readDolEntry', side_effect=lambda c, f: (100, 10) if f == 2 else (1, 1)), \
+        with mock.patch.object(DolRecords, 'readDolEntry', side_effect=lambda c, f: (100, 10) if f == 2 else (1, 1)), \
                 mock.patch.object(guard, '_vanilla_block', side_effect=lambda c, f: b'abc' if f == 2 else b'xyz'), \
                 mock.patch.object(UntanglePolicy, 'is_split', return_value=False):
             state_cli.add_vanilla_flags(result)
         flags = {(c['id'], role): e['vanilla'] for c in result['characters'] for role, e in c['equipment'].items()}
         self.assertEqual(flags, {(0x00, 'bat'): True, (0x00, 'extra'): False, (0x66, 'bat'): True,
                                  (0x66, 'glove_l'): False})
-        with mock.patch.object(helper, 'readDolEntry', return_value=(100, 10)), \
+        with mock.patch.object(DolRecords, 'readDolEntry', return_value=(100, 10)), \
                 mock.patch.object(UntanglePolicy, 'is_split', return_value=True):
             state_cli.add_vanilla_flags(result)
         self.assertIsNone(result['characters'][0]['equipment']['bat']['vanilla'])        # split copies: not known

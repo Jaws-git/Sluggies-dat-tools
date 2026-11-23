@@ -15,7 +15,10 @@ from types import SimpleNamespace
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BLENDER_ADDON_DIR = ROOT / 'BlenderAddonSrc'
-EXPORTER_PATH = BLENDER_ADDON_DIR / 'ExportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+EXPORTER_PATH = addon_sources.EXPORT
 if str(BLENDER_ADDON_DIR) not in sys.path:
     sys.path.insert(0, str(BLENDER_ADDON_DIR))
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
@@ -30,7 +33,7 @@ def _exporter_function(name):
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
-    raise AssertionError(f'{name} not found in ExportSluggies.py')
+    raise AssertionError(f'{name} not found in the exporter modules')
 
 
 def _load_exporter_function(name):

@@ -37,6 +37,8 @@ import root_scale as _root_scale
 import bone_geo_inplace as _bone_geo
 import dat_writes as _dat_writes
 from Hammerspace import HammerspaceHelper as _hh
+from Hammerspace import DatAllocation
+from Hammerspace import DolRecords
 import facial_pose_edits as _facial_edits
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _to_bytes
@@ -170,14 +172,14 @@ def prepare_output(options: Options) -> None:
 
     # An output shorter than the input is an interrupted copy (or a cut-off file): patching into it would be
     # lost work at best, and a write past its end would grow it with zeros.
-    short_output = _hh.outputDatProblem()
+    short_output = DatAllocation.outputDatProblem()
     if short_output:
         abort(short_output)
     if os.path.exists(OUTPUT_DAT):
         _slogger.info(f"Output file already exists, skipping copy: {OUTPUT_DAT}", source="patch_inplace")
     elif not validate_only:
         try:
-            _hh.copyFileAtomic(INPUT_DAT, OUTPUT_DAT)      # through a temporary file: never a half copy
+            DatAllocation.copyFileAtomic(INPUT_DAT, OUTPUT_DAT)      # through a temporary file: never a half copy
         except OSError as exc:
             abort(f"Could not copy {INPUT_DAT} to {OUTPUT_DAT}: {exc}")
         _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="patch_inplace")
@@ -197,7 +199,7 @@ def _model_block(model: dict, json_path: str) -> tuple[int, int]:
     record = None
     chunk, file_index = model.get("ChunkNumber"), model.get("FileIndex")
     if os.path.isfile(_hh.INPUT_DOL) and isinstance(chunk, int) and isinstance(file_index, int):
-        record = _hh.readDolEntry(chunk, file_index)
+        record = DolRecords.readDolEntry(chunk, file_index)
         if record[0] < 0:
             abort(f"{os.path.basename(json_path)}: ChunkNumber {chunk} / FileIndex {file_index} is not a model "
                   "of the input main.dol; the .sluggie does not belong to these game files.")

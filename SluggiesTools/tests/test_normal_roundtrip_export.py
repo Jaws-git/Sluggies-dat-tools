@@ -17,7 +17,10 @@ import sys
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
-EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+EXPORT_PATH = addon_sources.EXPORT
 if str(EXPORT_PATH.parent) not in sys.path:
     sys.path.insert(0, str(EXPORT_PATH.parent))
 import FieldCodec  # noqa: E402  (ExportSluggies imports it relatively)

@@ -1,7 +1,7 @@
 """Pure-Python encoding for custom submeshes.
 
 bpy-free, like HostBones.py and TemplateSources.py, so the geometry and
-quantization rules can be unit-tested without Blender. ExportSluggies.py
+quantization rules can be unit-tested without Blender. ExportRebuildGlue.py
 reads the Blender scene and hands plain tuples/lists to the functions here.
 """
 
@@ -122,7 +122,7 @@ def quaternion_matrix(w, x, y, z):
 
 def bone_local_matrix(bone):
     """``T @ R @ S`` for one BoneHierarchy entry, the same local bind matrix
-    ``ImportSluggies._compute_bone_absolute_matrices`` builds. ``Quaternion``
+    ``ImportBones._compute_bone_absolute_matrices`` builds. ``Quaternion``
     is stored as ``[-qw, qx, qy, qz]``, so w is negated back first."""
     tx, ty, tz = bone['Translation']
     sx, sy, sz = bone['Scale']
@@ -137,7 +137,7 @@ def bone_local_matrix(bone):
 
 def bone_absolute_matrices(bone_hierarchy):
     """``{BoneId: absolute bind matrix}`` in armature space, a bpy-free port of
-    ``ImportSluggies._compute_bone_absolute_matrices`` (the matrix the
+    ``ImportBones._compute_bone_absolute_matrices`` (the matrix the
     importer places rigid submeshes with). Rest/bind data only: nothing here
     can see a pose or animation frame. Raises ValueError for a bone whose
     parent is not in the list."""

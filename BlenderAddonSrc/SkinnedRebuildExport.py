@@ -2,7 +2,7 @@
 (``Submeshes[0].SkinnedRebuild``).
 
 bpy-free, like RigidRebuildExport.py, so the decision rules and the
-encoding can be unit-tested outside Blender. ExportSluggies.py reads the
+encoding can be unit-tested outside Blender. ExportRebuildGlue.py reads the
 scene and hands plain lists here.
 
 The skinned donor submesh (CompCount 6, the body) takes the rebuild path

@@ -1,7 +1,7 @@
 """DAT hammerspace for roster-expansion files, on the in-memory DOL and the buffered ``datfile.DatFile``.
 
 The same rules as the model patcher's allocator
-(``HammerspaceHelper.allocateHammerspace``): space comes from the region past
+(``RouteOps.allocateHammerspace``): space comes from the region past
 ``BASE_SIZE``, 32-aligned, never overlapping a range that a DOL directory
 record routes into hammerspace (those blocks are live even where their bytes
 are zero), and the file grows when no zero run is long enough. The
@@ -52,7 +52,7 @@ def dir_pointers(image) -> list[int]:
 
 def iter_records(image):
     """Yield ``(chunk, file index, record address, 12 words)`` for every DAT record, each directory bounded
-    by the next directory's start (as ``HammerspaceHelper._iterDirRecords`` does on a DOL file)."""
+    by the next directory's start (as ``DolRecords._iterDirRecords`` does on a DOL file)."""
     pointers = dir_pointers(image)
     starts = set(pointers)
     for chunk, start in enumerate(pointers):

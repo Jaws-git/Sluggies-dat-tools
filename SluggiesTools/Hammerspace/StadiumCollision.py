@@ -30,6 +30,9 @@ import struct
 from dataclasses import dataclass
 
 import HammerspaceHelper as hh
+import DatAllocation
+import DolRecords
+import RouteOps
 
 VERSION = 0x43
 COLLISION_TABLE = 0x806D99E0  # {u16 dir, u16 file[3]} per stadium id 0-9
@@ -429,7 +432,7 @@ def collision_files_of_dir(chunk_number: int) -> list[int]:
 
 
 def read_vanilla(chunk_number: int, file_index: int) -> bytes:
-    offset, length = hh.readDolEntry(chunk_number, file_index)
+    offset, length = DolRecords.readDolEntry(chunk_number, file_index)
     if offset < 0:
         raise ValueError(f'no DOL entry for dir {chunk_number} file {file_index}')
     with open(hh.INPUT_DAT, 'rb') as f:
@@ -446,7 +449,7 @@ def write(chunk_number: int, file_index: int, data: bytes, name: str) -> int:
         raise ValueError(f'dir {chunk_number} file {file_index} is not a collision file the game loads')
     parse(data)
     import RouteWriter
-    if not hh.ensureOutputDat():
+    if not DatAllocation.ensureOutputDat():
         raise RuntimeError('Unable to prepare output dt_na.dat')
     return RouteWriter._write_route(data, chunk_number, file_index, name,
                                     log_suffix=' | Stadium collision')
@@ -454,14 +457,14 @@ def write(chunk_number: int, file_index: int, data: bytes, name: str) -> int:
 
 def unpatch(chunk_number: int, file_index: int) -> bool:
     """Restore the vanilla collision route; False when it was not in hammerspace."""
-    ok, *_ = hh.removeModelFromHammerspace(chunk_number, file_index)
+    ok, *_ = RouteOps.removeModelFromHammerspace(chunk_number, file_index)
     return ok
 
 
 def current_is_patched(chunk_number: int, file_index: int) -> bool:
     if not os.path.exists(hh.OUTPUT_DOL):
         return False
-    offset, _length = hh.readOutputDolEntry(chunk_number, file_index)
+    offset, _length = DolRecords.readOutputDolEntry(chunk_number, file_index)
     return offset >= hh.BASE_SIZE
 
 

@@ -201,6 +201,7 @@ def _current_model_in_hammerspace(chunk_number, file_index):
     # a patch is actually being dispatched.
     try:
         from SluggiesTools.Hammerspace import HammerspaceHelper
+        from SluggiesTools.Hammerspace import DolRecords
     except Exception as exc:  # pragma: no cover - import side effects
         slogger.warning(
             f"Could not import HammerspaceHelper to check DOL state ({exc}); "
@@ -210,7 +211,7 @@ def _current_model_in_hammerspace(chunk_number, file_index):
         return False
 
     try:
-        offset, _length = HammerspaceHelper.readOutputDolEntry(chunk_number, file_index)
+        offset, _length = DolRecords.readOutputDolEntry(chunk_number, file_index)
     except Exception as exc:
         slogger.warning(
             f"Could not read the current DOL entry (chunk={chunk_number}, "

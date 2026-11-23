@@ -2,6 +2,7 @@ import ast
 import json
 import os
 import pathlib
+import sys
 import struct
 import tempfile
 import unittest
@@ -9,11 +10,13 @@ from types import SimpleNamespace
 
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
-IMPORTER_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ImportSluggies.py'
-EXPORTER_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+IMPORTER_PATH = addon_sources.IMPORT
+EXPORTER_PATH = addon_sources.EXPORT
 ADDON_INIT_PATH = ROOT_DIR / 'BlenderAddonSrc' / '__init__.py'
 
-import sys  # noqa: E402
 if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)
@@ -1102,7 +1105,7 @@ class BlenderExportUiTests(unittest.TestCase):
         self.assertIn("return {'CANCELLED'}", source)
 
     def test_sidebar_module_is_registered(self):
-        self.assertTrue((ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py').is_file())
+        self.assertTrue(addon_sources.PANEL.is_file())
         tree = ast.parse(ADDON_INIT_PATH.read_text(encoding='utf-8'))
         imported_modules = {
             alias.name
@@ -1116,7 +1119,7 @@ class BlenderExportUiTests(unittest.TestCase):
         self.assertIn('SluggiesToolsPanel.unregister()', init_source)
 
     def test_transfer_pose_and_animation_placeholders_are_removed(self):
-        panel_path = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py'
+        panel_path = addon_sources.PANEL
         source = panel_path.read_text(encoding='utf-8')
         self.assertNotIn('SLUGGIES_OT_transfer_pose', source)
         self.assertNotIn('SLUGGIES_OT_transfer_animation', source)

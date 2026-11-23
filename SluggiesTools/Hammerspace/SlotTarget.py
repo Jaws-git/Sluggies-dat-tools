@@ -20,7 +20,7 @@ Rules (refused with ``TargetError`` unless noted):
 * **Skeleton guard**: the target directory's animations were made for its
   own skeleton, so the source's vanilla skeleton must have the target's bone
   count and parent chain (an own model directory: its source's skeleton,
-  ``hh.vanillaRoute``). Bones the
+  ``DolRecords.vanillaRoute``). Bones the
   ``.sluggie`` adds come after them and are fine. Different rest poses are
   only a warning.
 * **``L_`` alone:** the slot's current high-poly model must be the ``L_``
@@ -52,6 +52,7 @@ import sys
 from dataclasses import dataclass
 
 import HammerspaceHelper as hh
+import DolRecords
 import LodPartnerGuard
 from ArchiveContainer import parse_archive_container
 
@@ -170,10 +171,10 @@ def inner_block(block: bytes) -> bytes:
 
 
 def _vanilla_summary(route: tuple[int, int], equipment: bool = False) -> LodPartnerGuard.ActSummary | None:
-    route = hh.vanillaRoute(*route)
+    route = DolRecords.vanillaRoute(*route)
     if route is None:
         return None
-    offset, length = hh.readDolEntry(*route)
+    offset, length = DolRecords.readDolEntry(*route)
     if offset == -1 or length <= 0:
         return None
     with open(hh.INPUT_DAT, 'rb') as dat:
@@ -209,7 +210,7 @@ def check(block: bytes, source: tuple[int, int], target: Target, report: dict | 
     if source[0] not in chars:
         raise TargetError(f'chunk {source[0]} is not a character directory ({chars.start}-{chars.stop - 1}): '
                           'stadiums, props and bats cannot go into a slot')
-    if target.chunk_number not in chars and not hh.isOwnDir(target.chunk_number):
+    if target.chunk_number not in chars and not DolRecords.isOwnDir(target.chunk_number):
         raise TargetError(f'chunk {target.chunk_number} is not a character directory')
     role_file(source[1])
     role_file(target.file_index)
@@ -258,7 +259,7 @@ def check_equipment(block: bytes, source: tuple[int, int], target: Target, repor
     if source[0] not in chars:
         raise TargetError(f'chunk {source[0]} is not a character directory ({chars.start}-{chars.stop - 1}): '
                           "only a character's own bats and gloves can go into a slot")
-    if target.chunk_number not in chars and not hh.isOwnDir(target.chunk_number):
+    if target.chunk_number not in chars and not DolRecords.isOwnDir(target.chunk_number):
         raise TargetError(f'chunk {target.chunk_number} is not a character directory')
     try:
         gear.target_file(source[1], target.file_index)

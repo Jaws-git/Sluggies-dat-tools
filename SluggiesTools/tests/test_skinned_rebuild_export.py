@@ -14,9 +14,12 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ADDON_DIR = ROOT / 'BlenderAddonSrc'
 TOOLS_DIR = ROOT / 'SluggiesTools'
-EXPORTER_PATH = ADDON_DIR / 'ExportSluggies.py'
-IMPORTER_PATH = ADDON_DIR / 'ImportSluggies.py'
-PANEL_PATH = ADDON_DIR / 'SluggiesToolsPanel.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+EXPORTER_PATH = addon_sources.EXPORT
+IMPORTER_PATH = addon_sources.IMPORT
+PANEL_PATH = addon_sources.PANEL
 for path in (ADDON_DIR, TOOLS_DIR, TOOLS_DIR / 'Hammerspace', pathlib.Path(__file__).resolve().parent):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))

@@ -169,7 +169,7 @@ def add_vanilla_flags(result: dict) -> None:
     hs_dir = os.path.join(_TOOLS_DIR, 'Hammerspace')
     if hs_dir not in sys.path:
         sys.path.insert(0, hs_dir)
-    import HammerspaceHelper as hh
+    import DolRecords
     import LodPartnerGuard
     import UntangledTextures
     import UntanglePolicy
@@ -178,7 +178,7 @@ def add_vanilla_flags(result: dict) -> None:
         for entry in char.get('animations') or []:
             entry['vanilla'] = None
             try:
-                if (entry['offset'], entry['length']) == hh.readDolEntry(directory, entry['file']):
+                if (entry['offset'], entry['length']) == DolRecords.readDolEntry(directory, entry['file']):
                     entry['vanilla'] = True
                 else:
                     block = LodPartnerGuard._vanilla_block(directory, entry['file'])
@@ -196,7 +196,7 @@ def add_vanilla_flags(result: dict) -> None:
                 elif UntanglePolicy.is_split(directory, entry['file']):
                     entry['vanilla'] = UntangledTextures.split_at_baseline(directory, entry['file'])
                 else:
-                    entry['vanilla'] = (entry['offset'], entry['length']) == hh.readDolEntry(directory, entry['file'])
+                    entry['vanilla'] = (entry['offset'], entry['length']) == DolRecords.readDolEntry(directory, entry['file'])
             except (OSError, ValueError, KeyError):
                 continue
 

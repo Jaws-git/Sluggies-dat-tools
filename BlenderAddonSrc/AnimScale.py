@@ -1,7 +1,7 @@
 """Scaling a whole character through its animation banks.
 
 bpy-free, so it is testable outside Blender. The Blender operator
-(``SluggiesToolsPanel.SLUGGIES_OT_scale_animations``) and the ``.anm`` export
+(``AnimScaleOp.SLUGGIES_OT_scale_animations``) and the ``.anm`` export
 (``AnmExport``) share these facts:
 
 The game applies an ANM scale channel in the bone's own frame and inherits it

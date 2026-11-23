@@ -14,6 +14,7 @@ for path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import LodPartnerGuard as guard
 import LodTextureSync as sync
+import DolRecords
 
 BIND_SETTING = 0x11110000  # layer 0 plus the wrap bits the vanilla binds carry
 
@@ -204,14 +205,14 @@ class LiveSyncTests(unittest.TestCase):
             dat.write(bytes(self.ROUTE) + LOW_VANILLA + bytes(0x40))
         patches = [
             mock.patch.object(sync.hh, 'OUTPUT_DAT', self.dat),
-            mock.patch.object(sync.hh, 'readOutputDolEntry', return_value=(self.ROUTE, len(LOW_VANILLA))),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(self.ROUTE, len(LOW_VANILLA))),
             mock.patch.object(guard, '_entry_exists', return_value=True),
             mock.patch.object(sync, '_vanilla_block',
                               side_effect=lambda chunk, index: HIGH_VANILLA if index == 0 else LOW_VANILLA),
             mock.patch.object(sync._slogger, 'warning'),
             mock.patch.object(sync._slogger, 'info'),
             mock.patch.object(sync, 'AUTO_SYNC', True),
-            mock.patch.object(sync.hh, 'liveRoutesInto', return_value=[(75, 1)]),
+            mock.patch.object(DolRecords, 'liveRoutesInto', return_value=[(75, 1)]),
         ]
         for patch in patches:
             patch.start()
@@ -286,7 +287,7 @@ class LiveSyncTests(unittest.TestCase):
         # An unused character's L_ route re-tangled onto its owner's block
         # (UntanglePolicy): writing would change both models.
         live = {0: HIGH_EDITED, 1: LOW_VANILLA}
-        with mock.patch.object(sync.hh, 'liveRoutesInto', return_value=[(75, 1), (89, 1)]):
+        with mock.patch.object(DolRecords, 'liveRoutesInto', return_value=[(75, 1), (89, 1)]):
             with mock.patch.object(guard, 'read_current_block', return_value=LOW_VANILLA):
                 plan = sync.sync_partner_of_high(75, 0, HIGH_EDITED, HIGH_VANILLA)
             with mock.patch.object(guard, 'read_current_block', side_effect=lambda chunk, index: live[index]):

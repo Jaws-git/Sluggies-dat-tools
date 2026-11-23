@@ -1,17 +1,22 @@
+"""The model reader: ``MaybeArchive`` -> ``Archive`` / ``Model0`` (tpl, gpl, act, skn parsing).
+
+``Model0.model_data`` only parses (geometry, bones, texture names into one ``ModelData``).
+``Model0.toFile`` is one model's export: the textures first (``texture_export.export_textures``, the step
+with side effects: PNGs, and with ``--untangle`` the renames and the bytes written into the output DAT),
+then ``model_data``, then the ``.glb`` when asked for. The ``.sluggie`` document is written by the caller
+(``sluggie_document.py``).
+"""
 from base import ExpectedFormatSkip, FileChunk
 from helper import Object, prior_deletions
-from tpl import TEXPalette, decode_tpl
+from tpl import TEXPalette
 from gpl import GPL
 from act import ACTLayout, BoneInfluence, SKN
 from anm import ANM
-import concurrent.futures
-import hashlib
 import numpy as np
 import os
-import shutil
-import tempfile
 import slogger
 import glb_export
+import texture_export
 from binfmt import clean_geo_name
 
 _LOG_DIR_INDEX = None
@@ -22,33 +27,6 @@ _GLB_PARTNER_TEXTURES = {}
 # ``(model name, error)`` of every model whose files could not be written (``Model0.toFile``). The export
 # goes on with the next model; ``export.main`` reports the list at the end and exits non-zero.
 EXPORT_FAILURES = []
-# wimgt processes decoding one model's textures at a time.
-TEXTURE_DECODE_WORKERS = min(8, os.cpu_count() or 2)
-# SHA-1 of a TPL this run decoded -> the PNG it wrote into the export folder. The same block is exported under
-# several directories and many textures repeat: a TPL with the same bytes is copied, not decoded again.
-_DECODED_PNGS = {}
-
-UNTANGLE_SKIP_STADIUMS = True
-UNTANGLE_IGNORE_RAW = { 'tex1_64x64_d6da4880cee95b7b_14' , "tex1_64x64_a09662ae19841ea4_14" , "tex1_64x64_8a05f75d65053b44_14", "tex1_64x64_cc3d32b121549b17_14", "tex1_256x1024_bbd4db6290a9ce03_14", "tex1_256x512_0cd3d3567193d20d_14", "tex1_512x512_82ae50a699739e73_14", "tex1_64x64_5f51e327c244f28a_14" }
-
-# Entries may be written with or without the .png extension; compare on basenames only.
-UNTANGLE_IGNORE_BASENAME = {
-    name[:-4] if name.lower().endswith('.png') else name
-    for name in UNTANGLE_IGNORE_RAW
-}
-
-
-
-def _copy_texture_pngs(output_dir, temp_dir):
-    # Overwrites the exported PNGs only: edited textures saved under new names
-    # stay in tex/.
-    tex_dir = os.path.join(output_dir, 'tex')
-    os.makedirs(tex_dir, exist_ok=True)
-    for filename in os.listdir(temp_dir):
-        shutil.copyfile(
-            os.path.join(temp_dir, filename),
-            os.path.join(tex_dir, filename),
-        )
 
 
 class UnexportableEntrySkip(ExpectedFormatSkip):
@@ -72,51 +50,6 @@ def _log_noncritical(message, exc=None):
         slogger.warning(f'{prefix} {message}', source='model')
         return
     slogger.warning(f'{prefix} {message}: {type(exc).__name__}: {exc}', source='model')
-
-
-def _untangle_texture(untangle_context, tex, dolphin_name, image_abs, model_absolute, tex_ind):
-    """``(dolphin name, image override, tlut override)`` of one texture in an ``--untangle`` export: a name
-    another texture already took gets its image bytes changed until it hashes to a free one (written to the
-    output DAT). A texture is handled once per address (image and palette start): once changed, its bytes hash
-    to the new name, so a lookup by name would change it again on every further visit of a block reached from
-    several directory records."""
-    # //quick hack to prevent destruction of this file that would get "untangled" 395 times in total, destroying much of the picture
-    if dolphin_name in UNTANGLE_IGNORE_BASENAME:
-        return dolphin_name, None, None
-    seen_names = untangle_context.setdefault('seen_names', set())
-    handled = untangle_context.setdefault('handled_images', {})
-    palette_abs = tex.parent.absolute + tex.paletteDataPtr if tex.paletteDataPtr > 0 else None
-    address = (image_abs, palette_abs)
-    if address in handled:
-        dolphin_name, image_override, tlut_override = handled[address]
-        seen_names.add(dolphin_name)
-        untangle_context.setdefault('report_lines', []).append(
-            f'Texture file untangle skipped (known address): {dolphin_name}.png '
-            f'(model 0x{model_absolute:x}, tex {tex_ind}, image_start 0x{image_abs:x})'
-        )
-        return dolphin_name, image_override, tlut_override
-
-    image_override = tlut_override = None
-    untangled = tex.ensureUniqueDolphinBasename(seen_names, max_attempts=untangle_context.get('max_attempts', 8192))
-    dolphin_name = untangled['basename']
-    if untangled['changed']:
-        image_override = untangled['image_data']
-        tlut_override = untangled['tlut_data']
-        dat_out = untangle_context.get('dat_output_handle')
-        if dat_out:
-            dat_out.seek(image_abs)
-            dat_out.write(image_override)
-        untangle_context.setdefault('report_lines', []).append(
-            f'Texture file untangled: {untangled["original_basename"]}.png -> {dolphin_name}.png '
-            f'(model 0x{model_absolute:x}, tex {tex_ind}, image_start 0x{image_abs:x}, attempts {untangled["attempts"]})'
-        )
-    elif untangled['warning']:
-        untangle_context.setdefault('warnings', []).append(
-            f'Warning: {untangled["warning"]} (model 0x{model_absolute:x}, tex {tex_ind}, '
-            f'image_start 0x{image_abs:x}, basename {untangled["original_basename"]}.png)'
-        )
-    handled[address] = (dolphin_name, image_override, tlut_override)
-    return dolphin_name, image_override, tlut_override
 
 
 class MaybeArchive(FileChunk):
@@ -281,28 +214,9 @@ class Model0(FileChunk):
             EXPORT_FAILURES.append((self.name, f'{type(e).__name__}: {e}'))
 
     def export_textures(self, untangle_context=None, texture_output_dir=None):
-        """Decode the model's textures (one wimgt process each) and copy the PNGs into
-        ``texture_output_dir/tex``; ``{texture index: PNG name}``, empty for a model without a TEX section.
-
-        Everything the export does besides reading happens here. With an ``--untangle`` context
-        (``_untangle_texture``) a texture whose name is taken gets its image bytes changed, in the PNG and,
-        through the context's ``dat_output_handle``, in the output DAT; the final names go into the context's
-        ``name_overrides`` for the ``.sluggie`` document."""
-        if not self.TEXPalette:
-            return {}
-        # A folder of this model's own, in the system temp folder: the one shared tex_temp in
-        # 2_Output_Assets was emptied per model, so two exports at once took each other's PNGs.
-        temp_dir = tempfile.mkdtemp(prefix='sluggies_tex_')
-        try:
-            decoded = {}
-            texture_paths = self._decode_textures(temp_dir, untangle_context, decoded)
-            if texture_output_dir:
-                _copy_texture_pngs(texture_output_dir, temp_dir)
-                for digest, png_name in decoded.items():
-                    _DECODED_PNGS.setdefault(digest, os.path.join(texture_output_dir, 'tex', png_name))
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        return texture_paths
+        """Decode the model's textures and copy the PNGs into ``texture_output_dir/tex``; ``{texture index:
+        PNG name}``. The one step of the export with side effects: see ``texture_export.export_textures``."""
+        return texture_export.export_textures(self, untangle_context, texture_output_dir)
 
     def model_data(self, texture_paths=None, *, export_tex=True, untangle_context=None):
         """The parsed model as one ``ModelData`` (geometry, bones, and the texture names
@@ -310,53 +224,6 @@ class Model0(FileChunk):
         if texture_paths is None:
             texture_paths = {}
         return self._geometry_data([], texture_paths, export_tex, untangle_context)
-
-    def _decode_textures(self, temp_dir, untangle_context, decoded=None):
-        """Decode every texture of the model into *temp_dir*; ``{texture index: PNG name}``. A TPL whose bytes
-        this run decoded before (``_DECODED_PNGS``) is copied from that PNG. ``decoded`` collects ``{TPL SHA-1:
-        PNG name}`` of the ones wimgt decoded here."""
-        texture_paths = {}
-        queued = {}                                      # dolphin name -> its TPL file, in first-seen order
-        for tex_ind, tex in enumerate(self.TEXPalette.descriptors):
-            image_override = None
-            tlut_override = None
-            dolphin_name = tex.dolphinTextureBasename()
-            image_abs = tex.parent.absolute + tex.dataPtr
-
-            if untangle_context and untangle_context.get('enabled'):
-                dolphin_name, image_override, tlut_override = _untangle_texture(
-                    untangle_context, tex, dolphin_name, image_abs, self.absolute, tex_ind)
-                name_overrides = untangle_context.setdefault('name_overrides', {})
-                model_overrides = name_overrides.setdefault(self.absolute, {})
-                model_overrides[tex_ind] = dolphin_name
-
-            dolphin_path = os.path.join(temp_dir, dolphin_name)
-            if dolphin_name not in queued:               # a name the model has twice is decoded once
-                queued[dolphin_name] = tex.writeTpl(
-                    dolphin_path, image_data_override=image_override, tlut_data_override=tlut_override)
-            texture_paths[tex_ind] = dolphin_name + '.png'
-        # The TPLs were written one after the other (they read the model's file); the decoding is one wimgt
-        # process per texture, run side by side (one at a time was about five minutes of a full export).
-        jobs = []
-        for name, fname in queued.items():
-            png = os.path.join(temp_dir, name + '.png')
-            with open(fname, 'rb') as f:
-                digest = hashlib.sha1(f.read()).hexdigest()
-            known = _DECODED_PNGS.get(digest)
-            if known is not None:
-                try:
-                    shutil.copyfile(known, png)
-                    os.remove(fname)
-                    continue
-                except OSError:
-                    pass                                 # the earlier PNG is gone: decode again
-            jobs.append((fname, png))
-            if decoded is not None:
-                decoded[digest] = name + '.png'
-        with concurrent.futures.ThreadPoolExecutor(max_workers=TEXTURE_DECODE_WORKERS) as pool:
-            for future in [pool.submit(decode_tpl, fname, png) for fname, png in jobs]:
-                future.result()                          # the first failure fails the model, as before
-        return texture_paths
 
     def _geometry_data(self, all_bones, texture_paths, export_tex, untangle_context):
         """The body of ``model_data``: geometry, bones and the texture names into one object."""

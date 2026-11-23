@@ -5,7 +5,7 @@ Each Sluggies mesh of the High model gets a mode: left out (Ignore), copied
 as it is (Low unchanged), or copied and thinned by a Decimate modifier
 (Un-Subdivide iterations, optionally after Triangles to Quads, or Collapse
 ratio) that is applied at once. The copies then go to the Low armature
-(SluggiesToolsPanel does that part: it owns the body and submesh helpers):
+(AdaptLowpolyUI does that part, with the body and submesh helpers of BodyOps and SubmeshOps):
 
 - the skinned main body replaces the Low model's body (submesh 0);
 - a rigid mesh on bone N replaces the Low model's own mesh on bone N, or

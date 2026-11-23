@@ -18,18 +18,23 @@ import bpy
 from . import AnmExport
 from . import CustomSubmeshExport
 from . import ExportMode
-from . import ExportSluggies as ex
+from . import ExportBones
+from . import ExportRebuildGlue
+from . import ExportTextures
 from . import FieldCodec
 from . import HostBones
 from . import ModelCheckCore as core
 from . import RigidRebuildExport
 from . import SkinnedRebuildExport
 from . import SluggiePath
-from . import SluggiesToolsPanel as panel
+from . import HostBoneScene
+from . import SubmeshOps
+from . import SurfacePlans
 from . import StadiumCollisionExport
 from . import TemplateSources
 from . import TextureConvert
-from .ImportSluggies import _set_surface_material_metadata, restore_donor_bones
+from .SurfaceMaterials import _set_surface_material_metadata
+from .ImportBones import restore_donor_bones
 from .ModelCheckCore import ERROR, INFO, WARNING, Finding
 
 
@@ -64,7 +69,7 @@ class ModelScope:
             self._textures = (None, None, False)
             if self.model is not None and self.sluggie_path:
                 try:
-                    self._textures = ex._resolve_export_texture_context(self.sluggie_path, self.model)
+                    self._textures = ExportTextures._resolve_export_texture_context(self.sluggie_path, self.model)
                 except ValueError as exc:
                     self.texture_error = str(exc)
         return self._textures
@@ -239,7 +244,7 @@ def _rigid_index(scope, obj):
 
 def _owner_bone_id(model, submesh_index):
     return next((int(b["BoneId"]) for b in model.get("BoneHierarchy") or []
-                 if ex._bone_geo_id_raw(b) == submesh_index), None)
+                 if ExportBones._bone_geo_id_raw(b) == submesh_index), None)
 
 
 def _ownerless_rigid(scope, index, vertex_bone_ids):
@@ -267,7 +272,7 @@ def _export_bone_records(scope):
 
 def _single_image_path(mat):
     """The file path of a material's one connected image, or ''."""
-    nodes = ex._connected_image_texture_nodes(mat)
+    nodes = ExportTextures._connected_image_texture_nodes(mat)
     if len(nodes) != 1 or getattr(nodes[0], "image", None) is None:
         return ""
     return _image_path(nodes[0].image)
@@ -280,7 +285,7 @@ def _export_file_name(path, tex_dir, plan_copy, reserved=()):
     if plan_copy and tex_dir and os.path.isfile(path) and (
             TextureConvert.needs_conversion(path) or not _same_dir(os.path.dirname(path), tex_dir)):
         try:
-            return ex._plan_external_texture_copy(path, tex_dir, {}, reserved)
+            return ExportTextures._plan_external_texture_copy(path, tex_dir, {}, reserved)
         except ValueError:
             pass   # cannot be converted: check_textures tells
     return os.path.basename(path)
@@ -361,7 +366,7 @@ def check_wrong_model(context, scope):
         return
     if not HostBones.bone_metadata_is_current(arm.get('SluggiesBoneMetadataVersion')):
         return
-    records = ex._armature_donor_bone_records(arm)
+    records = ExportBones._armature_donor_bone_records(arm)
     present = {r.bone_id for r in records}
     sluggie = [r for r in HostBones.bone_records_from_hierarchy(
         scope.model.get("BoneHierarchy") or [], scope.model.get("SkinData")) if r.bone_id in present]
@@ -479,7 +484,7 @@ MERGE_HINT = "merge it into the main body (select it, then the body, and join wi
 
 def _weighted_bones(obj):
     """The bone ids *obj*'s vertices carry positive bone_<id> weights on."""
-    return set().union(*ex._rigid_vertex_bone_ids(obj))
+    return set().union(*ExportRebuildGlue._rigid_vertex_bone_ids(obj))
 
 
 def _foreign_groups_note(obj):
@@ -568,7 +573,7 @@ def check_armature_link(context, scope):
     arm = scope.armature
     for obj in scope.meshes:
         targets = _modifier_armatures(obj)
-        follows = ex._custom_submesh_armature(obj)
+        follows = ExportRebuildGlue._custom_submesh_armature(obj)
         if follows is None and _is_custom(obj):
             yield Finding("armature_link", ERROR, obj.name, "No Armature modifier",
                           f"{obj.name}: custom submesh has no Armature modifier or armature parent; "
@@ -709,7 +714,7 @@ def check_custom_host_bone(context, scope):
     for obj in scope.meshes:
         if not _is_custom(obj):
             continue
-        ok, majority = core.host_bone_vote(ex._rigid_vertex_bone_ids(obj))
+        ok, majority = core.host_bone_vote(ExportRebuildGlue._rigid_vertex_bone_ids(obj))
         if not ok:
             yield Finding("one_bone", ERROR, obj.name, "Not on one bone",
                           f"{obj.name}: every vertex must belong to exactly one bone_<id> vertex "
@@ -728,7 +733,7 @@ def check_rigid_one_bone(context, scope):
         index = _rigid_index(scope, obj)
         if index is None:
             continue
-        vertex_bone_ids = ex._rigid_vertex_bone_ids(obj)
+        vertex_bone_ids = ExportRebuildGlue._rigid_vertex_bone_ids(obj)
         if _ownerless_rigid(scope, index, vertex_bone_ids):
             continue
         problem = RigidRebuildExport.vertex_bone_problem(obj.name, vertex_bone_ids)
@@ -751,12 +756,12 @@ def check_host_bones(context, scope):
     records = _export_bone_records(scope)
     known = {r.bone_id for r in records}
     donors = [obj for obj in scope.meshes if _submesh_index(scope, obj) is not None]
-    retargets, issues, obj_by_submesh = ex._candidate_rigid_retargets(donors, scope.model)
+    retargets, issues, obj_by_submesh = ExportBones._candidate_rigid_retargets(donors, scope.model)
     for obj in donors:
         index = _rigid_index(scope, obj)
         if index is None:
             continue
-        bone_id = ex._detect_uniform_vertex_bone_id(obj)
+        bone_id = ExportBones._detect_uniform_vertex_bone_id(obj)
         if bone_id is not None and bone_id not in known:
             yield Finding("host_bone", ERROR, obj.name, "Host bone missing",
                           f"{obj.name}: host bone {bone_id} does not exist in the target .sluggie "
@@ -777,7 +782,7 @@ def check_host_bones(context, scope):
     hosts_by_bone = {}
     for obj in scope.meshes:
         if _is_custom(obj):
-            bone_id = ex._detect_uniform_vertex_bone_id(obj)
+            bone_id = ExportBones._detect_uniform_vertex_bone_id(obj)
             if bone_id is not None:
                 hosts_by_bone.setdefault(bone_id, []).append(obj)
     names = {index: obj.name for index, obj in obj_by_submesh.items()}
@@ -796,7 +801,7 @@ def check_body_weights(context, scope):
         index = _submesh_index(scope, obj)
         if index != 0 or obj.get("VertexBufferCompCount") != 6:
             continue
-        weights = ex._vertex_bone_weights(obj)
+        weights = ExportRebuildGlue._vertex_bone_weights(obj)
         hierarchy = model.get("BoneHierarchy") or []
         parent_of = {int(b["BoneId"]): b.get("ParentBoneId") for b in hierarchy if "BoneId" in b}
         added = set()
@@ -852,7 +857,7 @@ def check_materials(context, scope):
                               "remove_slots", {"object": obj.name,
                                                "slots": sorted(set(empty) - set(empty_used))})
         target = scope.model["Submeshes"][index] if index is not None else None
-        foreign = ex._find_new_materials(obj, target, index)
+        foreign = ExportTextures._find_new_materials(obj, target, index)
         if foreign:
             names = ", ".join(f"'{n}' ({r})" for n, r in foreign)
             detail = (f"{obj.name}: custom submeshes support only their own surface materials ({names})"
@@ -946,7 +951,7 @@ def check_textures(context, scope):
             new = bool(mat.get("SluggiesNewSurface")) or custom
             if not (mat.get("SurfaceId") or mat.get("SluggiesNewSurface")):
                 continue
-            nodes = ex._connected_image_texture_nodes(mat)
+            nodes = ExportTextures._connected_image_texture_nodes(mat)
             if any(getattr(node, "image", None) is None for node in nodes):
                 yield Finding("empty_node", ERROR, obj.name, "Texture node empty",
                               f"'{mat.name}' on {obj.name} has an Image Texture node without an image; "
@@ -1059,10 +1064,10 @@ def check_texture_bindings(context, scope):
             template = None
             try:
                 CustomSubmeshExport.attribute_plan(scope.model, source)
-                template = ex._custom_submesh_template_texture_index(scope.model, source)
+                template = ExportTextures._custom_submesh_template_texture_index(scope.model, source)
             except ValueError as exc:
                 yield Finding("template", ERROR, obj.name, "Template not in this model", f"{obj.name}: {exc}")
-            primary = ex._custom_submesh_material(obj)
+            primary = ExportTextures._custom_submesh_material(obj)
             if primary is None:
                 yield Finding("own_material", ERROR, obj.name, "Own material missing",
                               f"{obj.name}: custom submesh has no material with its own SurfaceId "
@@ -1416,7 +1421,7 @@ def estimate_scope_size(scope, objects=None):
         seen = set()
         for obj in objects:
             for mat in _materials(obj):
-                for node in ex._connected_image_texture_nodes(mat):
+                for node in ExportTextures._connected_image_texture_nodes(mat):
                     path = _image_path(node.image) if node.image is not None else ""
                     file_name = os.path.basename(path)
                     if not path or file_name in names or file_name in seen:
@@ -1478,7 +1483,7 @@ def fix_reparent(context, object, armature):
 
 
 def fix_armature_modifier(context, object, armature):
-    panel._ensure_armature_modifier(_object(object), _object(armature))
+    SubmeshOps._ensure_armature_modifier(_object(object), _object(armature))
 
 
 def fix_restore_mesh_props(context, object, sluggie, index):
@@ -1501,7 +1506,7 @@ def fix_restore_material_props(context, object, materials, sluggie):
         if ds is None or index is None:
             raise ValueError(f"{name}: surface {sid} not in the .sluggie")
         if "TextureIndex" not in mat:
-            mat["TextureIndex"] = ex._custom_submesh_template_texture_index(model, f"rigid:{sid}")
+            mat["TextureIndex"] = ExportTextures._custom_submesh_template_texture_index(model, f"rigid:{sid}")
         wrap_s, wrap_t = core.wrap_modes_for_texture(model, index, mat["TextureIndex"])
         if "WrapS" not in mat:
             mat["WrapS"] = wrap_s
@@ -1520,7 +1525,7 @@ def fix_material_defaults(context, object, materials, armature, template):
         mat = bpy.data.materials.get(name)
         if mat is None:
             raise ValueError(f"material {name} is gone")
-        plan = panel._new_surface_plan(context, arm, obj, template)
+        plan = SurfacePlans._new_surface_plan(context, arm, obj, template)
         if mat.users > 1:
             # Shared with another object: that one keeps the plain material.
             copy = mat.copy()
@@ -1528,7 +1533,7 @@ def fix_material_defaults(context, object, materials, armature, template):
                 if slot.material == mat:
                     slot.material = copy
             mat = copy
-        panel._apply_new_surface_plan(mat, plan)
+        SurfacePlans._apply_new_surface_plan(mat, plan)
 
 
 def fix_save_image(context, image):
@@ -1577,7 +1582,7 @@ def fix_copy_to_tex(context, image, tex_dir, reserved=()):
         raise ValueError(f"{source} not found")
     os.makedirs(tex_dir, exist_ok=True)
     planned = {}
-    file_name = ex._plan_external_texture_copy(source, tex_dir, planned, tuple(reserved))
+    file_name = ExportTextures._plan_external_texture_copy(source, tex_dir, planned, tuple(reserved))
     target = os.path.join(tex_dir, file_name)
     if not os.path.isfile(target):
         # The planned source: another format's PNG conversion.
@@ -1626,7 +1631,7 @@ def fix_restore_skeleton(context, armature, sluggie):
 
 
 def fix_renumber_bones(context, armature):
-    panel._renumber_added_bones(_object(armature))
+    HostBoneScene._renumber_added_bones(_object(armature))
 
 
 def fix_reset_root_scale(context, armature):
@@ -1639,7 +1644,7 @@ def fix_bone_track(context, armature, bones):
         bone = arm.data.bones.get(name)
         if bone is None:
             raise ValueError(f"bone {name} is gone")
-        panel._set_added_bone_track(arm, bone, True)
+        HostBoneScene._set_added_bone_track(arm, bone, True)
 
 
 FIXES = {

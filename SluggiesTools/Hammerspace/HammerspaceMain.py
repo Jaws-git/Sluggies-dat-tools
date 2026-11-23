@@ -25,6 +25,7 @@ _slogger.configure()
 
 import drawlist
 import HammerspaceHelper as hh
+import RouteOps
 import LodPartnerGuard
 import LodTextureSync
 import SlotTarget
@@ -501,7 +502,7 @@ def main(argv=None) -> int:
             _split_baseline, _notes = UntangledTextures.split_baseline(_chunk, _index, _baseline_model)
             for _note in _notes:
                 _slogger.info(f'[Untangle] {_note}', source='hammerspace.main')
-        _success, _removed_offset, _removed_length = hh.removeModelFromHammerspace(
+        _success, _removed_offset, _removed_length = RouteOps.removeModelFromHammerspace(
             _chunk, _index, split_baseline=_split_baseline)
         if _success:
             try:

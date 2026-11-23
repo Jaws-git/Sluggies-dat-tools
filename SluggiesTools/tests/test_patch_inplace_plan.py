@@ -55,9 +55,9 @@ class PlanTests(unittest.TestCase):
             self.enterContext(mock.patch.object(patch_inplace, name, value))
         hh = patch_inplace._hh
         self.enterContext(mock.patch.object(hh, 'INPUT_DOL', str(self.root / 'no_main.dol')))
-        self.enterContext(mock.patch.object(hh, 'outputDatProblem', return_value=None))
+        self.enterContext(mock.patch.object(patch_inplace.DatAllocation, 'outputDatProblem', return_value=None))
         self.enterContext(mock.patch.object(
-            hh, 'copyFileAtomic', side_effect=lambda source, target: (
+            patch_inplace.DatAllocation, 'copyFileAtomic', side_effect=lambda source, target: (
                 pathlib.Path(target).parent.mkdir(parents=True, exist_ok=True),
                 pathlib.Path(target).write_bytes(pathlib.Path(source).read_bytes()))))
         self.ask = self.enterContext(mock.patch.object(patch_inplace._slogger, 'ask', return_value=''))

@@ -165,8 +165,8 @@ def _restore_interrupted_defrag():
     lost, and the next defragmentation would restore the old tail and main.dol over it. True when there was
     nothing to restore or the restore worked."""
     try:
-        from SluggiesTools.Hammerspace import HammerspaceHelper
-        pending = HammerspaceHelper.defragBackupPending()
+        from SluggiesTools.Hammerspace import DatAllocation
+        pending = DatAllocation.defragBackupPending()
     except Exception as exc:  # noqa: BLE001 - the check must not stop a command by itself
         slogger.warning(f"Could not check for an interrupted defragmentation ({exc}).", source="dispatcher")
         return True

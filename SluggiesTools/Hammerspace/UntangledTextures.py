@@ -54,6 +54,14 @@ def _helper():
     return HammerspaceHelper
 
 
+def _dol_records():
+    if __package__:
+        from . import DolRecords
+    else:
+        import DolRecords
+    return DolRecords
+
+
 class _Texture:
     """One texture's level-0 image range and palette inside a block."""
 
@@ -157,7 +165,7 @@ def split_baseline(chunk_number: int, file_index: int, model: dict | None) -> tu
     untangled textures from ``model`` (a `.sluggie`'s ``SluggiesModel``)
     re-applied. Plain vanilla when ``model`` is None."""
     hh = _helper()
-    offset, length = hh.readDolEntry(chunk_number, file_index)
+    offset, length = _dol_records().readDolEntry(chunk_number, file_index)
     with open(hh.INPUT_DAT, 'rb') as source:
         source.seek(offset)
         vanilla = source.read(length)
@@ -174,8 +182,8 @@ def split_at_baseline(chunk_number: int, file_index: int, models_dir: str = _MOD
     ``split_baseline`` with the exported ``.sluggie`` (without one: the vanilla bytes). False for a patched or
     re-tangled route."""
     import LodPartnerGuard
-    hh = _helper()
-    if hh.readOutputDolEntry(chunk_number, file_index) == hh.readDolEntry(chunk_number, file_index):
+    dol = _dol_records()
+    if dol.readOutputDolEntry(chunk_number, file_index) == dol.readDolEntry(chunk_number, file_index):
         return False
     block, _notes = split_baseline(chunk_number, file_index, find_sluggie_model(chunk_number, file_index, models_dir))
     return LodPartnerGuard.read_current_block(chunk_number, file_index) == block

@@ -11,6 +11,9 @@ if str(HAMMERSPACE_DIR) not in sys.path:
     sys.path.insert(0, str(HAMMERSPACE_DIR))
 
 import HammerspaceHelper as helper
+import DatAllocation
+import DolRecords
+import RouteOps
 
 
 class EnsureOutputDatTests(unittest.TestCase):
@@ -29,7 +32,7 @@ class EnsureOutputDatTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def test_copies_the_input_and_can_extend_it(self):
-        self.assertTrue(helper.ensureOutputDat(256))
+        self.assertTrue(DatAllocation.ensureOutputDat(256))
         self.assertEqual(self.output.read_bytes(), bytes(range(200)) + bytes(56))
         self.assertEqual([p.name for p in self.output.parent.iterdir()], ['dt_na.dat'])
 
@@ -38,28 +41,28 @@ class EnsureOutputDatTests(unittest.TestCase):
             pathlib.Path(target).write_bytes(pathlib.Path(source).read_bytes()[:50])
             raise KeyboardInterrupt
 
-        with mock.patch.object(helper.shutil, 'copy2', side_effect=dying_copy):
+        with mock.patch.object(DatAllocation.shutil, 'copy2', side_effect=dying_copy):
             with self.assertRaises(KeyboardInterrupt):
-                helper.ensureOutputDat()
+                DatAllocation.ensureOutputDat()
         self.assertEqual(list(self.output.parent.iterdir()), [])
-        self.assertTrue(helper.ensureOutputDat())                 # the next run starts over
+        self.assertTrue(DatAllocation.ensureOutputDat())                 # the next run starts over
         self.assertEqual(self.output.read_bytes(), bytes(range(200)))
 
     def test_an_output_shorter_than_the_input_is_refused(self):
         self.output.parent.mkdir()
         self.output.write_bytes(bytes(range(50)))                 # what a killed plain copy used to leave
-        self.assertIn('shorter than the input', helper.outputDatProblem())
-        self.assertFalse(helper.ensureOutputDat(256))
+        self.assertIn('shorter than the input', DatAllocation.outputDatProblem())
+        self.assertFalse(DatAllocation.ensureOutputDat(256))
         self.assertEqual(self.output.read_bytes(), bytes(range(50)))
 
     def test_a_longer_output_or_a_missing_input_is_fine(self):
         self.output.parent.mkdir()
         self.output.write_bytes(bytes(300))
-        self.assertIsNone(helper.outputDatProblem())
+        self.assertIsNone(DatAllocation.outputDatProblem())
         self.input.unlink()
         self.output.write_bytes(bytes(10))
-        self.assertIsNone(helper.outputDatProblem())
-        self.assertTrue(helper.ensureOutputDat())
+        self.assertIsNone(DatAllocation.outputDatProblem())
+        self.assertTrue(DatAllocation.ensureOutputDat())
 
 
 class FindFreeMemoryChunkTests(unittest.TestCase):
@@ -73,7 +76,7 @@ class FindFreeMemoryChunkTests(unittest.TestCase):
                 mock.patch.object(helper, 'CHUNK_SIZE', chunk_size),
                 mock.patch.object(helper, 'HS_ALIGN_BYTES', alignment),
             ):
-                return helper.findFreeMemoryChunk(length, reserved_ranges=reserved)
+                return DatAllocation.findFreeMemoryChunk(length, reserved_ranges=reserved)
 
     def test_checks_every_byte_inside_aligned_block(self):
         region = bytearray(96)
@@ -114,7 +117,7 @@ class FindFreeMemoryChunkTests(unittest.TestCase):
 
     def test_overlapping_reserved_ranges_are_merged(self):
         self.assertEqual(
-            helper._normalize_reserved_ranges([(10, 5), (0, 0), (12, 10), (40, 2)]),
+            DatAllocation._normalize_reserved_ranges([(10, 5), (0, 0), (12, 10), (40, 2)]),
             [(10, 22), (40, 42)],
         )
 
@@ -138,13 +141,13 @@ class RoutedHammerspaceRangesTests(unittest.TestCase):
             with (
                 mock.patch.object(helper, 'OUTPUT_DOL', str(dol_path)),
                 mock.patch.object(helper, 'BASE_SIZE', 0x1000),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0]),
             ):
-                self.assertEqual(helper.routedHammerspaceRanges(), [(0x2000, 0x40), (0x3000, 0x80)])
+                self.assertEqual(DolRecords.routedHammerspaceRanges(), [(0x2000, 0x40), (0x3000, 0x80)])
 
     def test_missing_output_dol_returns_no_ranges(self):
         with mock.patch.object(helper, 'OUTPUT_DOL', '/nonexistent/main.dol'):
-            self.assertEqual(helper.routedHammerspaceRanges(), [])
+            self.assertEqual(DolRecords.routedHammerspaceRanges(), [])
 
 
 class WriteModelBlockTests(unittest.TestCase):
@@ -157,7 +160,7 @@ class WriteModelBlockTests(unittest.TestCase):
                 mock.patch.object(helper, 'INPUT_DAT', str(dat_path) + '.absent'),
                 mock.patch.object(helper, 'HS_BUFFER_BYTES', 0),
             ):
-                helper.writeModelBlock(b'model-block', 64)
+                DatAllocation.writeModelBlock(b'model-block', 64)
 
             self.assertEqual(dat_path.read_bytes()[64:75], b'model-block')
 
@@ -196,7 +199,7 @@ class WriteModelBlockTests(unittest.TestCase):
                 mock.patch('builtins.open', side_effect=open_with_corrupt_read),
             ):
                 with self.assertRaisesRegex(IOError, 'verification failed'):
-                    helper.writeModelBlock(b'model-block', 64)
+                    DatAllocation.writeModelBlock(b'model-block', 64)
 
 
 class FindSharedEntriesTests(unittest.TestCase):
@@ -218,9 +221,9 @@ class FindSharedEntriesTests(unittest.TestCase):
             with (
                 mock.patch.object(helper, 'INPUT_DOL', str(input_dol)),
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96]),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0, 96]),
             ):
-                self.assertEqual(helper.findSharedEntries(0, 0), [])
+                self.assertEqual(DolRecords.findSharedEntries(0, 0), [])
 
     def test_currently_shared_output_entries_are_returned(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -233,9 +236,9 @@ class FindSharedEntriesTests(unittest.TestCase):
             with (
                 mock.patch.object(helper, 'INPUT_DOL', str(input_dol)),
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96]),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0, 96]),
             ):
-                self.assertEqual(helper.findSharedEntries(0, 0), [(1, 0)])
+                self.assertEqual(DolRecords.findSharedEntries(0, 0), [(1, 0)])
 
     def _records(self, path, dat_offsets):
         """Write contiguous records (no gaps) with the given en offsets."""
@@ -252,9 +255,9 @@ class FindSharedEntriesTests(unittest.TestCase):
             self._records(output_dol, (0x10, 0x20, 0x30, 0x40))
             with (
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96, 144]),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0, 96, 144]),
             ):
-                self.assertEqual(helper.findSharedEntries(1, 0), [])
+                self.assertEqual(DolRecords.findSharedEntries(1, 0), [])
 
     def test_genuine_sharer_in_another_directory_is_found(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -262,10 +265,10 @@ class FindSharedEntriesTests(unittest.TestCase):
             self._records(output_dol, (0x10, 0x20, 0x30, 0x30))
             with (
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96, 144]),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0, 96, 144]),
             ):
-                self.assertEqual(helper.findSharedEntries(1, 0), [(2, 0)])
-                self.assertEqual(helper.findSharedEntries(2, 0), [(1, 0)])
+                self.assertEqual(DolRecords.findSharedEntries(1, 0), [(2, 0)])
+                self.assertEqual(DolRecords.findSharedEntries(2, 0), [(1, 0)])
 
 
 class PatchDolEntryTests(unittest.TestCase):
@@ -285,8 +288,8 @@ class PatchDolEntryTests(unittest.TestCase):
         return (
             mock.patch.object(helper, 'INPUT_DOL', str(path)),
             mock.patch.object(helper, 'OUTPUT_DOL', str(path)),
-            mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
-            mock.patch.object(helper, '_extraDirStarts', return_value=[]),
+            mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0]),
+            mock.patch.object(DolRecords, '_extraDirStarts', return_value=[]),
         )
 
     def test_record_is_written_in_all_three_slots(self):
@@ -295,8 +298,8 @@ class PatchDolEntryTests(unittest.TestCase):
             before = path.read_bytes()
             a, b, c, d = self._patched(path)
             with a, b, c, d:
-                helper.patchDolEntry(0, 1, 0x5000, 0x40)
-                self.assertEqual(helper.readOutputDolEntry(0, 1), (0x5000, 0x40))
+                DolRecords.patchDolEntry(0, 1, 0x5000, 0x40)
+                self.assertEqual(DolRecords.readOutputDolEntry(0, 1), (0x5000, 0x40))
             after = path.read_bytes()
             self.assertEqual(struct.unpack_from('>12I', after, 48),
                              (helper._DAT_FNAME_PTR, 0x40, 0x5000, 0x40) * 3)
@@ -309,10 +312,10 @@ class PatchDolEntryTests(unittest.TestCase):
             a, b, c, d = self._patched(path)
             with a, b, c, d:
                 for chunk, index in ((0, 2), (0, 3), (0, -1), (5, 0)):
-                    with self.subTest(chunk=chunk, index=index), self.assertRaises(helper.DolEntryError):
-                        helper.patchDolEntry(chunk, index, 0x5000, 0x40)
-                self.assertEqual(helper.readOutputDolEntry(0, 2), (-1, -1))
-                self.assertEqual(helper.readDolEntry(0, 2), (-1, -1))
+                    with self.subTest(chunk=chunk, index=index), self.assertRaises(DolRecords.DolEntryError):
+                        DolRecords.patchDolEntry(chunk, index, 0x5000, 0x40)
+                self.assertEqual(DolRecords.readOutputDolEntry(0, 2), (-1, -1))
+                self.assertEqual(DolRecords.readDolEntry(0, 2), (-1, -1))
             self.assertEqual(path.read_bytes(), before)
 
     def test_missing_input_dol_raises(self):
@@ -321,9 +324,9 @@ class PatchDolEntryTests(unittest.TestCase):
             with (
                 mock.patch.object(helper, 'INPUT_DOL', str(root / 'none.dol')),
                 mock.patch.object(helper, 'OUTPUT_DOL', str(root / 'out' / 'main.dol')),
-                self.assertRaises(helper.DolEntryError),
+                self.assertRaises(DolRecords.DolEntryError),
             ):
-                helper.patchDolEntry(0, 0, 0x5000, 0x40)
+                DolRecords.patchDolEntry(0, 0, 0x5000, 0x40)
 
 
 class ZeroOriginalModelTests(unittest.TestCase):
@@ -346,11 +349,11 @@ class ZeroOriginalModelTests(unittest.TestCase):
             with (
                 mock.patch.object(helper, 'OUTPUT_DAT', str(output_dat)),
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96]),
-                mock.patch.object(helper, 'readDolEntry',
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0, 96]),
+                mock.patch.object(DolRecords, 'readDolEntry',
                                   return_value=(self.ORIGINAL_OFFSET, len(self.ORIGINAL))),
             ):
-                helper.zeroOriginalModel(1, 0)
+                RouteOps.zeroOriginalModel(1, 0)
             data = output_dat.read_bytes()
             return data[self.ORIGINAL_OFFSET:self.ORIGINAL_OFFSET + len(self.ORIGINAL)]
 
@@ -399,12 +402,12 @@ class RemoveModelFromHammerspaceTests(unittest.TestCase):
                 mock.patch.object(helper, 'OUTPUT_DAT', str(output_dat)),
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
                 mock.patch.object(helper, 'BASE_SIZE', 64),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
-                mock.patch.object(helper, 'readDolEntry', return_value=(original_offset, len(original))),
-                mock.patch.object(helper, 'findSharedEntries', return_value=[]),
-                mock.patch.object(helper, 'patchDolEntry', side_effect=assert_restored_before_dol_patch),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0]),
+                mock.patch.object(DolRecords, 'readDolEntry', return_value=(original_offset, len(original))),
+                mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+                mock.patch.object(DolRecords, 'patchDolEntry', side_effect=assert_restored_before_dol_patch),
             ):
-                success, removed_offset, removed_length = helper.removeModelFromHammerspace(0, 0)
+                success, removed_offset, removed_length = RouteOps.removeModelFromHammerspace(0, 0)
 
             data = output_dat.read_bytes()
             self.assertTrue(success)
@@ -421,10 +424,10 @@ class RemoveModelFromHammerspaceTests(unittest.TestCase):
                 mock.patch.object(helper, 'OUTPUT_DAT', str(output_dat)),
                 mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
                 mock.patch.object(helper, 'BASE_SIZE', 64),
-                mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
-                mock.patch.object(helper, 'readDolEntry', return_value=(original_offset, len(original))),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0]),
+                mock.patch.object(DolRecords, 'readDolEntry', return_value=(original_offset, len(original))),
             ):
-                result = helper.removeModelFromHammerspace(0, 0)
+                result = RouteOps.removeModelFromHammerspace(0, 0)
 
             data = output_dat.read_bytes()
             self.assertEqual(result, (True, 0, 0))

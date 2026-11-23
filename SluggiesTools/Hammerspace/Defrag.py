@@ -38,15 +38,19 @@ import numpy as np
 
 try:
     import HammerspaceHelper as hh
+    import DatAllocation
+    import DolRecords
 except ImportError:
     from . import HammerspaceHelper as hh
+    from . import DatAllocation
+    from . import DolRecords
 
 import slogger as _slogger                     # HammerspaceHelper put SluggiesTools on sys.path
 
 SOURCE = 'hammerspace.defrag'
 SLOTS = ((1, 2), (5, 6), (9, 10))             # (length word, offset word) of the en, sp, fr slots
-BACKUP_FOLDER = hh.DEFRAG_BACKUP_FOLDER
-_BACKUP_INFO = hh.DEFRAG_BACKUP_INFO
+BACKUP_FOLDER = DatAllocation.DEFRAG_BACKUP_FOLDER
+_BACKUP_INFO = DatAllocation.DEFRAG_BACKUP_INFO
 _BACKUP_TAIL = 'dt_na.tail'
 _BACKUP_DOL = 'main.dol'
 _BACKUP_FST = 'fst.bin'
@@ -149,11 +153,11 @@ def _backup_dir():
 def backup_pending():
     """Whether an interrupted run left a complete backup (the next run restores it; so does the dispatcher,
     before any other command touches the half-moved files)."""
-    return hh.defragBackupPending()
+    return DatAllocation.defragBackupPending()
 
 
 def _fst_problem():
-    """Why the FST cannot be updated (``hh.patchFstFileSize`` would fail), or None. Asked before the backup:
+    """Why the FST cannot be updated (``DatAllocation.patchFstFileSize`` would fail), or None. Asked before the backup:
     without an ``fst.bin`` the run would move everything, fail at the last step and move it all back."""
     if os.path.isfile(hh._FST_OUTPUT) or os.path.isfile(hh._FST_INPUT):
         return None
@@ -170,7 +174,7 @@ def _mb(n):
 def collect_routes():
     """Every language slot of the output main.dol routed into hammerspace."""
     routes = []
-    for chunk, index, record, words in hh._iterDirRecords(hh.OUTPUT_DOL):
+    for chunk, index, record, words in DolRecords._iterDirRecords(hh.OUTPUT_DOL):
         for slot, (length_word, offset_word) in enumerate(SLOTS):
             offset, length = words[offset_word], words[length_word]
             if length <= 0:
@@ -442,7 +446,7 @@ def run(dry_run=False):
     try:
         _move_extents(layout)
         _patch_dol(layout)
-        if not hh.patchFstFileSize(layout.new_size):
+        if not DatAllocation.patchFstFileSize(layout.new_size):
             raise DefragError('fst.bin could not be updated')
         _verify(layout, before)
     except BaseException:

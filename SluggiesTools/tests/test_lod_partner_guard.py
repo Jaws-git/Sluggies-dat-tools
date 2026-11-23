@@ -13,6 +13,7 @@ for path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import act_rebuild
 import HammerspaceHelper as hh
+import DolRecords
 import LodPartnerGuard as guard
 
 GEO_NONE = 0xFFFF
@@ -209,7 +210,7 @@ class EntryExistsTests(unittest.TestCase):
             dol_path.write_bytes(dol)
             with (
                 mock.patch.object(hh, 'OUTPUT_DOL', str(dol_path)),
-                mock.patch.object(hh, '_readDirPtrs', return_value=[0, 96]),
+                mock.patch.object(DolRecords, '_readDirPtrs', return_value=[0, 96]),
             ):
                 self.assertTrue(guard._entry_exists(0, 1))
                 self.assertFalse(guard._entry_exists(0, 2))

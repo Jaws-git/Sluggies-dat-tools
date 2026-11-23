@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 
 import slogger as _slogger
 import HammerspaceHelper as hh
+import DolRecords
 from binfmt import decode_field as _decode
 from ArchiveContainer import parse_archive_container
 
@@ -306,7 +307,7 @@ def _live_archive(chunk_number: int, file_index: int, vanilla: bytes, vanilla_la
     entry cannot be read or is not the same archive: other slots populated,
     or ``slot`` off the 32-byte grid.
     """
-    offset, length = hh.readOutputDolEntry(chunk_number, file_index)
+    offset, length = DolRecords.readOutputDolEntry(chunk_number, file_index)
     if offset < 0 or length <= 0:
         return None
     try:
@@ -365,7 +366,7 @@ def _resolve_donor_route(model: dict, carry_live_members: bool,
     if embedded is not None:
         original_offset, original_length = embedded[0], len(embedded[1])
     else:
-        original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
+        original_offset, original_length = DolRecords.readDolEntry(chunk_number, file_index)
     if original_offset == -1 or original_length <= 0:
         raise ValueError(
             f'Invalid donor DOL entry for chunk={chunk_number}, file_index={file_index}: '

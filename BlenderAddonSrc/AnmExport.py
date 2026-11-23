@@ -30,7 +30,7 @@ from . import AnimScale
 from . import AnmFormat
 from . import FieldCodec
 from . import HostBones
-from .ImportSluggies import _anm_bone_corrections, game_rest_srt
+from .ImportBones import _anm_bone_corrections, game_rest_srt
 
 # A channel the original track lacks is added when the bone leaves its rest
 # value by more than this (translation in game units).

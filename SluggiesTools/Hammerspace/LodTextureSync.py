@@ -30,6 +30,7 @@ import struct
 from dataclasses import dataclass, field
 
 import HammerspaceHelper as hh
+import DolRecords
 import LodPartnerGuard
 import slogger as _slogger
 from binfmt import u32 as _u32
@@ -232,7 +233,7 @@ def _shared_live_range(chunk_number: int, file_index: int, offset: int, length: 
     unused character's re-tangled route on its owner's vanilla block (see
     UntanglePolicy). Writing into it would change that model as well, so the
     sync skips it (logged)."""
-    others = [route for route in hh.liveRoutesInto(offset, length) if route != (chunk_number, file_index)]
+    others = [route for route in DolRecords.liveRoutesInto(offset, length) if route != (chunk_number, file_index)]
     if others:
         _slogger.warning(
             f'[LOD] texture assignment sync skipped for chunk {chunk_number}, file {file_index}: '
@@ -244,7 +245,7 @@ def _shared_live_range(chunk_number: int, file_index: int, offset: int, length: 
 
 
 def _vanilla_block(chunk_number: int, file_index: int) -> bytes | None:
-    offset, length = hh.readDolEntry(chunk_number, file_index)
+    offset, length = DolRecords.readDolEntry(chunk_number, file_index)
     if offset == -1 or length <= 0:
         return None
     with open(hh.INPUT_DAT, 'rb') as dat:
@@ -365,7 +366,7 @@ def sync_partner_of_high(
         _slogger.info(describe(plan, *_pair_names(high_after, low), chunk_number, dry_run),
                          source='hammerspace.main')
     if plan.edits and AUTO_SYNC and not dry_run:
-        offset, length = hh.readOutputDolEntry(chunk_number, low_index)
+        offset, length = DolRecords.readOutputDolEntry(chunk_number, low_index)
         if length != len(low):
             raise RuntimeError(
                 f'low-poly partner route (chunk {chunk_number}, file {low_index}) changed '
@@ -400,7 +401,7 @@ def resync_live_low(chunk_number: int, file_index: int) -> None:
     synced = sync_low_block(block, chunk_number, file_index)
     if synced == block:
         return
-    offset, length = hh.readOutputDolEntry(chunk_number, file_index)
+    offset, length = DolRecords.readOutputDolEntry(chunk_number, file_index)
     if length != len(block):
         raise RuntimeError(f'low-poly route (chunk {chunk_number}, file {file_index}) changed during sync')
     if _shared_live_range(chunk_number, file_index, offset, length):

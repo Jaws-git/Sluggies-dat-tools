@@ -16,7 +16,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
-EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+EXPORT_PATH = addon_sources.EXPORT
 for path in (EXPORT_PATH.parent, ROOT_DIR / 'SluggiesTools'):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))

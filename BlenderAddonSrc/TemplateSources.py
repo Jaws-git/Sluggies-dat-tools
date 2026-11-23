@@ -1,7 +1,7 @@
 """Template-source candidate list for the Add submesh dialog.
 
 Pure Python, no ``bpy`` import, so it is unit-testable outside Blender. The
-caller (``SluggiesToolsPanel.py``) scans scene materials into
+caller (``SurfacePlans.py``) scans scene materials into
 ``TemplateSourceMaterial`` records; this module turns those into the ordered
 list of ``rigid:<SurfaceId>`` / ``derived:<SurfaceId>`` / ``builtin:<name>``
 choices the dialog offers, matching the resolution order and hand/visibility

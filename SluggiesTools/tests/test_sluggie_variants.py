@@ -22,6 +22,7 @@ for _path in (TOOLS_DIR, ADDON_DIR):
 import ModelCheckCore  # noqa: E402
 import model_files  # noqa: E402
 import model0  # noqa: E402
+import texture_export  # noqa: E402
 from Hammerspace import UntangledTextures  # noqa: E402
 from Roster import gear  # noqa: E402
 
@@ -160,10 +161,10 @@ class ModelExportKeepsFilesTests(unittest.TestCase):
             model.name, model.ACT, model.TEXPalette = '1_mario.gpl', None, None
 
             def export_textures(untangle_context=None, texture_output_dir=None):
-                model0._copy_texture_pngs(texture_output_dir, temp_dir)
+                texture_export.copy_texture_pngs(texture_output_dir, temp_dir)
                 return {}
 
-            with mock.patch.object(model0, 'TEXTURE_DECODE_WORKERS', 1), \
+            with mock.patch.object(texture_export, 'TEXTURE_DECODE_WORKERS', 1), \
                     mock.patch.object(model, 'export_textures', side_effect=export_textures, create=True), \
                     mock.patch.object(model, 'model_data', return_value=SimpleNamespace(textures={}),
                                       create=True):

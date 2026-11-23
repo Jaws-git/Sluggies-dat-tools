@@ -6,12 +6,15 @@ test_add_submesh_operator.py's conventions -- no bpy import required.
 
 import ast
 import pathlib
+import sys
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
-PANEL_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+PANEL_PATH = addon_sources.PANEL
 
-import sys  # noqa: E402
 if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)

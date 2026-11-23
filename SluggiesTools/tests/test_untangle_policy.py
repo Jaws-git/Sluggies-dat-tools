@@ -11,6 +11,7 @@ if str(HAMMERSPACE_DIR) not in sys.path:
     sys.path.insert(0, str(HAMMERSPACE_DIR))
 
 import HammerspaceHelper as hh
+import DolRecords
 import UntanglePolicy as policy
 
 RECORD = hh._ENTRY_SIZE
@@ -53,7 +54,7 @@ class UntanglePolicyTests(unittest.TestCase):
         dol_path.write_bytes(dol)
         for patcher in (
             mock.patch.object(hh, 'INPUT_DOL', str(dol_path)),
-            mock.patch.object(hh, '_readDirPtrs', return_value=pointers),
+            mock.patch.object(DolRecords, '_readDirPtrs', return_value=pointers),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

@@ -43,6 +43,7 @@ import struct
 from dataclasses import dataclass
 
 import HammerspaceHelper as hh
+import DolRecords
 import slogger as _slogger
 from binfmt import clean_geo_name
 from act_rebuild import BONE_RECORD_SIZE, HEADER_SIZE as ACT_HEADER_SIZE, SRT_RECORD_SIZE
@@ -134,10 +135,10 @@ def read_current_block(chunk_number: int, file_index: int) -> bytes | None:
     route into the output DAT, or the input files when nothing is patched yet.
     Returns None for an entry that does not exist."""
     if os.path.exists(hh.OUTPUT_DOL) and os.path.exists(hh.OUTPUT_DAT):
-        offset, length = hh.readOutputDolEntry(chunk_number, file_index)
+        offset, length = DolRecords.readOutputDolEntry(chunk_number, file_index)
         dat_path = hh.OUTPUT_DAT
     else:
-        offset, length = hh.readDolEntry(chunk_number, file_index)
+        offset, length = DolRecords.readDolEntry(chunk_number, file_index)
         dat_path = hh.INPUT_DAT
     if offset == -1 or length <= 0:
         return None
@@ -154,7 +155,7 @@ def _entry_exists(chunk_number: int, file_index: int) -> bool:
     of this chunk's run would read the next chunk's first entry; the next
     directory pointer bounds it."""
     has_output = os.path.exists(hh.OUTPUT_DOL)
-    dir_ptrs = hh._outputDirPtrs() if has_output else hh._readDirPtrs()
+    dir_ptrs = DolRecords._outputDirPtrs() if has_output else DolRecords._readDirPtrs()
     if not (0 <= chunk_number < len(dir_ptrs)) or file_index < 0:
         return False
     entry = dir_ptrs[chunk_number] + file_index * hh._ENTRY_SIZE
@@ -269,11 +270,11 @@ def srt_matches(a: tuple | None, b: tuple | None) -> bool:
 
 
 def _vanilla_block(chunk_number: int, file_index: int) -> bytes | None:
-    """The INPUT block an entry started from (an own model directory: its source's, ``hh.vanillaRoute``)."""
-    route = hh.vanillaRoute(chunk_number, file_index)
+    """The INPUT block an entry started from (an own model directory: its source's, ``DolRecords.vanillaRoute``)."""
+    route = DolRecords.vanillaRoute(chunk_number, file_index)
     if route is None or not os.path.exists(hh.INPUT_DAT):
         return None
-    offset, length = hh.readDolEntry(*route)
+    offset, length = DolRecords.readDolEntry(*route)
     if offset == -1 or length <= 0:
         return None
     with open(hh.INPUT_DAT, 'rb') as dat:

@@ -21,6 +21,7 @@ for _path in (TOOLS_DIR, TOOLS_DIR / 'Hammerspace', TOOLS_DIR / 'Roster', pathli
 
 import synthetic_donor  # noqa: E402
 import HammerspaceHelper as hh  # noqa: E402
+import DolRecords  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import gui_grid  # noqa: E402
 from binfmt import encode_field  # noqa: E402
@@ -96,7 +97,7 @@ class EmbeddedDonorTests(unittest.TestCase):
         blank.write_bytes(bytes(BLOCK_BASE + len(self.block)))           # zeros where the donor would be
         self.enterContext(mock.patch.object(hh, 'INPUT_DAT', str(blank)))
         self.enterContext(mock.patch.object(hh, 'OUTPUT_DAT', str(blank)))
-        self.enterContext(mock.patch.object(hh, 'readDolEntry', return_value=(-1, -1)))
+        self.enterContext(mock.patch.object(DolRecords, 'readDolEntry', return_value=(-1, -1)))
 
     def test_donor_entry(self):
         self.assertEqual(main.donor_entry(self.data['SluggiesModel']), (BLOCK_BASE, self.block))
@@ -156,7 +157,7 @@ class ExportReaderTests(unittest.TestCase):
             blank = pathlib.Path(temp) / 'dt_na.dat'
             blank.write_bytes(bytes(16))
             with (mock.patch.object(hh, 'INPUT_DAT', str(blank)), mock.patch.object(hh, 'OUTPUT_DAT', str(blank)),
-                  mock.patch.object(hh, 'readDolEntry', return_value=(-1, -1))):
+                  mock.patch.object(DolRecords, 'readDolEntry', return_value=(-1, -1))):
                 build = main.BuildModelBlock(doc, main.SectionModes())
         self.assertTrue(build.validation_report['valid'])
         self.assertEqual(build.block, self.block)

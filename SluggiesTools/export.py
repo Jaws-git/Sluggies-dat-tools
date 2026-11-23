@@ -6,16 +6,18 @@
 the exit code; importing the module does nothing.
 
 What is here: the run (prompts, the ``--untangle`` preparation of ``3_Output_Dat``, the loop over the
-directories, the report, the exit code). The ``.sluggie`` document builders are in ``sluggie_document.py`` and
-the directory facts in ``dol_dirs.py``; their names, and the reader classes of ``model0.py``, stay importable
-from this module (``__all__``).
+directories, the exit code). The ``.sluggie`` document builders are in ``sluggie_document.py``, the directory
+facts in ``dol_dirs.py``, and the texture step with the untangle context and the report in
+``texture_export.py``; their names, and the reader classes of ``model0.py``, stay importable from this module
+(``__all__``).
 """
 from base import File
 from anm import ANM
 from model0 import (
-    Archive, EXPORT_FAILURES, ExpectedFormatSkip, MaybeArchive, Model0, UNTANGLE_SKIP_STADIUMS,
+    Archive, EXPORT_FAILURES, ExpectedFormatSkip, MaybeArchive, Model0,
     set_log_dir_index,
 )
+from texture_export import UNTANGLE_SKIP_STADIUMS, UntangleContext, write_texture_hash_overlaps_report
 import contextlib
 import os
 import shutil
@@ -54,7 +56,8 @@ __all__ = [
     'model_document', 'write_model_document',
     'STADIUM_DIR_INDICES', 'UNUSED_DIRS_TO_UNTANGLE_CLONE',
     'Dat', 'clone_unused_dirs_to_hammerspace_for_untangle', 'confirm_overwrite', 'export_directories',
-    'main', 'open_export_dat', 'prepare_untangle_output_files', 'write_texture_hash_overlaps_report',
+    'main', 'open_export_dat', 'prepare_untangle_output_files',
+    'UntangleContext', 'write_texture_hash_overlaps_report',
 ]
 
 # Model directory indices that hold stadiums (see folderNameMap):
@@ -89,11 +92,14 @@ def confirm_overwrite():
     return True
 
 
-def _hammerspace_helper():
-    """``HammerspaceHelper``, imported when ``--untangle`` needs it: an export without ``--untangle`` runs
-    without that module, and an error in importing it shows as the error it is."""
+def _hammerspace_modules():
+    """``(HammerspaceHelper, DatAllocation, DolRecords)``, imported when ``--untangle`` needs them: an export
+    without ``--untangle`` runs without those modules, and an error in importing them shows as the error it
+    is."""
     import HammerspaceHelper
-    return HammerspaceHelper
+    import DatAllocation
+    import DolRecords
+    return HammerspaceHelper, DatAllocation, DolRecords
 
 
 def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path, report_lines=None):
@@ -101,9 +107,9 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
 
     This decouples unused character directories from shared offsets before
     texture untangling so each referenced model block can be modified independently.
-    A record that cannot be repointed raises (``HammerspaceHelper.DolEntryError``) and ends the export.
+    A record that cannot be repointed raises (``DolRecords.DolEntryError``) and ends the export.
     """
-    hh = _hammerspace_helper()
+    hh, dat, dol = _hammerspace_modules()
 
     source_dirs = load_dol_dirs(input_dol_path)
 
@@ -124,21 +130,21 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
     base_size = os.path.getsize(hh.OUTPUT_DAT) if os.path.exists(hh.OUTPUT_DAT) else hh.BASE_SIZE
     reserve = 1024 * 1024
     required_total_size = max(base_size, hh.BASE_SIZE) + required_growth + reserve
-    if not hh.ensureOutputDat(required_total_size):
+    if not dat.ensureOutputDat(required_total_size):
         raise RuntimeError('Unable to prepare output dt_na.dat for untangle clone step.')
-    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
+    dat.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
 
     # Live hammerspace blocks can end in zero padding that the zero-byte scan
     # would otherwise treat as free (see WriteModelBlock).
-    reserved_ranges = hh.routedHammerspaceRanges()
-    allocation_start = hh.findFreeMemoryChunk(required_growth, reserved_ranges=reserved_ranges)
+    reserved_ranges = dol.routedHammerspaceRanges()
+    allocation_start = dat.findFreeMemoryChunk(required_growth, reserved_ranges=reserved_ranges)
     if allocation_start == -1:
         grow_by = max(required_growth + reserve, 64 * 1024 * 1024)
         next_size = os.path.getsize(hh.OUTPUT_DAT) + grow_by
-        if not hh.ensureOutputDat(next_size):
+        if not dat.ensureOutputDat(next_size):
             raise RuntimeError('Unable to expand output dt_na.dat for untangle clone step.')
-        hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
-        allocation_start = hh.findFreeMemoryChunk(required_growth, reserved_ranges=reserved_ranges)
+        dat.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
+        allocation_start = dat.findFreeMemoryChunk(required_growth, reserved_ranges=reserved_ranges)
         if allocation_start == -1:
             raise RuntimeError(
                 f'Unable to reserve a contiguous hammerspace region ({required_growth} bytes).'
@@ -162,8 +168,8 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
                     f'expected {src_length} bytes, got {len(block)}'
                 )
 
-            hh.writeModelBlock(block, new_offset)
-            hh.patchDolEntry(dir_ind, file_index, new_offset, src_length)
+            dat.writeModelBlock(block, new_offset)
+            dol.patchDolEntry(dir_ind, file_index, new_offset, src_length)
             next_offset = new_offset + src_length + hh.HS_BUFFER_BYTES
             clone_count += 1
 
@@ -174,40 +180,6 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
                 )
 
     return clone_count
-
-
-def write_texture_hash_overlaps_report(output_dir, untangle_report_lines=None, untangle_warnings=None):
-    """Write repeated PNG filename counts under the export root.
-
-    Any PNG basename encountered more than once anywhere below output_dir is
-    reported once in texture_hash_overlaps.txt.
-    """
-    report_path = os.path.join(output_dir, 'texture_hash_overlaps.txt')
-    png_counts = {}
-
-    for root, _dirs, files in os.walk(output_dir):
-        for fname in files:
-            if not fname.lower().endswith('.png'):
-                continue
-            png_counts[fname] = png_counts.get(fname, 0) + 1
-
-    duplicate_names = sorted(
-        (name, count) for name, count in png_counts.items() if count > 1
-    )
-
-    with open(report_path, 'w', encoding='utf-8') as report_f:
-        for name, count in duplicate_names:
-            report_f.write(f'{name} (x{count} identical duplicates)\n')
-        if untangle_report_lines:
-            report_f.write('\n')
-            report_f.write('Untangle updates:\n')
-            for line in untangle_report_lines:
-                report_f.write(line + '\n')
-        if untangle_warnings:
-            report_f.write('\n')
-            report_f.write('Untangle warnings:\n')
-            for line in untangle_warnings:
-                report_f.write(line + '\n')
 
 
 class Dat(File):
@@ -225,7 +197,7 @@ def open_export_dat(path, untangle_context=None):
     the bytes from before a write.)"""
     with open(path, 'r+b' if untangle_context is not None else 'rb') as handle:
         if untangle_context is not None:
-            untangle_context['dat_output_handle'] = handle
+            untangle_context.dat_output_handle = handle
         yield Dat(handle)
 
 
@@ -374,7 +346,7 @@ def main(argv=None) -> int:
             _slogger.warning('--untangle has no effect with --notex; untangle mode disabled.', source='export')
         else:
             _slogger.info('Starting texture untangling process...', source='export')
-            _hammerspace_helper()       # an import error shows here, before the output files are replaced
+            _hammerspace_modules()      # an import error shows here, before the output files are replaced
             untangle_output_path, untangle_output_dol_path = prepare_untangle_output_files()
             if untangle_output_path is None:
                 return 0
@@ -389,18 +361,9 @@ def main(argv=None) -> int:
             active_dol_path = untangle_output_dol_path
             active_dat_path = untangle_output_path
 
-            untangle_context = {
-                'enabled': True,
-                'seen_names': set(),
-                'handled_images': {},
-                'report_lines': [
-                    f'Hammerspace clone pre-pass complete: cloned {clone_count} entries from dirs 89-94.'
-                ] + untangle_bootstrap_report,
-                'warnings': [],
-                'name_overrides': {},
-                'max_attempts': 8192,
-                'dat_output_handle': None,      # open_export_dat sets it: the handle the export reads through
-            }
+            untangle_context = UntangleContext(report_lines=[
+                f'Hammerspace clone pre-pass complete: cloned {clone_count} entries from dirs 89-94.'
+            ] + untangle_bootstrap_report)       # open_export_dat sets its dat_output_handle
             _slogger.info(
                 'Hammerspace duplication complete. Unused character textures are now independent.',
                 source='export'
@@ -425,8 +388,8 @@ def main(argv=None) -> int:
 
     write_texture_hash_overlaps_report(
         outdir,
-        untangle_report_lines=(untangle_context or {}).get('report_lines'),
-        untangle_warnings=(untangle_context or {}).get('warnings')
+        untangle_report_lines=untangle_context.report_lines if untangle_context else None,
+        untangle_warnings=untangle_context.warnings if untangle_context else None
     )
 
     # Entries that are no models are skipped silently above; a model that failed is an error of the run.

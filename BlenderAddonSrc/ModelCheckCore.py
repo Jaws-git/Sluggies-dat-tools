@@ -32,7 +32,7 @@ _BONE_NAME_RE = re.compile(r'^bone_(\d+)$')
 _DONOR_SURFACE_RE = re.compile(r'^sm(\d+)_ds\d+$')
 
 # The mesh properties that tie an object to its .sluggie submesh
-# (ExportSluggies.REQUIRED_PROPS).
+# (ExportInplaceMesh.REQUIRED_PROPS).
 REQUIRED_PROPS = (
     "VertexBufferOffset",
     "VertexBufferLength",
@@ -204,7 +204,7 @@ def is_low_folder(folder_name: str) -> bool:
 
 def low_partner_matches(low_folder: str, high_folder: str) -> bool:
     """Whether *high_folder* is the main model of Low model folder
-    *low_folder* (the rule ExportSluggies._resolve_export_texture_context uses)."""
+    *low_folder* (the rule ExportTextures._resolve_export_texture_context uses)."""
     low, high = (low_folder or '').lower(), (high_folder or '').lower()
     marker = low.find('_l_')
     if marker < 0 or '_l_' in high:

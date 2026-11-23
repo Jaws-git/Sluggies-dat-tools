@@ -79,13 +79,13 @@ class ChainMarkerTests(unittest.TestCase):
         self.assertIsNone(chain_marker.read(self.tmp))
 
     def test_later_commands_warn_but_a_chains_own_steps_do_not(self):
-        from SluggiesTools.Hammerspace import HammerspaceHelper
+        from SluggiesTools.Hammerspace import DatAllocation
         chain_marker.write(self.tmp, chain_marker.begin('Slot chain', [WRITE_1]))
 
         def warnings(env):
             with (mock.patch.object(sys, 'argv', ['start.py', '--deploy-game-files']),
                   mock.patch.dict(os.environ, env),
-                  mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=False),
+                  mock.patch.object(DatAllocation, 'defragBackupPending', return_value=False),
                   mock.patch.object(start, 'run_deploy_game_files', return_value=True),
                   mock.patch.object(start.slogger, 'warning') as warning):
                 os.environ.pop(chain_marker.CHILD_ENV, None) if not env else None

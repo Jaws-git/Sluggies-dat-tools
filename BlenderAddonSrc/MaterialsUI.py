@@ -15,7 +15,7 @@ from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntPropert
 from .TemplateSources import (
     LIT_SHADER_MODES, SHADER_MODE_DESCRIPTIONS, SPECULAR_SHADER_MODES, UNLIT_SHADER_MODES,
 )
-from .SluggiesToolsPanel import _find_target_armature as _target_armature, _no_target_armature_message
+from .SceneModels import _find_target_armature as _target_armature, _no_target_armature_message
 from .TextureSlotsUI import _lod_pair
 
 

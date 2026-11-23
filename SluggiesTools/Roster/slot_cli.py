@@ -259,17 +259,17 @@ class FileEnv(slot_plan.Env):
         return self.dat.read(ref['offset'], ref['length'])
 
     def anim_size_limit(self, file):
-        import HammerspaceHelper as hh
+        import DolRecords
         try:
-            return max(hh.readDolEntry(d, file)[1] for d in slot_plan.CHARACTER_DIRS)
+            return max(DolRecords.readDolEntry(d, file)[1] for d in slot_plan.CHARACTER_DIRS)
         except (OSError, ValueError):
             return None
 
     def vanilla_length(self, directory, file):
         """The length of file ``file`` of directory ``directory`` in ``1_Input``, or None."""
-        import HammerspaceHelper as hh
+        import DolRecords
         try:
-            length = hh.readDolEntry(directory, file)[1]
+            length = DolRecords.readDolEntry(directory, file)[1]
         except (OSError, ValueError):
             return None
         return length if length >= 0 else None

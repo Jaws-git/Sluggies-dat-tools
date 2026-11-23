@@ -1,7 +1,7 @@
 """Free-bone proposal for the Add submesh feature.
 
 Pure Python, no ``bpy`` import, so it is unit-testable outside Blender. The
-importer (``ImportSluggies.build_armature``) snapshots each bone's donor
+importer (``ImportBones.build_armature``) snapshots each bone's donor
 ownership/skinning state onto the armature at import time
 (``SluggiesGeoIdRaw``, ``SluggiesSkinned``, both read-only). This module turns
 that snapshot plus current scene state (pending retargets, custom-submesh
@@ -90,7 +90,7 @@ def compute_rigid_retargets(
 ) -> Tuple[List[RigidRetarget], List[RetargetIssue]]:
     """Detect valid non-skinned-submesh -> bone retargets.
 
-    Shared by the exporter (``ExportSluggies.encode_unskinned_bone_reassignments``,
+    Shared by the exporter (``ExportBones.encode_unskinned_bone_reassignments``,
     operating on parsed ``.sluggie`` JSON) and the free-bone proposal (operating
     directly on armature/object scene state), so both apply the same rule: a
     donor rigid submesh moved to another bone frees its old owner and occupies

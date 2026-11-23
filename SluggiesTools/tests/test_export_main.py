@@ -195,9 +195,9 @@ class OneDatHandleTests(unittest.TestCase):
             handle.write(bytes(range(64)))
 
     def test_untangle_writes_and_reads_go_through_the_same_handle(self):
-        context = {'enabled': True}
+        context = export.UntangleContext()
         with export.open_export_dat(self.path, context) as dat:
-            handle = context['dat_output_handle']
+            handle = context.dat_output_handle
             self.assertIs(handle, dat.f)
             self.assertEqual(handle.mode, 'rb+')
             self.assertEqual(dat.read_at(0x10, 4), bytes((0x10, 0x11, 0x12, 0x13)))   # fills the read buffer
@@ -210,13 +210,13 @@ class OneDatHandleTests(unittest.TestCase):
             self.assertEqual(check.read()[0x0F:0x13], b'\x0f\xaa\xbb\x12')
 
     def test_the_handle_is_closed_and_flushed_when_the_export_raises(self):
-        context = {'enabled': True}
+        context = export.UntangleContext()
         with self.assertRaisesRegex(RuntimeError, 'model'):
             with export.open_export_dat(self.path, context):
-                context['dat_output_handle'].seek(4)
-                context['dat_output_handle'].write(b'\xee')
+                context.dat_output_handle.seek(4)
+                context.dat_output_handle.write(b'\xee')
                 raise RuntimeError('a model failed badly')
-        self.assertTrue(context['dat_output_handle'].closed)
+        self.assertTrue(context.dat_output_handle.closed)
         with open(self.path, 'rb') as check:
             self.assertEqual(check.read(6), b'\x00\x01\x02\x03\xee\x05')
 
@@ -262,7 +262,7 @@ class HammerspaceHelperTests(_QuietLogger):
                 writeModelBlock=lambda block, offset: written.append((offset, block)),
                 patchDolEntry=patch_entry)
             dirs = {89: [{'en': [4, 8]}, {'en': [0, 0]}, {'en': [16, 4]}], 18: [{'en': [0, 4]}]}
-            with mock.patch.object(export, '_hammerspace_helper', return_value=helper), \
+            with mock.patch.object(export, '_hammerspace_modules', return_value=(helper, helper, helper)), \
                     mock.patch.object(export, 'load_dol_dirs', return_value=dirs):
                 with self.assertRaisesRegex(RuntimeError, 'chunk=89, file_index=0'):
                     export.clone_unused_dirs_to_hammerspace_for_untangle('main.dol', dat_path)

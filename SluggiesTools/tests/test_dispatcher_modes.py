@@ -889,9 +889,9 @@ class PatchExitCodeTests(unittest.TestCase):
                 self.assertTrue(patch_dispatch.run_patching(['tex.png']))
 
     def test_a_failed_plain_unpatch_exits_1(self):
-        from SluggiesTools.Hammerspace import HammerspaceHelper
+        from SluggiesTools.Hammerspace import DatAllocation
         with (mock.patch.object(sys, 'argv', ['start.py', '--unpatch', 'model.sluggie']),
-              mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=False),
+              mock.patch.object(DatAllocation, 'defragBackupPending', return_value=False),
               mock.patch.object(patch_dispatch, 'run_patching', return_value=False)):
             self.assertEqual(start.main(), 1)
 
@@ -900,11 +900,11 @@ class InterruptedDefragTests(unittest.TestCase):
     """A pending defrag backup is restored before any other command reads or writes the output files."""
 
     def _main(self, argv, pending, restore_ok=True):
-        from SluggiesTools.Hammerspace import HammerspaceHelper
+        from SluggiesTools.Hammerspace import DatAllocation
         calls = []
         with (
             mock.patch.object(sys, 'argv', ['start.py', *argv]),
-            mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=pending),
+            mock.patch.object(DatAllocation, 'defragBackupPending', return_value=pending),
             mock.patch.object(start, 'run_defrag_hammerspace',
                               side_effect=lambda dry_run=False: calls.append(('defrag', dry_run)) or restore_ok),
             mock.patch.object(start, 'run_deploy_game_files', side_effect=lambda: calls.append('deploy') or True),
@@ -983,13 +983,13 @@ class ModeTableTests(unittest.TestCase):
         self.assertTrue(start._changes_game_memory(self.parse('--game-options', '--on', 'cpu_vs_cpu')))
 
     def test_roster_dispatch(self):
-        from SluggiesTools.Hammerspace import HammerspaceHelper
+        from SluggiesTools.Hammerspace import DatAllocation
         for argv, expected in ((('--roster', '--config', 'c.json'), 'switch'),
                                (('--roster', '--config', 'c.json', '--fresh'), 'roster'),
                                (('--roster', '--remove'), 'roster')):
             calls = []
             with (mock.patch.object(sys, 'argv', ['start.py', *argv]),
-                  mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=False),
+                  mock.patch.object(DatAllocation, 'defragBackupPending', return_value=False),
                   mock.patch.object(start, '_memory_snapshot', return_value=None),
                   mock.patch.object(start, 'run_roster_switch', side_effect=lambda *a, **k: calls.append('switch') or True),
                   mock.patch.object(start, 'run_roster', side_effect=lambda *a, **k: calls.append('roster') or False)):

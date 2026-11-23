@@ -5,7 +5,10 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BLENDER_ADDON_DIR = ROOT / 'BlenderAddonSrc'
-IMPORTER_PATH = BLENDER_ADDON_DIR / 'ImportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+IMPORTER_PATH = addon_sources.IMPORT
 if str(BLENDER_ADDON_DIR) not in sys.path:
     sys.path.insert(0, str(BLENDER_ADDON_DIR))
 

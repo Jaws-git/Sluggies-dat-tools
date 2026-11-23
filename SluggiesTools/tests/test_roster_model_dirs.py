@@ -15,6 +15,7 @@ import unittest
 
 from SluggiesTools.Dol import dirtable, dolfile, inventory
 from SluggiesTools.Hammerspace import HammerspaceHelper as hh
+from SluggiesTools.Hammerspace import DolRecords
 from SluggiesTools.Roster import dat_hammerspace as dhs
 from SluggiesTools.Roster import datfile, derive, ids, layout_file, model_dirs, reset, runner, slots, state, steps
 from SluggiesTools.tests.test_roster_derive import BASE, Harness, RecordingLayout
@@ -199,12 +200,12 @@ class HammerspaceHelperDirectoryTests(ModelDirHarness):
         path = os.path.join(self.tmp, 'main.dol')
         with open(path, 'wb') as f:
             f.write(dol_bytes)
-        starts = hh._extraDirStarts(path)
+        starts = DolRecords._extraDirStarts(path)
         self.assertEqual(starts, [image.offset_of(p) for p in dirtable.pointers(image)[172:]])
         with open(path, 'rb') as f:
             f.seek(starts[0])
             self.assertEqual(struct.unpack('>I', f.read(4))[0], hh._DAT_FNAME_PTR)
-        self.assertEqual(hh._extraDirStarts(self.input_dat), [])          # no DOL at all
+        self.assertEqual(DolRecords._extraDirStarts(self.input_dat), [])          # no DOL at all
 
 
 if __name__ == '__main__':

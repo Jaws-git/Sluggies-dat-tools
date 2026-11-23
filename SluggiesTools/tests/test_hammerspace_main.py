@@ -26,6 +26,9 @@ import texture_helper
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import synthetic_donor
+import DatAllocation
+import DolRecords
+import RouteOps
 
 
 class CommandLineDispatchTests(unittest.TestCase):
@@ -244,7 +247,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def _patch_common(self):
         return (
-            mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
+            mock.patch.object(DolRecords, 'readDolEntry', return_value=(0x1000, 0x2000)),
             mock.patch.object(BlockAssembly, 'ParseSluggie', return_value=self.parsed),
             mock.patch.object(BlockAssembly, 'CloneGPL', return_value=b'GPL'),
             contextlib.nullcontext(),          # (free slot: the tests index this tuple)
@@ -403,8 +406,8 @@ class BuildModelBlockTests(unittest.TestCase):
                     'warnings': [],
                     'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
                 }),
-                mock.patch.object(main.hh, 'writeModelBlock') as write_model,
-                mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
+                mock.patch.object(DatAllocation, 'writeModelBlock') as write_model,
+                mock.patch.object(DolRecords, 'patchDolEntry') as patch_dol,
             ):
                 result = main.BuildModelBlock(self.data)
 
@@ -470,7 +473,7 @@ class BuildModelBlockTests(unittest.TestCase):
             input_dat.write_bytes(input_bytes)
             with (
                 mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
-                mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x60)),
+                mock.patch.object(DolRecords, 'readDolEntry', return_value=(0x1000, 0x60)),
                 patches[1], patches[2], patches[3], patches[4], patches[5],
                 patches[6], patches[7], patches[8],
                 mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
@@ -513,7 +516,7 @@ class BuildModelBlockTests(unittest.TestCase):
             input_dat = self._build_archive_entry(temp_dir)
             with (
                 mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
-                mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x100)),
+                mock.patch.object(DolRecords, 'readDolEntry', return_value=(0x1000, 0x100)),
                 patches[1], patches[2], patches[3], patches[4], patches[5],
                 patches[6], patches[7], patches[8],
                 mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
@@ -576,8 +579,8 @@ class BuildModelBlockTests(unittest.TestCase):
             with (
                 mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
                 mock.patch.object(main.hh, 'OUTPUT_DAT', str(output_dat)),
-                mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x100)),
-                mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(live_offset, len(live_entry))),
+                mock.patch.object(DolRecords, 'readDolEntry', return_value=(0x1000, 0x100)),
+                mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(live_offset, len(live_entry))),
                 patches[1], patches[2], patches[3], patches[4], patches[5],
                 patches[6], patches[7], patches[8],
                 mock.patch.object(BlockAssembly, 'validate_model_block', return_value={
@@ -1062,7 +1065,7 @@ class BuildModelBlockTests(unittest.TestCase):
             'ModelOffset': 0x1000,
             'ModelLength': 0x2000,
         }}
-        with mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)):
+        with mock.patch.object(DolRecords, 'readDolEntry', return_value=(0x1000, 0x2000)):
             with self.assertRaisesRegex(ValueError, 'missing required rebuild properties'):
                 main.BuildModelBlock(data, main.SectionModes(gpl='build'))
 
@@ -1157,21 +1160,21 @@ class BuildModelBlockTests(unittest.TestCase):
         )
         route_events = []
         with (
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
-            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(DatAllocation, 'writeModelBlock') as write_model,
             mock.patch.object(
-                main.hh, 'patchDolEntry',
+                DolRecords, 'patchDolEntry',
                 side_effect=lambda *_args: route_events.append('patch'),
             ) as patch_dol,
             mock.patch.object(
-                main.hh, 'findSharedEntries',
+                DolRecords, 'findSharedEntries',
                 side_effect=lambda *_args: route_events.append('find') or [(19, 1)],
             ),
-            mock.patch.object(main.hh, 'patchFstFileSize') as patch_fst,
-            mock.patch.object(main.hh, 'zeroOriginalModel') as zero_original,
-            mock.patch.object(main.hh, 'writeDebugDumps') as write_dumps,
+            mock.patch.object(DatAllocation, 'patchFstFileSize') as patch_fst,
+            mock.patch.object(RouteOps, 'zeroOriginalModel') as zero_original,
+            mock.patch.object(DatAllocation, 'writeDebugDumps') as write_dumps,
             mock.patch.object(main.os.path, 'getsize', return_value=123456),
         ):
             new_offset = main.WriteModelBlock(build, 'fixture.sluggie')
@@ -1197,20 +1200,20 @@ class BuildModelBlockTests(unittest.TestCase):
     def test_failed_sharer_route_is_undone_and_the_new_block_freed(self):
         def patch(chunk, index, offset, length):
             if (chunk, index) == (19, 1) and offset == 0x2000:
-                raise main.hh.DolEntryError('record gone')
+                raise DolRecords.DolEntryError('record gone')
 
         with (
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x500, 42)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
-            mock.patch.object(main.hh, 'writeModelBlock'),
-            mock.patch.object(main.hh, 'patchDolEntry', side_effect=patch) as patch_dol,
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[(19, 1)]),
-            mock.patch.object(main.hh, 'zeroRangeIfUnrouted') as zero_new,
-            mock.patch.object(main.hh, 'patchFstFileSize') as patch_fst,
-            mock.patch.object(main.hh, 'zeroOriginalModel') as zero_original,
-            mock.patch.object(main.hh, 'writeDebugDumps') as write_dumps,
-            self.assertRaises(main.hh.DolEntryError),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0x500, 42)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(DatAllocation, 'writeModelBlock'),
+            mock.patch.object(DolRecords, 'patchDolEntry', side_effect=patch) as patch_dol,
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[(19, 1)]),
+            mock.patch.object(RouteOps, 'zeroRangeIfUnrouted') as zero_new,
+            mock.patch.object(DatAllocation, 'patchFstFileSize') as patch_fst,
+            mock.patch.object(RouteOps, 'zeroOriginalModel') as zero_original,
+            mock.patch.object(DatAllocation, 'writeDebugDumps') as write_dumps,
+            self.assertRaises(DolRecords.DolEntryError),
         ):
             main.WriteModelBlock(self._plain_build(), 'fixture.sluggie')
 
@@ -1226,13 +1229,13 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_route_without_a_directory_record_writes_nothing(self):
         with (
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(-1, -1)),
-            mock.patch.object(main.hh, 'readDolEntry', return_value=(-1, -1)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
-            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
-            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(-1, -1)),
+            mock.patch.object(DolRecords, 'readDolEntry', return_value=(-1, -1)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+            mock.patch.object(DatAllocation, 'writeModelBlock') as write_model,
+            mock.patch.object(DolRecords, 'patchDolEntry') as patch_dol,
             self.assertRaises(RuntimeError),
         ):
             main.WriteModelBlock(self._plain_build(), 'fixture.sluggie')
@@ -1241,15 +1244,15 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_debug_dump_failure_does_not_fail_the_write(self):
         with (
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
-            mock.patch.object(main.hh, 'writeModelBlock'),
-            mock.patch.object(main.hh, 'patchDolEntry'),
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
-            mock.patch.object(main.hh, 'patchFstFileSize'),
-            mock.patch.object(main.hh, 'zeroOriginalModel'),
-            mock.patch.object(main.hh, 'writeDebugDumps', side_effect=OSError('disk full')),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(DatAllocation, 'writeModelBlock'),
+            mock.patch.object(DolRecords, 'patchDolEntry'),
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+            mock.patch.object(DatAllocation, 'patchFstFileSize'),
+            mock.patch.object(RouteOps, 'zeroOriginalModel'),
+            mock.patch.object(DatAllocation, 'writeDebugDumps', side_effect=OSError('disk full')),
             mock.patch.object(main.os.path, 'getsize', return_value=123456),
         ):
             self.assertEqual(main.WriteModelBlock(self._plain_build(), 'fixture.sluggie'), 0x2000)
@@ -1268,15 +1271,15 @@ class BuildModelBlockTests(unittest.TestCase):
         )
         destination = 0x40000000
         with (
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk') as find_free,
-            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
-            mock.patch.object(main.hh, 'patchDolEntry'),
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
-            mock.patch.object(main.hh, 'patchFstFileSize'),
-            mock.patch.object(main.hh, 'zeroOriginalModel'),
-            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk') as find_free,
+            mock.patch.object(DatAllocation, 'writeModelBlock') as write_model,
+            mock.patch.object(DolRecords, 'patchDolEntry'),
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+            mock.patch.object(DatAllocation, 'patchFstFileSize'),
+            mock.patch.object(RouteOps, 'zeroOriginalModel'),
+            mock.patch.object(DatAllocation, 'writeDebugDumps'),
             mock.patch.object(main.os.path, 'getsize', return_value=destination + 1024),
         ):
             new_offset = main.WriteModelBlock(build, 'fixture.sluggie', destination)
@@ -1301,16 +1304,16 @@ class BuildModelBlockTests(unittest.TestCase):
         expected_start = 0x1020
         expected_size = expected_start + len(build.block) + main.hh.HS_BUFFER_BYTES
         with (
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', side_effect=(-1, expected_start)),
-            mock.patch.object(main.hh, 'ensureOutputDat', return_value=True) as ensure_dat,
-            mock.patch.object(main.hh, 'writeModelBlock'),
-            mock.patch.object(main.hh, 'patchDolEntry'),
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
-            mock.patch.object(main.hh, 'patchFstFileSize'),
-            mock.patch.object(main.hh, 'zeroOriginalModel'),
-            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', side_effect=(-1, expected_start)),
+            mock.patch.object(DatAllocation, 'ensureOutputDat', return_value=True) as ensure_dat,
+            mock.patch.object(DatAllocation, 'writeModelBlock'),
+            mock.patch.object(DolRecords, 'patchDolEntry'),
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+            mock.patch.object(DatAllocation, 'patchFstFileSize'),
+            mock.patch.object(RouteOps, 'zeroOriginalModel'),
+            mock.patch.object(DatAllocation, 'writeDebugDumps'),
             mock.patch.object(main.os.path, 'getsize', side_effect=(current_size, expected_size)),
         ):
             new_offset = main.WriteModelBlock(build, 'fixture.sluggie')
@@ -1334,29 +1337,29 @@ class BuildModelBlockTests(unittest.TestCase):
         with (
             mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
             mock.patch.object(main.hh, 'OUTPUT_DAT', 'output.dat'),
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000),
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[(19, 1)]),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x4000),
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[(19, 1)]),
             mock.patch.object(
-                main.hh, 'writeModelBlock',
+                DatAllocation, 'writeModelBlock',
                 side_effect=lambda *_args: events.append('write'),
             ),
             mock.patch.object(
-                main.hh, 'patchDolEntry',
+                DolRecords, 'patchDolEntry',
                 side_effect=lambda *_args: events.append('route'),
             ),
-            mock.patch.object(main.hh, 'patchFstFileSize'),
+            mock.patch.object(DatAllocation, 'patchFstFileSize'),
             mock.patch.object(
-                main.hh, 'zeroOriginalModel',
+                RouteOps, 'zeroOriginalModel',
                 side_effect=lambda *_args: events.append('zero-original'),
             ),
-            mock.patch.object(main.hh, 'liveRoutesInto', return_value=[]),
+            mock.patch.object(DolRecords, 'liveRoutesInto', return_value=[]),
             mock.patch.object(
-                main.hh, 'zeroRange',
+                DatAllocation, 'zeroRange',
                 side_effect=lambda *_args: events.append('zero-old'),
             ) as zero_range,
-            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(DatAllocation, 'writeDebugDumps'),
             mock.patch.object(main.os.path, 'getsize', return_value=123456),
         ):
             new_offset = main.WriteModelBlock(build, 'fixture.sluggie')
@@ -1382,13 +1385,13 @@ class BuildModelBlockTests(unittest.TestCase):
         )
         with (
             mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000),
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
-            mock.patch.object(main.hh, 'writeModelBlock', side_effect=IOError('verify failed')),
-            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
-            mock.patch.object(main.hh, 'zeroRange') as zero_range,
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x4000),
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+            mock.patch.object(DatAllocation, 'writeModelBlock', side_effect=IOError('verify failed')),
+            mock.patch.object(DolRecords, 'patchDolEntry') as patch_dol,
+            mock.patch.object(DatAllocation, 'zeroRange') as zero_range,
         ):
             with self.assertRaisesRegex(IOError, 'verify failed'):
                 main.WriteModelBlock(build, 'fixture.sluggie')
@@ -1410,17 +1413,17 @@ class BuildModelBlockTests(unittest.TestCase):
         )
         with (
             mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[(0x5000, 16)]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000) as find_free,
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
-            mock.patch.object(main.hh, 'writeModelBlock'),
-            mock.patch.object(main.hh, 'patchDolEntry'),
-            mock.patch.object(main.hh, 'patchFstFileSize'),
-            mock.patch.object(main.hh, 'zeroOriginalModel'),
-            mock.patch.object(main.hh, 'liveRoutesInto', return_value=[]),
-            mock.patch.object(main.hh, 'zeroRange'),
-            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[(0x5000, 16)]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x4000) as find_free,
+            mock.patch.object(DolRecords, 'findSharedEntries', return_value=[]),
+            mock.patch.object(DatAllocation, 'writeModelBlock'),
+            mock.patch.object(DolRecords, 'patchDolEntry'),
+            mock.patch.object(DatAllocation, 'patchFstFileSize'),
+            mock.patch.object(RouteOps, 'zeroOriginalModel'),
+            mock.patch.object(DolRecords, 'liveRoutesInto', return_value=[]),
+            mock.patch.object(DatAllocation, 'zeroRange'),
+            mock.patch.object(DatAllocation, 'writeDebugDumps'),
             mock.patch.object(main.os.path, 'getsize', return_value=123456),
         ):
             main.WriteModelBlock(build, 'fixture.sluggie')
@@ -1446,12 +1449,12 @@ class BuildModelBlockTests(unittest.TestCase):
         )
         with (
             mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
-            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
-            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
-            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x3000 + 100 - 32),
-            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
-            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
-            mock.patch.object(main.hh, 'zeroRange') as zero_range,
+            mock.patch.object(DolRecords, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(DolRecords, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(DatAllocation, 'findFreeMemoryChunk', return_value=0x3000 + 100 - 32),
+            mock.patch.object(DatAllocation, 'writeModelBlock') as write_model,
+            mock.patch.object(DolRecords, 'patchDolEntry') as patch_dol,
+            mock.patch.object(DatAllocation, 'zeroRange') as zero_range,
         ):
             with self.assertRaisesRegex(RuntimeError, 'overlaps the live block'):
                 main.WriteModelBlock(build, 'fixture.sluggie')
@@ -1462,7 +1465,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_write_rejects_failed_validation(self):
         build = mock.Mock(validation_report={'valid': False})
-        with mock.patch.object(main.hh, 'readOutputDolEntry') as read_output:
+        with mock.patch.object(DolRecords, 'readOutputDolEntry') as read_output:
             with self.assertRaisesRegex(ValueError, 'failed validation report'):
                 main.WriteModelBlock(build, 'fixture.sluggie')
         read_output.assert_not_called()
@@ -1517,7 +1520,7 @@ class HammerspaceResidentSourceTests(unittest.TestCase):
                 mock.patch.object(main.hh, 'INPUT_DAT', str(input_path)),
                 mock.patch.object(main.hh, 'OUTPUT_DAT', str(output_path)),
                 mock.patch.object(main.hh, 'BASE_SIZE', self.BASE_SIZE),
-                mock.patch.object(main.hh, 'readDolEntry',
+                mock.patch.object(DolRecords, 'readDolEntry',
                                   return_value=(self.VANILLA_ENTRY, len(entry))),
             ):
                 return main.BuildModelBlock(data), entry
@@ -1954,7 +1957,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
 
     def _patch_common(self):
         return (
-            mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
+            mock.patch.object(DolRecords, 'readDolEntry', return_value=(0x1000, 0x2000)),
             mock.patch.object(BlockAssembly, 'ParseSluggie', return_value=self.parsed),
             mock.patch.object(BlockAssembly, 'CloneGPL', return_value=b'GPL'),
             contextlib.nullcontext(),          # (free slot: the tests index this tuple)

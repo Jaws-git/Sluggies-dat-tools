@@ -1,8 +1,8 @@
 """Bone collections by a bone's role in the original model.
 
 bpy-free, so it is testable outside Blender. The importer
-(``ImportSluggies.assign_bone_collections``) and Add Bone
-(``SluggiesToolsPanel``) put every bone into the collections below. A bone
+(``ImportBones.assign_bone_collections``) and Add Bone
+(``HostBoneScene``) put every bone into the collections below. A bone
 can be in several (a skinning bone that also owns a rigid mesh). Roles come
 from the imported model's own data, per model: a Low model can skin other
 bones than its High model.

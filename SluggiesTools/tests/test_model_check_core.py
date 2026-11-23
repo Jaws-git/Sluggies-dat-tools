@@ -14,6 +14,9 @@ if str(BLENDER_ADDON_DIR) not in sys.path:
 
 import FieldCodec  # noqa: E402
 import ModelCheckCore as core  # noqa: E402
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
 
 
 def _hierarchy(*parents):
@@ -237,7 +240,7 @@ class TestStaysBpyFree(unittest.TestCase):
 
 class TestWiring(unittest.TestCase):
     def test_exporter_runs_the_checks_before_encoding(self):
-        source = (BLENDER_ADDON_DIR / 'ExportSluggies.py').read_text(encoding='utf-8')
+        source = addon_sources.EXPORT.read_text(encoding='utf-8')
         gate = 'ModelCheck.export_errors('
         self.assertIn(gate, source)
         self.assertLess(source.index(gate), source.index('encode_bone_hierarchy_edited(selected'))
@@ -248,7 +251,7 @@ class TestWiring(unittest.TestCase):
         # through the exporter's own rule functions.
         source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')
         for rule in ('RigidRebuildExport.vertex_bone_problem(', 'HostBones.custom_submesh_host_errors(',
-                     'ex._candidate_rigid_retargets(', 'ex._custom_submesh_template_texture_index(',
+                     'ExportBones._candidate_rigid_retargets(', 'ExportTextures._custom_submesh_template_texture_index(',
                      'StadiumCollisionExport.invisible_model_mesh_error(', 'StadiumCollisionExport.chunk_error(',
                      'RigidRebuildExport.donor_position_format_error('):
             self.assertIn(rule, source)
@@ -285,7 +288,7 @@ class TestWiring(unittest.TestCase):
         self.assertLess(fixes.index('"material_defaults"'), fixes.index('"renumber_bones"'))
 
     def test_panel_button_sits_below_the_bones_box(self):
-        source = (BLENDER_ADDON_DIR / 'SluggiesToolsPanel.py').read_text(encoding='utf-8')
+        source = addon_sources.PANEL.read_text(encoding='utf-8')
         draw = source[source.index('class SLUGGIES_PT_tools'):]
         self.assertLess(draw.index('_draw_free_host_bones(box'), draw.index('"sluggies.check_models"'))
 
@@ -356,7 +359,7 @@ class SluggiePathWiringTests(unittest.TestCase):
             self.assertNotIn("['SluggieFilePath']", source, name)
 
     def test_exporter_records_the_written_file(self):
-        source = (BLENDER_ADDON_DIR / 'ExportSluggies.py').read_text(encoding='utf-8')
+        source = addon_sources.EXPORT.read_text(encoding='utf-8')
         dump = source.index('FieldCodec.dump_sluggie(data, self.filepath)')
         self.assertIn('SluggiePath.remember(arm_obj, self.filepath)', source[dump:dump + 600])
 

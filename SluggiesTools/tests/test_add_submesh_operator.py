@@ -1,14 +1,17 @@
 import ast
 import os
 import pathlib
+import sys
 import tempfile
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
-PANEL_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py'
-EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addon_sources  # noqa: E402
+PANEL_PATH = addon_sources.PANEL
+EXPORT_PATH = addon_sources.EXPORT
 
-import sys  # noqa: E402
 if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)

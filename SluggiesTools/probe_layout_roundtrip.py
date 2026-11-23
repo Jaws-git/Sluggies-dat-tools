@@ -19,6 +19,7 @@ if _HERE not in sys.path:
 
 import slogger  # noqa: E402
 from Hammerspace import HammerspaceHelper as hh  # noqa: E402
+from Hammerspace import DolRecords  # noqa: E402
 from Icons import layout2d  # noqa: E402
 
 SOURCE = 'probe.layout_roundtrip'
@@ -27,7 +28,7 @@ SOURCE = 'probe.layout_roundtrip'
 def main() -> int:
     slogger.configure()
     ranges = set()
-    for _cidx, _fidx, _record, words in hh._iterDirRecords(hh.INPUT_DOL):
+    for _cidx, _fidx, _record, words in DolRecords._iterDirRecords(hh.INPUT_DOL):
         for length_word, offset_word in ((1, 2), (5, 6), (9, 10)):
             if words[length_word] >= 0x24:
                 ranges.add((words[offset_word], words[length_word]))
