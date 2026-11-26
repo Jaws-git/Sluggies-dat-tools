@@ -395,6 +395,12 @@ is the target.
   on a new ID and a stock slot alike; a bat that does not fit the slot is
   left out with a warning. A later **Equipment** edit of the slot goes on
   top.
+- **Animations**: a newer file may carry animation banks of its own. Each
+  one replaces that whole bank of the slot (every animation in it), on a
+  new ID and a stock slot alike, like an animation edit of the slot's
+  **Animations** row. A bank that does not fit the slot's skeleton is left
+  out with a warning; one bigger than any stock bank is written with a
+  warning (untested in the game).
 - **Stats, chemistry and size**: a file made by a newer patcher may carry
   the stat values, chemistry and size factor its author changed. A new ID
   takes them on top of the stats it plays with; they then show up as stat
@@ -405,11 +411,11 @@ is the target.
   character the roster does not have (a custom partner is found by its
   slot name, so import that character first).
 - **Not taken from the file**, so the base's apply: the colour swatch,
-  items, abilities, animations and face edits, and the size, stat values
+  items, abilities and face edits, and the animations, size, stat values
   and chemistry of a file that carries none (the stat editor's `sizescale`
-  field changes the size). Newer files may carry animation banks and face
-  edits; the dialog warns that they are not imported, and lists what the
-  author left out.
+  field changes the size). Newer files may carry face edits and Blender
+  shape keys; the dialog warns that they are not imported, and lists what
+  the author left out.
 - A file without a Low model uses its High model as the Low model too
   (counted twice in the player memory check). A file whose `model.glb` was
   edited after it was exported loads with a warning: reading a `.glb` is not

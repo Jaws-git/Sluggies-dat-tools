@@ -24,9 +24,12 @@ is allowed)::
     portable_assets/bat.slgd      the character's own bat (file 2 of its directory, the whole equipment entry)
                                   as a delta: read (``SlgModel.bat``) and written with the models. A bat that does
                                   not rebuild is left out with its reason (``bat_problem``), the file still loads
-    portable_assets/...           animation banks (``animations/<6-14>.anm``), face edits (``native_facial.glb``),
-                                  Blender shape keys (``shape_keys.glb``, ``expressions.slgexpr``), the bat's
-                                  source project, a manifest: not read
+    portable_assets/animations/<6-14>.anm
+                                  the animation banks the author changed: each the whole bank of that file of the
+                                  directory, as the game stores it (``Roster/anim.py``). Read as they are
+                                  (``SlgModel.anims``, with the blocks); the planner checks and writes them
+    portable_assets/...           face edits (``native_facial.glb``), Blender shape keys (``shape_keys.glb``,
+                                  ``expressions.slgexpr``), the bat's source project, a manifest: not read
     community/stats.csv           the stat values the author changed, as text: ``character,section,field,value``
                                   rows, section ``stats`` / ``table_stats`` (the patcher's field names) or
                                   ``scale`` (field ``scale``: one size factor). Read as they are
@@ -86,8 +89,9 @@ BAT = PORTABLE + 'bat.slgd'
 MEMBER_RE = re.compile(r'^(character\.json|models/\d+\.slgd|model\.glb|side\.png|front\.png|voice/('
                        + '|'.join(VOICE_SLOTS) + r')\.wav|(' + PORTABLE + '|' + COMMUNITY + r')[^\\]+)$')
 # what the extension folders may hold that is not read: (member test, what it is in words), in report order
+ANIM_RE = re.compile('^' + PORTABLE + r'animations/(\d+)\.anm$')
+ANIM_FILES = range(6, 15)                               # Roster/anim.FILES
 _EXTRAS = (
-    (re.compile('^' + PORTABLE + r'animations/(\d+)\.anm$'), 'custom animation banks'),
     (re.compile('^' + PORTABLE + r'native_facial\.glb$'), 'edits of the face poses'),
     (re.compile('^' + PORTABLE + r'(shape_keys\.glb|expressions\.slgexpr)$'), 'Blender shape keys (expressions)'),
 )
@@ -325,6 +329,8 @@ class SlgModel:
     bat: bytes | None = None                            # that bat as rebuilt (the equipment entry of file 2)
     bat_problem: str = ''                               # why the bat was left out, when it does not rebuild
     extras: list = field(default_factory=list)          # what the extension folders hold that is not read, in words
+    anim_files: list = field(default_factory=list)      # the animation bank files (6-14) the file carries
+    anims: dict = field(default_factory=dict)           # {file: the bank's bytes}, read with the blocks
     # community/stats.csv: {'stats': {name: number}, 'table_stats': {name: number}, 'scale': number or None}
     stat_overrides: dict = field(default_factory=dict)
     chemistry_overrides: dict = field(default_factory=dict)   # community/chemistry.csv: {partner name: word}
@@ -442,6 +448,8 @@ def _read(path: str, input_dir: str, blocks: bool) -> SlgModel:
         model = SlgModel(path, title, base, cid, _text(meta, 'author'), _text(meta, 'from'), _text(meta, 'notes'),
                          [str(x).strip() for x in left_out if str(x).strip()], has_glb=has_glb,
                          glb_edited=glb_edited, has_bat=BAT in names, extras=_extras(names))
+        banks = {int(m.group(1)): n for n in names for m in [ANIM_RE.match(n)] if m}
+        model.anim_files = sorted(f for f in banks if f in ANIM_FILES)
         try:                                        # optional extras: a file that cannot be read is left out
             if STATS_CSV in names:
                 model.stat_overrides = _stat_rows(_csv_rows(zf, STATS_CSV, STATS_COLUMNS))
@@ -479,6 +487,7 @@ def _read(path: str, input_dir: str, blocks: bool) -> SlgModel:
                         model.bat = apply_delta(zf.read(BAT), sources, f'{name}: its bat')
                     except SlgError as exc:
                         model.bat_problem = str(exc)
+            model.anims = {f: zf.read(banks[f]) for f in model.anim_files}
     return model
 
 
@@ -549,14 +558,7 @@ def stock_id(name) -> int | None:
 
 def _extras(names) -> list[str]:
     """What the extension folders of a file with the members ``names`` hold that is not read, in words."""
-    out = []
-    for pattern, what in _EXTRAS:
-        hits = [m for m in (pattern.match(n) for n in sorted(names)) if m]
-        if not hits:
-            continue
-        banks = sorted({int(m.group(1)) for m in hits}) if pattern.groups and what.startswith('custom anim') else []
-        out.append(f'{what} ({", ".join(map(str, banks))})' if banks else what)
-    return out
+    return [what for pattern, what in _EXTRAS if any(pattern.match(n) for n in names)]
 
 
 def is_slgmodel(path: str) -> bool:

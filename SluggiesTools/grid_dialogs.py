@@ -245,6 +245,10 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
                 lines.append((f'{label}: {effects[key]}', TEXT))
         for _file, text in sorted((effects.get('equipment') or {}).items()):
             lines.append((f'Equipment: {text} ({_mb(info.get("bat") or 0)})', TEXT))
+        banks = sorted((effects.get('animations') or {}), key=int)
+        if banks:
+            lines.append((f'Animations: bank{"s" if len(banks) != 1 else ""} {", ".join(map(str, banks))} from the '
+                          'file (every animation of each replaced)', TEXT))
         lines += [(f'- {note}', TEXT) for note in section['notes'][1:]]
         if warnings:
             lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]

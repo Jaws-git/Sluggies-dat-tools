@@ -266,13 +266,17 @@ class ReadTests(unittest.TestCase):
                    'community/manifest.json': b'{}'}
         m = slgmodel.read(write_file(self.tmp, members=members), self.inputs)
         self.assertEqual((m.high, m.low, m.has_bat, m.bat, m.bat_problem), (HIGH, LOW, True, bat, ''))
-        self.assertEqual(m.extras, ['custom animation banks (6, 7)', 'edits of the face poses',
-                                    'Blender shape keys (expressions)'])
+        self.assertEqual(m.extras, ['edits of the face poses', 'Blender shape keys (expressions)'])
+        self.assertEqual((m.anim_files, m.anims), ([6, 7], {6: b'a', 7: b'a'}))
         self.assertEqual((m.stat_overrides, m.chemistry_overrides, m.stats_problem), ({}, {}, ''))
         m = slgmodel.read(write_file(self.tmp), self.inputs)             # a plain file: nothing extra
         self.assertEqual((m.has_bat, m.bat, m.extras), (False, None, []))
         m = slgmodel.read(write_file(self.tmp, members=members), os.path.join(self.tmp, 'nowhere'), blocks=False)
         self.assertEqual((m.has_bat, m.bat), (True, None))               # not rebuilt without the game
+        self.assertEqual((m.anim_files, m.anims), ([6, 7], {}))          # named, read with the blocks only
+        m = slgmodel.read(write_file(self.tmp, members={'portable_assets/animations/5.anm': b'a',
+                                                        'portable_assets/animations/15.anm': b'a'}), self.inputs)
+        self.assertEqual((m.anim_files, m.anims), ([], {}))              # not one of the nine bank files
 
     def test_a_bat_that_does_not_rebuild_is_left_out(self):
         members = {'portable_assets/bat.slgd': make_delta(b'BAT', [('literal', b'BAT')], sha=bytes(20))}
@@ -395,6 +399,13 @@ class ImportEnv(slot_plan.Env):
         self.slot_errors, self.archive, self.stock_art = list(slot_errors), archive, stock_art
         self.slot_calls, self.encoded, self.high_as_low = [], [], []
         self.bat_errors, self.bat_calls = list(bat_errors), []
+        self.vanilla, self.size_limit = {}, None
+
+    def vanilla_block(self, directory, file):
+        return self.vanilla.get((directory, file))
+
+    def anim_size_limit(self, file):
+        return self.size_limit
 
     def equipment_block_problems(self, directory, file, block):
         self.bat_calls.append((directory, file, block))
@@ -578,10 +589,81 @@ class BatPlanTests(unittest.TestCase):
         self.assertIsNone(p.to_json()['slgmodel']['bat'])
 
     def test_unread_extras_are_named_in_a_warning(self):
-        p = plan(0x66, model(extras=['custom animation banks (6)', 'edits of the face poses']))
-        self.assertTrue(any('custom animation banks (6), edits of the face poses: not imported' in w
+        p = plan(0x66, model(extras=['edits of the face poses', 'Blender shape keys (expressions)']))
+        self.assertTrue(any('edits of the face poses, Blender shape keys (expressions): not imported' in w
                             for w in p.warnings))
         self.assertFalse(any('not imported' in w for w in plan(0x66).warnings))
+
+
+class AnimPlanTests(unittest.TestCase):
+    """The file's animation banks (synthetic banks and skeletons of ``test_animations``)."""
+
+    def setUp(self):
+        from SluggiesTools.tests import test_animations as ta
+        self.ta = ta
+        self.own = ta.model([1, 2, 3])                   # the file's High model: bones for tracks 1-3
+
+    def env(self, directory=DAISY + 0x12, skeleton=(1, 2)):
+        env = ImportEnv()
+        env.vanilla = {(directory, f): self.ta.bank(f, {1, 2}) for f in self.ta.anim.FILES}
+        env.vanilla[(directory, 0)] = self.ta.model(list(skeleton))
+        return env
+
+    def plan(self, anims, cid=0x66, env=None, st=None):
+        return plan(cid, model(blocks={0: self.own, 1: LOW}, anim_files=sorted(anims), anims=anims),
+                    env or self.env(), st)
+
+    def test_banks_are_written_after_the_models(self):
+        b7, b9 = self.ta.bank(7, {1, 2, 3}), self.ta.bank(9, {1})     # track 3: only the file's own model has it
+        for cid, directory in ((0x66, DAISY + 0x12), (0x0D, 31)):
+            with self.subTest(cid=cid):
+                p = self.plan({7: b7, 9: b9}, cid, self.env(directory))
+                tag = f'slg_{cid:02X}'
+                writes = [c for c in p.commands if c[0] == '--write-slot-animation']
+                self.assertEqual(writes, [
+                    ('--write-slot-animation', f'0x{cid:02X}', '7', os.path.join(COPY_DIR, f'{tag}_anim7.anm')),
+                    ('--write-slot-animation', f'0x{cid:02X}', '9', os.path.join(COPY_DIR, f'{tag}_anim9.anm'))])
+                heads = [c[0] for c in p.commands]
+                self.assertLess(heads.index('--write-slot-blocks'), heads.index('--write-slot-animation'))
+                self.assertEqual((p.copy_files[f'{tag}_anim7.anm'], p.copy_files[f'{tag}_anim9.anm']), (b7, b9))
+                self.assertEqual(sorted(p.effects['animations']), [7, 9])
+                self.assertEqual(p.to_json()['slgmodel']['animations'], [7, 9])
+                self.assertTrue(any('no track in it' in w for w in p.warnings))     # bank 9 leaves track 2 out
+
+    def test_a_bank_that_does_not_fit_is_left_out_with_a_warning(self):
+        cases = [({7: self.ta.bank(7, {1, 9})}, 'does not fit'),              # a track no skeleton has
+                 ({7: self.ta.bank(9, {1})}, 'holds 12 animations'),          # another file's bank
+                 ({7: b'not a bank at all, but long enough'}, 'not an animation bank')]
+        for anims, text in cases:
+            with self.subTest(text=text):
+                p = self.plan(anims)
+                self.assertNotIn('--write-slot-animation', [c[0] for c in p.commands])
+                self.assertNotIn('animations', p.effects)
+                self.assertTrue(any('keeps its animation bank 7' in w and text in w for w in p.warnings), p.warnings)
+        env = self.env()
+        del env.vanilla[(DAISY + 0x12, 7)]
+        p = self.plan({7: self.ta.bank(7, {1})}, env=env)
+        self.assertTrue(any('cannot be checked' in w for w in p.warnings))
+
+    def test_the_stock_bank_is_written_only_over_a_custom_one(self):
+        stock = self.ta.bank(7, {1, 2})
+        self.assertNotIn('--write-slot-animation', [c[0] for c in self.plan({7: stock}).commands])
+        st = make_state()
+        next(c for c in st['characters'] if c['id'] == 0x0D)['animations'] = [{'file': 7, 'vanilla': False}]
+        p = self.plan({7: stock}, 0x0D, self.env(31), st)
+        self.assertIn('--write-slot-animation', [c[0] for c in p.commands])
+
+    def test_a_bank_bigger_than_any_stock_one_warns(self):
+        env = self.env()
+        env.size_limit = 10
+        p = self.plan({7: self.ta.bank(7, {1, 2, 3})}, env=env)
+        self.assertIn('--write-slot-animation', [c[0] for c in p.commands])
+        self.assertTrue(any('bigger than any stock one' in w for w in p.warnings))
+
+    def test_a_file_without_banks_plans_none(self):
+        p = plan(0x66)
+        self.assertNotIn('animations', p.effects)
+        self.assertEqual(p.to_json()['slgmodel']['animations'], [])
 
 
 class StatsPlanTests(unittest.TestCase):

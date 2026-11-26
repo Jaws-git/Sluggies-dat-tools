@@ -35,13 +35,40 @@ without changing `format` (seen in its source, 2026-11-26). A file has
 |---|---|---|
 | `portable_assets/bat.slgd` | The character's own bat: file 2 of its directory (the whole equipment entry, model at the pointer at +4) as an `SLGD1` delta. | Yes: written into the slot's file 2 with the models. A bat that does not rebuild or does not fit the slot is left out with a warning. |
 | `portable_assets/bat_project.json`, `bat_project/*` | The bat's source model and settings. | No |
-| `portable_assets/animations/<6-14>.anm` | Edited animation banks. | No (warning) |
+| `portable_assets/animations/<6-14>.anm` | The animation banks the author changed: each the whole bank of that directory file, stored raw. | Yes (below). |
 | `portable_assets/native_facial.glb` | Edits of the base's facial poses, applied by the patcher at patch time (not contained in the model blocks). | No (warning) |
 | `portable_assets/shape_keys.glb`, `expressions.slgexpr` | Blender shape keys. | No (warning) |
 | `portable_assets/manifest.json` | Sizes and SHA-256 of the members above. | No |
 | `community/stats.csv` | The stat values the author changed (below). | Yes, on a new ID. |
 | `community/chemistry.csv` | Chemistry towards named partners (below). | Yes, on a new ID. |
 | `community/manifest.json` | Schema and which of the two files exist. | No |
+
+### Animation banks
+
+A bank in the file is the same thing the animation edit writes
+(`Roster/anim.py`): one whole ANM bank, which replaces every animation of that
+file. The patcher checks a bank the same way this tool does (magic, the
+file's sequence count, track IDs the stock bank or the model's skeleton has).
+
+- Each bank is written into its file of the slot after the models
+  (`--write-slot-animation`), on a new ID and a stock slot alike; only that
+  slot's route changes.
+- A bank is left out with a warning when it is not a readable bank, when its
+  sequence count is another file's, or when it animates track IDs that
+  neither the slot's stock bank nor a skeleton has (the vanilla High model of
+  the slot's directory, plus the file's own High model).
+- A bank equal to the slot's stock one is written only where the slot holds
+  a custom bank (the write returns that file to its baseline).
+- A bank bigger than any stock bank of its file is written with a warning.
+  The patcher's Blender round trip appends changed keys, so such banks grow
+  (it caps the growth at 512 KB per edit); none was available to test.
+
+Checked on 2026-11-26 with the nine Rosalina banks the patcher ships as
+deltas (`models/work/rosalina/anim/`), rebuilt from the clean game: all nine
+read, match their file by sequence count and pass the fit check on Daisy's
+directory with no errors or warnings. They are the same size as Daisy's stock
+banks. The patcher's per-file SHA-256 (`portable_assets/manifest.json`) is not
+checked here.
 
 ### `community/stats.csv` and `chemistry.csv`
 
@@ -121,5 +148,5 @@ check.
 
 Colour swatch, items and abilities: the base character's apply. The same goes
 for the size, bat, animations, face edits, stat values and chemistry of a file
-without the extension folders, and for the animations, face edits and shape
-keys of a file with them.
+without the extension folders, and for the face edits and shape keys of a
+file with them.

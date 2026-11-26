@@ -162,11 +162,13 @@ left out with a warning). A **stock slot** takes the models only (its own slot, 
 name, stats, voice and portraits stay. A file with a bat of its own (``slgmodel.BAT``, a later patcher's
 extension) also sets the slot's bat, on a new ID and a stock slot alike: the finished entry goes into file 2 after
 ``Env.equipment_block_problems`` (``--write-slot-equipment``; a bat that does not fit or rebuild is left out with a
-warning). A file with stats and chemistry overrides (``community/``, the same extension) gives them to a **new
+warning). Its animation banks (``SlgModel.anims``) go into their files 6-14 the same way, after the models
+(``--write-slot-animation``; ``_slg_banks``: a bank that is not its file's or does not fit the skeleton is left out
+with a warning). A file with stats and chemistry overrides (``community/``, the same extension) gives them to a **new
 ID** as stat values: one stat copy snapshot (``Roster/slg_stats.py``, ``--apply-stat-edits copy:<file>``) after the
 rebuild, on top of the stats the slot plays with; a stock slot keeps its stats. Without them the size is the
-base's ``sizescale`` row. The colour swatch, items and animations are not taken from the file: the base's apply,
-and what the file's extension folders hold of them is named in a warning (``SlgModel.extras``). A later edit of the batch (rename, portrait, voice, equipment)
+base's ``sizescale`` row. The colour swatch and items are not taken from the file: the base's apply; what else
+the file's extension folders hold (face edits, shape keys) is named in a warning (``SlgModel.extras``). A later edit of the batch (rename, portrait, voice, equipment)
 goes on top; an earlier one of the slot is dropped, as for a paste.
 """
 
@@ -2118,6 +2120,17 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
     elif model.bat_problem:
         plan.warnings.append(f'{target_name} keeps its bat: {model.bat_problem}')
     plan.slgmodel['bat'] = None if bat_block is None else len(bat_block)
+    # the file's own animation banks (the same extension): whole banks, written as they are after the models
+    fresh_dir = cid >= ids.FIRST_NEW and (_entry(new, 'ids', cid) or {}).get('model') != (
+        _entry(config, 'ids', cid) or {}).get('model')
+    bank_writes = _slg_banks(plan, model, env, char, check_dir, fresh_dir, target_name)
+    if bank_writes:
+        plan.effects['animations'] = {f: f'{anim.label(f).lower()} from {file_name}' for f in sorted(bank_writes)}
+        listed = ', '.join(map(str, sorted(bank_writes)))
+        plan.notes.append(f'{target_name} takes the file\'s own animation bank{"s" if len(bank_writes) != 1 else ""} '
+                          f'{listed} (every animation of {"those banks" if len(bank_writes) != 1 else "that bank"}; '
+                          'only this slot changes)')
+    plan.slgmodel['animations'] = sorted(bank_writes)
     if model.extras:
         plan.warnings.append(f'{file_name} also carries {", ".join(model.extras)}: not imported (the slot gets '
                              + ('the base\'s' if cid >= ids.FIRST_NEW else 'its own') + ' instead)')
@@ -2159,12 +2172,61 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
     if bat_block is not None:
         plan.commands.append(('--write-slot-equipment', _hex(cid), str(bat_file),
                               stash(f'{tag}_{BLOCK_SUFFIX[gear.BAT]}.bin', bat_block)))
+    for f in sorted(bank_writes):                     # after the models: the write checks the slot's High model
+        plan.commands.append(('--write-slot-animation', _hex(cid), str(f), stash(f'{tag}_anim{f}.anm',
+                                                                                 bank_writes[f])))
     if plan.voice_pack is not None:
         plan.commands.append((WRITE_VOICE_PACK, stash(f'{tag}_pack.json', plan.voice_pack)))
     plan.commands.append(('--roster-state',))
     plan.notes.insert(0, f'{file_name} ({model.name}, built on {base_name}) -> {target_name}'
                          + (' (High model as the Low model too)' if model.high_only else ''))
     return plan
+
+
+def _slg_banks(plan: Plan, model: slgmodel.SlgModel, env: Env, char: dict, directory: int, fresh: bool,
+               target_name: str) -> dict:
+    """``{file: bank bytes}``: the animation banks of the character file ``model`` to write into a slot whose
+    vanilla files are ``directory``'s. Each bank must be the bank of its file (sequence count) and fit the slot
+    (``anim.problems``: the stock bank there, the vanilla skeleton plus the file's own High model); one that does
+    not is left out with a warning. A bank equal to the stock one is written only where the slot holds a custom one
+    (the write returns that route to its baseline); ``fresh``: the directory is copied afresh, so it never does."""
+    out = {}
+    if not model.anims:
+        return out
+    file_name = model.file_name
+    skeleton = anim.skeleton_tracks(env.vanilla_block(directory, HIGH_FILE)) or frozenset()
+    skeleton |= anim.skeleton_tracks(model.high) or frozenset()
+    custom = set() if fresh else set(custom_anims(char))
+    for file, data in sorted(model.anims.items()):
+        what = anim.label(file).lower()
+
+        def skip(why):
+            plan.warnings.append(f'{target_name} keeps its {what}: the one in {file_name} {why}')
+        stock_data = env.vanilla_block(directory, file)
+        try:
+            bank = anim.read_bank(data)
+            if anim.bank_file(bank) != file:
+                raise anim.AnimError(f'holds {bank.count} animations, which is not {what}')
+            if stock_data is None:
+                raise anim.AnimError(f'cannot be checked (the vanilla {what} cannot be read from 1_Input)')
+            stock = anim.read_bank(stock_data)
+        except anim.AnimError as exc:
+            skip(f'is left out ({exc})')
+            continue
+        errors, warnings = anim.problems(bank, file, stock, skeleton)
+        if errors:
+            skip(f'does not fit ({errors[0]})')
+            continue
+        if data == stock_data and file not in custom:
+            continue                                  # the stock bank, which the slot loads anyway
+        plan.warnings += [f'{target_name}, {what}: {w}' for w in warnings]
+        limit = env.anim_size_limit(file)
+        if limit is not None and len(data) > limit:
+            plan.warnings.append(f'{file_name}: its {what} ({len(data):,} bytes) is bigger than any stock one '
+                                 f'({limit:,} bytes): animation banks load into the game heap every scene shares; '
+                                 'bigger ones are untested')
+        out[file] = data
+    return out
 
 
 def _partner_id(st: dict, name: str) -> int | None:
