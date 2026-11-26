@@ -105,6 +105,7 @@ class FileEnv(slot_plan.Env):
         self.image, self.dat, self.input_dir = image, dat, input_dir
         self._bank, self._stock_bank, self._pages = None, None, {}
         self._stat_edits = None
+        self._sizes = None
         if _HS_DIR not in sys.path:
             sys.path.insert(0, _HS_DIR)
 
@@ -323,6 +324,14 @@ class FileEnv(slot_plan.Env):
             column = self.image.read(carry.chem_address(other, cid, place.layouts, place.matrix), 1)[0]
             chemistry[_hex(other)] = [row, column]
         return {'fields': values, 'chemistry': chemistry}
+
+    def character_sizes(self, st, cid):
+        known = super().character_sizes(st, cid)
+        if known is not None or not self.input_dir:
+            return known
+        if self._sizes is None:                     # a state read without sizes (the CLI's): from the game itself
+            self._sizes = (state_cli.read_sizes(self.image, self.input_dir) or {}).get('characters') or {}
+        return self._sizes.get(_hex(cid))
 
     def read_slgmodel(self, path):
         try:

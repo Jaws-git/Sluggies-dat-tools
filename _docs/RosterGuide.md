@@ -390,9 +390,25 @@ is the target.
 - **A stock slot** takes the models only (its name, stats, voice and
   portraits stay), and only the base's own slot or one with the same
   skeleton (as for a paste).
-- **Not in the file**, so the base's apply: the size (the stat editor's
-  `sizescale` field changes it), the colour swatch, stat values, chemistry,
-  the bat, items, abilities and animations. The dialog lists what the
+- **The bat**: a file made by a newer patcher (Slugout) may carry the
+  character's own bat. It is set as the slot's bat together with the models,
+  on a new ID and a stock slot alike; a bat that does not fit the slot is
+  left out with a warning. A later **Equipment** edit of the slot goes on
+  top.
+- **Stats, chemistry and size**: a file made by a newer patcher may carry
+  the stat values, chemistry and size factor its author changed. A new ID
+  takes them on top of the stats it plays with; they then show up as stat
+  edits of that slot (the Stat Editor tab can change or clear them). A
+  stock slot keeps its stats. Left out with a warning: two values this tool
+  has no field for (pitch steering, strike zone height), star moves and
+  abilities that exist only in the patcher's own code, and chemistry with a
+  character the roster does not have (a custom partner is found by its
+  slot name, so import that character first).
+- **Not taken from the file**, so the base's apply: the colour swatch,
+  items, abilities, animations and face edits, and the size, stat values
+  and chemistry of a file that carries none (the stat editor's `sizescale`
+  field changes the size). Newer files may carry animation banks and face
+  edits; the dialog warns that they are not imported, and lists what the
   author left out.
 - A file without a Low model uses its High model as the Low model too
   (counted twice in the player memory check). A file whose `model.glb` was

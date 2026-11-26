@@ -18,6 +18,26 @@ for Blender. It is the equivalent of a High + Low ``.sluggie`` pair whose blocks
                      12 moments as ``Sound/sound_packs.MOMENTS``, in that order); a slot marked "base" in
                      ``voice_slots`` plays the base character's clip
 
+Optional extension folders (written by later patcher versions without a new ``format``; any member below them
+is allowed)::
+
+    portable_assets/bat.slgd      the character's own bat (file 2 of its directory, the whole equipment entry)
+                                  as a delta: read (``SlgModel.bat``) and written with the models. A bat that does
+                                  not rebuild is left out with its reason (``bat_problem``), the file still loads
+    portable_assets/...           animation banks (``animations/<6-14>.anm``), face edits (``native_facial.glb``),
+                                  Blender shape keys (``shape_keys.glb``, ``expressions.slgexpr``), the bat's
+                                  source project, a manifest: not read
+    community/stats.csv           the stat values the author changed, as text: ``character,section,field,value``
+                                  rows, section ``stats`` / ``table_stats`` (the patcher's field names) or
+                                  ``scale`` (field ``scale``: one size factor). Read as they are
+                                  (``SlgModel.stat_overrides``); ``Roster/slg_stats.py`` maps them onto stat fields
+    community/chemistry.csv       ``character,partner,chemistry`` rows: the chemistry towards a partner by name,
+                                  ``bad`` / ``neutral`` / ``good`` (``SlgModel.chemistry_overrides``)
+    community/manifest.json       not read
+
+A stats or chemistry file that cannot be read is left out with its reason (``stats_problem``); the file still
+loads. ``SlgModel.extras`` names what was not read, in words, for the planner's warning.
+
 **Delta (``SLGD1``):** zlib of ``b"SLGD1" | u32 length | sha1 (20 bytes) | ops``. Op 0 (COPY): varint source
 index, varint offset, varint length; the sources, in order, are the clean game's ``main.dol``, ``dt_na.dat`` and
 ``sound_NA/MY2.brsar`` (``DELTA_SOURCES``, under ``1_Input`` here). Op 1 (LITERAL): varint length, then the
@@ -37,6 +57,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import mmap
 import os
 import re
@@ -60,8 +81,21 @@ HIGH_FILE, LOW_FILE = 0, 1
 VIEWS = ('side', 'front')
 PORTRAIT_SIZE = (48, 51)
 VOICE_SLOTS = ('v1', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v10', 'v11', 'v12', 'v13', 'v14')
+PORTABLE, COMMUNITY = 'portable_assets/', 'community/'   # the optional extension folders (module docstring)
+BAT = PORTABLE + 'bat.slgd'
 MEMBER_RE = re.compile(r'^(character\.json|models/\d+\.slgd|model\.glb|side\.png|front\.png|voice/('
-                       + '|'.join(VOICE_SLOTS) + r')\.wav)$')
+                       + '|'.join(VOICE_SLOTS) + r')\.wav|(' + PORTABLE + '|' + COMMUNITY + r')[^\\]+)$')
+# what the extension folders may hold that is not read: (member test, what it is in words), in report order
+_EXTRAS = (
+    (re.compile('^' + PORTABLE + r'animations/(\d+)\.anm$'), 'custom animation banks'),
+    (re.compile('^' + PORTABLE + r'native_facial\.glb$'), 'edits of the face poses'),
+    (re.compile('^' + PORTABLE + r'(shape_keys\.glb|expressions\.slgexpr)$'), 'Blender shape keys (expressions)'),
+)
+STATS_CSV, CHEMISTRY_CSV = COMMUNITY + 'stats.csv', COMMUNITY + 'chemistry.csv'
+STATS_COLUMNS, CHEMISTRY_COLUMNS = ('character', 'section', 'field', 'value'), ('character', 'partner', 'chemistry')
+STAT_SECTIONS = ('stats', 'table_stats')
+CHEMISTRY_WORDS = ('bad', 'neutral', 'good')
+MAX_CSV, MAX_CSV_ROWS = 256 << 10, 512                 # the patcher's own limits for these two files
 
 DELTA_MAGIC = b'SLGD1'
 DELTA_HEAD = len(DELTA_MAGIC) + 4 + 20
@@ -287,6 +321,14 @@ class SlgModel:
     voice_slots: dict = field(default_factory=dict)     # {slot: 'own' | 'base'}
     has_glb: bool = False
     glb_edited: bool = False                            # model.glb changed since export: the blocks lack those edits
+    has_bat: bool = False                               # the file carries a bat of its own (``BAT``)
+    bat: bytes | None = None                            # that bat as rebuilt (the equipment entry of file 2)
+    bat_problem: str = ''                               # why the bat was left out, when it does not rebuild
+    extras: list = field(default_factory=list)          # what the extension folders hold that is not read, in words
+    # community/stats.csv: {'stats': {name: number}, 'table_stats': {name: number}, 'scale': number or None}
+    stat_overrides: dict = field(default_factory=dict)
+    chemistry_overrides: dict = field(default_factory=dict)   # community/chemistry.csv: {partner name: word}
+    stats_problem: str = ''                             # why the stats or chemistry file was left out
 
     @property
     def file_name(self) -> str:
@@ -399,7 +441,14 @@ def _read(path: str, input_dir: str, blocks: bool) -> SlgModel:
         left_out = [left_out] if isinstance(left_out, str) else left_out
         model = SlgModel(path, title, base, cid, _text(meta, 'author'), _text(meta, 'from'), _text(meta, 'notes'),
                          [str(x).strip() for x in left_out if str(x).strip()], has_glb=has_glb,
-                         glb_edited=glb_edited)
+                         glb_edited=glb_edited, has_bat=BAT in names, extras=_extras(names))
+        try:                                        # optional extras: a file that cannot be read is left out
+            if STATS_CSV in names:
+                model.stat_overrides = _stat_rows(_csv_rows(zf, STATS_CSV, STATS_COLUMNS))
+            if CHEMISTRY_CSV in names:
+                model.chemistry_overrides = _chemistry_rows(_csv_rows(zf, CHEMISTRY_CSV, CHEMISTRY_COLUMNS))
+        except SlgError as exc:
+            model.stat_overrides, model.chemistry_overrides, model.stats_problem = {}, {}, str(exc)
         slots = meta.get('voice_slots') if isinstance(meta.get('voice_slots'), dict) else {}
         model.voice_slots = {s: ('own' if str(slots.get(s, 'base')).lower() == 'own' else 'base') for s in VOICE_SLOTS}
         for view in VIEWS:
@@ -425,7 +474,89 @@ def _read(path: str, input_dir: str, blocks: bool) -> SlgModel:
                 for i in indexes:
                     model.blocks[i] = apply_delta(zf.read(f'models/{i}.slgd'), sources,
                                                   f'{name}: its {"High" if i == HIGH_FILE else "Low"} model')
+                if model.has_bat:                   # an optional extra: a bat that does not rebuild is left out
+                    try:
+                        model.bat = apply_delta(zf.read(BAT), sources, f'{name}: its bat')
+                    except SlgError as exc:
+                        model.bat_problem = str(exc)
     return model
+
+
+def _csv_rows(zf: zipfile.ZipFile, member: str, columns: tuple) -> list[dict]:
+    """The data rows of the CSV ``member`` (its header must be ``columns``, in any order)."""
+    import csv
+    if zf.getinfo(member).file_size > MAX_CSV:
+        raise SlgError(f'{member} is too big ({MAX_CSV >> 10} KB at most)')
+    try:
+        text = zf.read(member).decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise SlgError(f'{member} is not UTF-8 text ({exc})') from None
+    reader = csv.DictReader(io.StringIO(text, newline=''))
+    try:
+        if reader.fieldnames is None or sorted(reader.fieldnames) != sorted(columns):
+            raise SlgError(f'{member}: its columns are not {", ".join(columns)}')
+        rows = list(reader)
+    except csv.Error as exc:
+        raise SlgError(f'{member} is not a CSV file ({exc})') from None
+    if len(rows) > MAX_CSV_ROWS:
+        raise SlgError(f'{member} has more than {MAX_CSV_ROWS} rows')
+    for line, row in enumerate(rows, 2):
+        if None in row or any(v is None for v in row.values()):
+            raise SlgError(f'{member}, line {line}: wrong number of columns')
+    return rows
+
+
+def _stat_rows(rows: list[dict]) -> dict:
+    """``community/stats.csv`` as ``{'stats': {}, 'table_stats': {}, 'scale': number or None}``: the names and
+    numbers as the file has them (whole numbers as ints)."""
+    out = {'stats': {}, 'table_stats': {}, 'scale': None}
+    for line, row in enumerate(rows, 2):
+        section, name, text = row['section'].strip(), row['field'].strip(), row['value'].strip()
+        try:
+            value = int(text)
+        except ValueError:
+            try:
+                value = float(text)
+            except ValueError:
+                value = float('nan')
+        if isinstance(value, float) and not math.isfinite(value):
+            raise SlgError(f'{STATS_CSV}, line {line}: {text!r} is not a number')
+        if section == 'scale' and name == 'scale':
+            out['scale'] = value
+        elif section in STAT_SECTIONS and name:
+            out[section][name] = value
+        else:
+            raise SlgError(f'{STATS_CSV}, line {line}: unknown section {section!r} / field {name!r}')
+    return out
+
+
+def _chemistry_rows(rows: list[dict]) -> dict:
+    """``community/chemistry.csv`` as ``{partner name: 'bad' | 'neutral' | 'good'}``."""
+    out = {}
+    for line, row in enumerate(rows, 2):
+        partner, word = ' '.join(row['partner'].split()), row['chemistry'].strip().lower()
+        if not partner or word not in CHEMISTRY_WORDS:
+            raise SlgError(f'{CHEMISTRY_CSV}, line {line}: the chemistry must be {", ".join(CHEMISTRY_WORDS)} '
+                           'towards a named partner')
+        out[partner] = word
+    return out
+
+
+def stock_id(name) -> int | None:
+    """The stock character ID (0x00-0x64, Miis too) the patcher's name ``name`` means, or None."""
+    return _BASE_IDS.get(_key(name or ''))
+
+
+def _extras(names) -> list[str]:
+    """What the extension folders of a file with the members ``names`` hold that is not read, in words."""
+    out = []
+    for pattern, what in _EXTRAS:
+        hits = [m for m in (pattern.match(n) for n in sorted(names)) if m]
+        if not hits:
+            continue
+        banks = sorted({int(m.group(1)) for m in hits}) if pattern.groups and what.startswith('custom anim') else []
+        out.append(f'{what} ({", ".join(map(str, banks))})' if banks else what)
+    return out
 
 
 def is_slgmodel(path: str) -> bool:

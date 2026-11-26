@@ -240,9 +240,11 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
             lines.append((f'Notes: {info["notes"]}', TEXT))
         effects = section.get('effects') or {}
         for key, label in (('model', 'Models'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
-                           (CHAR_VOICE, 'Own voice'), ('portrait_note', 'Portraits')):
+                           (CHAR_VOICE, 'Own voice'), ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat values')):
             if effects.get(key):
                 lines.append((f'{label}: {effects[key]}', TEXT))
+        for _file, text in sorted((effects.get('equipment') or {}).items()):
+            lines.append((f'Equipment: {text} ({_mb(info.get("bat") or 0)})', TEXT))
         lines += [(f'- {note}', TEXT) for note in section['notes'][1:]]
         if warnings:
             lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]

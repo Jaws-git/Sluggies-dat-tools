@@ -159,8 +159,14 @@ base, the base's stats on a new square (and the square's voice, as a patch), the
 not fit the plate), its portraits (the base's stock art for a missing view) and its voice clips as a voice pack
 ``_gui/Sound_Packs/<name>`` on the base's voice (``character_voices``; without ``1_Input/sound_NA`` the clips are
 left out with a warning). A **stock slot** takes the models only (its own slot, or one with the same skeleton):
-name, stats, voice and portraits stay. The size (the base's ``sizescale`` row), colour swatch, stats values, bat,
-items and animations are not in the file: the base's apply. A later edit of the batch (rename, portrait, voice)
+name, stats, voice and portraits stay. A file with a bat of its own (``slgmodel.BAT``, a later patcher's
+extension) also sets the slot's bat, on a new ID and a stock slot alike: the finished entry goes into file 2 after
+``Env.equipment_block_problems`` (``--write-slot-equipment``; a bat that does not fit or rebuild is left out with a
+warning). A file with stats and chemistry overrides (``community/``, the same extension) gives them to a **new
+ID** as stat values: one stat copy snapshot (``Roster/slg_stats.py``, ``--apply-stat-edits copy:<file>``) after the
+rebuild, on top of the stats the slot plays with; a stock slot keeps its stats. Without them the size is the
+base's ``sizescale`` row. The colour swatch, items and animations are not taken from the file: the base's apply,
+and what the file's extension folders hold of them is named in a warning (``SlgModel.extras``). A later edit of the batch (rename, portrait, voice, equipment)
 goes on top; an earlier one of the slot is dropped, as for a paste.
 """
 
@@ -177,7 +183,7 @@ try:
     from ..Hammerspace import UntanglePolicy
     from ..Sound import sound_packs
     from . import (anim, char_voices, clip_files, gear, icon_art, icon_import, icons, ids, model_icons, names,
-                   open_slot, slgmodel, state_icons, voices, wheels)
+                   open_slot, slg_stats, slgmodel, state_icons, voices, wheels)
 except ImportError:
     from Hammerspace import UntanglePolicy
     from Sound import sound_packs
@@ -190,6 +196,7 @@ except ImportError:
     import model_icons
     import names
     import open_slot
+    import slg_stats
     import slgmodel
     import state_icons
     import voices
@@ -544,6 +551,11 @@ class Env:
     def read_slgmodel(self, path: str) -> slgmodel.SlgModel:
         """The character file at ``path`` (``slgmodel.read`` against ``1_Input``); a refusal raises ``PlanError``."""
         raise PlanError(f'cannot read the character file {os.path.basename(path)} here')
+
+    def character_sizes(self, st: dict, cid: int) -> dict | None:
+        """``cid``'s size scales (``state_cli.read_sizes``: ``gameplay``, ``select`` and the roster's own
+        ``base_gameplay``, ``base_select``), or None when unknown. Default: what the read state ``st`` holds."""
+        return ((st.get('sizes') or {}).get('characters') or {}).get(_hex(cid))
 
     def encode_wav(self, data: bytes, label: str) -> tuple[bytes, list[str]]:
         """A WAV (bytes) encoded as a voice clip (``Sound/clips``: ``(RWAV bytes, notes)``); a refusal raises
@@ -2092,22 +2104,78 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
     if model.high_only:
         plan.warnings.append(f'{file_name} has no Low model: its High model is used as the Low model too, so the '
                              'slot loads it twice on the field (counts twice against the memory budget)')
+    # the file's own bat (a later patcher's extension): a finished equipment entry, written as it is
+    bat_file, bat_block = gear.FILE_OF[gear.BAT], None
+    if model.bat is not None:
+        errors, warnings = env.equipment_block_problems(check_dir, bat_file, model.bat)
+        if errors:
+            plan.warnings.append(f'{target_name} keeps its bat: the bat in {file_name} does not fit ({errors[0]})')
+        else:
+            bat_block = model.bat
+            plan.warnings += warnings
+            plan.effects['equipment'] = {bat_file: f'bat from {file_name}'}
+            plan.notes.append(f'{target_name} takes the file\'s own bat (only this slot\'s bat changes)')
+    elif model.bat_problem:
+        plan.warnings.append(f'{target_name} keeps its bat: {model.bat_problem}')
+    plan.slgmodel['bat'] = None if bat_block is None else len(bat_block)
+    if model.extras:
+        plan.warnings.append(f'{file_name} also carries {", ".join(model.extras)}: not imported (the slot gets '
+                             + ('the base\'s' if cid >= ids.FIRST_NEW else 'its own') + ' instead)')
+    # the file's stats and chemistry overrides (the same extension): a new ID takes them as stat values, written
+    # after the rebuild like a paste's; a stock slot keeps its stats
+    stats_doc, scaled = None, False
+    has_stats = bool(model.chemistry_overrides or any(v not in (None, {}) for v in model.stat_overrides.values()))
+    if model.stats_problem:
+        plan.warnings.append(f'{file_name}: its stats and chemistry are left out ({model.stats_problem})')
+    elif has_stats and cid < ids.FIRST_NEW:
+        plan.warnings.append(f'{file_name} carries stat values and chemistry of its own: not applied to a stock '
+                             'slot, which keeps its stats (put the file on a new ID for the whole character)')
+    elif has_stats:
+        sizes = env.character_sizes(st, base)
+        stats_doc, count, warnings = slg_stats.snapshot(cid, model.stat_overrides, model.chemistry_overrides,
+                                                        sizes, lambda name: _partner_id(st, name))
+        plan.warnings += [f'{file_name}: {w}' for w in warnings]
+        if stats_doc is not None:
+            scaled = any(name in stats_doc['fields'].get('size', {}) for _key, name in slg_stats.SCALE_FIELDS)
+            plan.effects[STAT_EDITS] = (f'{count} value{"s" if count != 1 else ""} from {file_name} (its stats and '
+                                        'chemistry; the rest stays as the slot\'s stats give it)')
+            plan.notes.append(f'{target_name} takes the file\'s own stat values on top of its stats '
+                              '(kept as stat edits of the slot)')
+    plan.slgmodel['stats'] = bool(stats_doc)
     if model.left_out:
         plan.notes.append(f'not in the file ({base_name}\'s apply): {"; ".join(model.left_out)}')
-    plan.notes.append(f'size: {base_name}\'s (the file carries no size; the stat editor\'s sizescale changes it)')
+    plan.notes.append(f'size: {base_name}\'s times the file\'s scale {model.stat_overrides["scale"]:g}' if scaled
+                      else f'size: {base_name}\'s (the file carries no size; the stat editor\'s sizescale changes '
+                           'it)')
     if new != config:
         plan.config = new
     _prepare(plan, state_file, [])
+    if stats_doc is not None:                         # after the rebuild: the slot's rows follow its stats by then
+        plan.commands.append(('--apply-stat-edits', COPY_PREFIX + stash(f'{tag}_stats.json', stats_doc)))
     hp = stash(f'{tag}_hp.bin', high)
     lp = hp if model.high_only else stash(f'{tag}_l.bin', low)
     # a file may ship a second High model as its Low model (SlotTarget.slot_pair_problems)
     plan.commands.append(('--write-slot-blocks', _hex(cid), hp, lp, '--high-as-low'))
+    if bat_block is not None:
+        plan.commands.append(('--write-slot-equipment', _hex(cid), str(bat_file),
+                              stash(f'{tag}_{BLOCK_SUFFIX[gear.BAT]}.bin', bat_block)))
     if plan.voice_pack is not None:
         plan.commands.append((WRITE_VOICE_PACK, stash(f'{tag}_pack.json', plan.voice_pack)))
     plan.commands.append(('--roster-state',))
     plan.notes.insert(0, f'{file_name} ({model.name}, built on {base_name}) -> {target_name}'
                          + (' (High model as the Low model too)' if model.high_only else ''))
     return plan
+
+
+def _partner_id(st: dict, name: str) -> int | None:
+    """The roster ID a character file's chemistry partner ``name`` means: a new ID named so (the first one), else
+    the stock character the patcher calls so (``slgmodel.stock_id``); None when the roster has neither."""
+    key = ' '.join(str(name).split()).lower()
+    for char in st.get('characters') or []:
+        en = (char.get('name') or {}).get('en')
+        if char['id'] >= ids.FIRST_NEW and en and en != names.UNNAMED and ' '.join(en.split()).lower() == key:
+            return char['id']
+    return slgmodel.stock_id(name)
 
 
 def _display(char: dict) -> str:

@@ -256,6 +256,58 @@ class ReadTests(unittest.TestCase):
         self.assertTrue(m.glb_edited)
         self.assertEqual((m.high, m.low), (HIGH, LOW))              # the blocks as exported
 
+    def test_extension_folders_load_and_the_bat_is_read(self):
+        bat = b'BAT-ENTRY' + SOURCES[1][8:60]
+        members = {'portable_assets/manifest.json': b'{}',
+                   'portable_assets/bat.slgd': make_delta(bat, [('literal', b'BAT-ENTRY'), ('copy', 1, 8, 52)]),
+                   'portable_assets/bat_project.json': b'{}', 'portable_assets/bat_project/bat.obj': b'o',
+                   'portable_assets/animations/7.anm': b'a', 'portable_assets/animations/6.anm': b'a',
+                   'portable_assets/native_facial.glb': b'g', 'portable_assets/shape_keys.glb': b'g',
+                   'community/manifest.json': b'{}'}
+        m = slgmodel.read(write_file(self.tmp, members=members), self.inputs)
+        self.assertEqual((m.high, m.low, m.has_bat, m.bat, m.bat_problem), (HIGH, LOW, True, bat, ''))
+        self.assertEqual(m.extras, ['custom animation banks (6, 7)', 'edits of the face poses',
+                                    'Blender shape keys (expressions)'])
+        self.assertEqual((m.stat_overrides, m.chemistry_overrides, m.stats_problem), ({}, {}, ''))
+        m = slgmodel.read(write_file(self.tmp), self.inputs)             # a plain file: nothing extra
+        self.assertEqual((m.has_bat, m.bat, m.extras), (False, None, []))
+        m = slgmodel.read(write_file(self.tmp, members=members), os.path.join(self.tmp, 'nowhere'), blocks=False)
+        self.assertEqual((m.has_bat, m.bat), (True, None))               # not rebuilt without the game
+
+    def test_a_bat_that_does_not_rebuild_is_left_out(self):
+        members = {'portable_assets/bat.slgd': make_delta(b'BAT', [('literal', b'BAT')], sha=bytes(20))}
+        m = slgmodel.read(write_file(self.tmp, members=members), self.inputs)
+        self.assertEqual((m.high, m.bat), (HIGH, None))
+        self.assertIn('its bat does not rebuild', m.bat_problem)
+
+    def test_stats_and_chemistry_files_are_read_as_they_are(self):
+        stats = ('﻿character,section,field,value\nRosalina,stats,speed,120\nRosalina,table_stats,stamina,80\n'
+                 'Rosalina,table_stats,changeup speed mult,0.75\nRosalina,scale,scale,1.2\n')
+        chem = 'character,partner,chemistry\nRosalina,Peach,good\nRosalina,  Bowser ,BAD\n'
+        members = {'community/stats.csv': stats.encode(), 'community/chemistry.csv': chem.encode(),
+                   'community/manifest.json': b'{}'}
+        m = slgmodel.read(write_file(self.tmp, members=members), os.path.join(self.tmp, 'nowhere'), blocks=False)
+        self.assertEqual(m.stat_overrides, {'stats': {'speed': 120},
+                                            'table_stats': {'stamina': 80, 'changeup speed mult': 0.75}, 'scale': 1.2})
+        self.assertEqual(m.chemistry_overrides, {'Peach': 'good', 'Bowser': 'bad'})
+        self.assertEqual((m.stats_problem, m.extras), ('', []))
+
+    def test_a_stats_file_that_cannot_be_read_is_left_out(self):
+        cases = [('community/stats.csv', b'character,section,value\nR,stats,1\n', 'columns'),
+                 ('community/stats.csv', b'character,section,field,value\nR,stats,speed,fast\n', 'not a number'),
+                 ('community/stats.csv', b'character,section,field,value\nR,moves,speed,1\n', 'unknown section'),
+                 ('community/chemistry.csv', b'character,partner,chemistry\nR,Peach,best\n', 'bad, neutral, good'),
+                 ('community/stats.csv', b'\xff\xfe\x00', 'UTF-8')]
+        for n, (member, data, text) in enumerate(cases):
+            with self.subTest(text=text):
+                m = slgmodel.read(write_file(self.tmp, name=f's{n}.slgmodel', members={member: data}), self.inputs)
+                self.assertIn(text, m.stats_problem)
+                self.assertEqual((m.high, m.stat_overrides, m.chemistry_overrides), (HIGH, {}, {}))
+
+    def test_stock_id_knows_the_patchers_names(self):
+        self.assertEqual((slgmodel.stock_id('red  shy guy'), slgmodel.stock_id('Red Mii (M)'), slgmodel.stock_id('X')),
+                         (0x10, 0x4D, None))
+
     def test_meta_only_read_needs_no_game(self):
         path = write_file(self.tmp)
         m = slgmodel.read(path, os.path.join(self.tmp, 'nowhere'), blocks=False)
@@ -339,9 +391,14 @@ def model(**changes):
 
 
 class ImportEnv(slot_plan.Env):
-    def __init__(self, slot_errors=(), archive=True, stock_art=True):
+    def __init__(self, slot_errors=(), archive=True, stock_art=True, bat_errors=()):
         self.slot_errors, self.archive, self.stock_art = list(slot_errors), archive, stock_art
         self.slot_calls, self.encoded, self.high_as_low = [], [], []
+        self.bat_errors, self.bat_calls = list(bat_errors), []
+
+    def equipment_block_problems(self, directory, file, block):
+        self.bat_calls.append((directory, file, block))
+        return list(self.bat_errors), ['a bat warning']
 
     def slot_problems(self, directory, high, low, high_as_low=False):
         self.slot_calls.append((directory, high, low))
@@ -490,6 +547,106 @@ class NewIdPlanTests(unittest.TestCase):
     def test_blocks_that_do_not_fit_are_refused(self):
         with self.assertRaisesRegex(slot_plan.PlanError, 'does not fit a slot built on.*92 bones'):
             plan(0x66, env=ImportEnv(slot_errors=['92 bones vs 89']))
+
+
+class BatPlanTests(unittest.TestCase):
+    BAT = b'BAT-ENTRY-BYTES'
+
+    def test_the_bat_is_written_after_the_models(self):
+        for cid, directory in ((0x66, DAISY + 0x12), (0x0D, 31)):       # a new ID and a stock slot
+            with self.subTest(cid=cid):
+                env = ImportEnv()
+                p = plan(cid, model(has_bat=True, bat=self.BAT), env)
+                self.assertEqual(env.bat_calls, [(directory, 2, self.BAT)])
+                path = os.path.join(COPY_DIR, f'slg_{cid:02X}_bat.bin')
+                heads = [c[0] for c in p.commands]
+                self.assertIn(('--write-slot-equipment', f'0x{cid:02X}', '2', path), p.commands)
+                self.assertEqual(heads.index('--write-slot-equipment'), heads.index('--write-slot-blocks') + 1)
+                self.assertEqual(p.copy_files[f'slg_{cid:02X}_bat.bin'], self.BAT)
+                self.assertEqual(p.effects['equipment'], {2: 'bat from rosalina.slgmodel'})
+                self.assertIn('a bat warning', p.warnings)
+                self.assertEqual(p.to_json()['slgmodel']['bat'], len(self.BAT))
+
+    def test_a_bat_that_does_not_fit_or_rebuild_is_left_out_with_a_warning(self):
+        p = plan(0x66, model(has_bat=True, bat=self.BAT), ImportEnv(bat_errors=['the skeletons do not match']))
+        self.assertNotIn('--write-slot-equipment', [c[0] for c in p.commands])
+        self.assertNotIn('equipment', p.effects)
+        self.assertTrue(any('keeps its bat' in w and 'skeletons do not match' in w for w in p.warnings))
+        p = plan(0x66, model(has_bat=True, bat_problem='its bat does not rebuild'))
+        self.assertNotIn('--write-slot-equipment', [c[0] for c in p.commands])
+        self.assertTrue(any('keeps its bat: its bat does not rebuild' in w for w in p.warnings))
+        self.assertIsNone(p.to_json()['slgmodel']['bat'])
+
+    def test_unread_extras_are_named_in_a_warning(self):
+        p = plan(0x66, model(extras=['custom animation banks (6)', 'edits of the face poses']))
+        self.assertTrue(any('custom animation banks (6), edits of the face poses: not imported' in w
+                            for w in p.warnings))
+        self.assertFalse(any('not imported' in w for w in plan(0x66).warnings))
+
+
+class StatsPlanTests(unittest.TestCase):
+    OVERRIDES = {'stats': {'speed': 120, 'star pitch': 20},
+                 'table_stats': {'stamina': 80, 'changeup speed mult': 0.75, 'catch dive': 100, 'pitch steering': 1.1},
+                 'scale': 1.5}
+    CHEMISTRY = {'Bowser': 'good', 'rosalina two': 'bad', 'Nobody': 'neutral'}
+
+    def state(self):
+        st = make_state()
+        st['sizes'] = {'characters': {'0x05': {'gameplay': 9, 'select': 9, 'base_gameplay': 1.0, 'base_select': 0.5}}}
+        next(c for c in st['characters'] if c['id'] == 0x67)['name'] = {'en': 'Rosalina Two'}
+        return st
+
+    def test_a_new_id_takes_the_values_as_a_stat_copy_after_the_rebuild(self):
+        p = plan(0x66, model(stat_overrides=self.OVERRIDES, chemistry_overrides=self.CHEMISTRY), st=self.state())
+        path = os.path.join(COPY_DIR, 'slg_66_stats.json')
+        heads = [c[0] for c in p.commands]
+        self.assertIn(('--apply-stat-edits', 'copy:' + path), p.commands)
+        self.assertLess(heads.index('--roster'), heads.index('--apply-stat-edits'))
+        doc = p.copy_files['slg_66_stats.json']
+        self.assertEqual((doc['format'], doc['source'], doc['target']), ('sluggies-stat-copy', '0x66', '0x66'))
+        f32 = lambda v: struct.pack('>f', v).hex()
+        self.assertEqual(doc['fields'], {
+            'stats': {'speed': '0078', 'stamina': '0050'},
+            'pitching': {'Speed Mult': f32(0.75)},
+            'size': {'dive': f32(100.0), 'Gameplay': f32(1.5), 'Select Screens': f32(0.75)}})
+        self.assertEqual(doc['chemistry'], {'0x09': [2, 2], '0x67': [0, 0]})
+        self.assertIn('7 values from rosalina.slgmodel', p.effects['stat_edits'])   # 4 stats, scale, 2 pairs
+        warnings = ' | '.join(p.warnings)
+        self.assertIn('star pitch (20 is outside', warnings)
+        self.assertIn('pitch steering (no stat field for it here)', warnings)
+        self.assertIn('chemistry left out (the roster has no such character): Nobody', warnings)
+        self.assertTrue(any('times the file\'s scale 1.5' in n for n in p.notes))
+        self.assertTrue(p.to_json()['slgmodel']['stats'])
+
+    def test_the_snapshot_is_one_the_apply_step_reads(self):
+        from SluggiesTools.StatEditor import apply, fields
+        p = plan(0x66, model(stat_overrides=self.OVERRIDES, chemistry_overrides=self.CHEMISTRY), st=self.state())
+        doc = p.copy_files['slg_66_stats.json']
+        self.assertEqual(doc['format'], apply.COPY_FORMAT)
+        for group, values in doc['fields'].items():
+            for name, raw in values.items():
+                self.assertEqual(len(bytes.fromhex(raw)), fields.character_field(group, name).size)
+        for name in slot_plan.slg_stats.STATS:
+            fields.character_field('stats', name)
+        for group, name in slot_plan.slg_stats.TABLE_STATS.values():
+            fields.character_field(group, name)
+
+    def test_without_the_base_size_the_scale_is_left_out(self):
+        p = plan(0x66, model(stat_overrides={'stats': {}, 'table_stats': {}, 'scale': 1.5}))
+        self.assertNotIn('--apply-stat-edits', [c[0] for c in p.commands])
+        self.assertTrue(any('scale 1.5 (the base\'s size cannot be read)' in w for w in p.warnings))
+        self.assertFalse(p.to_json()['slgmodel']['stats'])
+
+    def test_a_stock_slot_keeps_its_stats(self):
+        p = plan(0x0D, model(stat_overrides=self.OVERRIDES), st=self.state())
+        self.assertNotIn('--apply-stat-edits', [c[0] for c in p.commands])
+        self.assertTrue(any('not applied to a stock slot' in w for w in p.warnings))
+
+    def test_a_file_that_could_not_be_read_or_has_none_changes_nothing(self):
+        p = plan(0x66, model(stats_problem='community/stats.csv: its columns are not ...'))
+        self.assertTrue(any('stats and chemistry are left out' in w for w in p.warnings))
+        self.assertNotIn('--apply-stat-edits', [c[0] for c in plan(0x66).commands])
+        self.assertNotIn('stat_edits', plan(0x66).effects)
 
 
 class StockSlotPlanTests(unittest.TestCase):
