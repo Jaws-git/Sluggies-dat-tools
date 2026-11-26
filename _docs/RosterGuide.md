@@ -595,8 +595,13 @@ python start.py --load-roster my_roster.sluggiesroster
 - A pack fits any output made from the same `1_Input`: a new ID's own
   model directory is copied afresh from `1_Input` and gets the pack's
   models. Loading into a game that already holds the same roster does
-  nothing. Game options (CPU vs CPU) are not part of a pack and stay as
-  they are.
+  nothing. Game options (CPU vs CPU) and the custom CPU level are not part
+  of a pack and stay as they are.
+- **Custom CPU level** (the Custom CPU tab): one extra CPU level as a 5th
+  button on the exhibition "CPU Level" popup, with its own switches and
+  values; see `_docs/CustomCpuGuide.md`. Roster changes keep it. The star
+  usage and preferred pitch odds that used to be on the Gameplay tab are
+  settings of that level now.
 - **CPU vs CPU and the Gecko codes:** the game options replace the
   community Gecko codes "CPU vs CPU V2" and "CPU vs CPU human management".
   Disable both Gecko codes in Dolphin before using the options: with them
@@ -631,7 +636,7 @@ python start.py --load-roster my_roster.sluggiesroster
   Mega" is not offered yet.
 - **The red Gecko warning:** Gecko codes made for the stock game (CPU vs
   CPU and others) stop working once `main.dol` gets the tools' own code
-  area. That happens with game options and with roster changes such as new
+  area. That happens with game options, the custom CPU level and with roster changes such as new
   characters, grid or wheel changes, a slot's own voice, and voice pack
   clips. Renames, portraits of stock characters, **Adopt stats...** and
   square voice changes on stock characters, and model patches keep the codes

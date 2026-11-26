@@ -570,8 +570,25 @@ runs from source.
 
 Two sections added to `main.dol`: code at `0x807B7000` (0x9000 bytes) and data
 from `0x807C0000`. OSInit's four arena-start `lis`/`addi` pairs move up behind
-the data section; arena low may rise to `0x808BF000`. Each section starts with
-a 16-byte magic so later runs can reopen and extend it.
+the last added section; arena low may rise to `0x808BF000`. Each section starts
+with a 16-byte magic so later runs can reopen and extend it.
+
+**A third section for the custom CPU level** (2026-11-26, in Dolphin the
+same day). While that level is on (`CustomCpu/`, see
+`_docs/_docs_custom_cpu/CustomCpuLevel.md`), its code and settings are a
+section of their own: magic `SLUGGIES CPUCODE`, a text slot, loaded at the
+next `0x1000` boundary behind the data section's end (`0x807C1000` without a
+roster), with the arena start behind it. It holds position-dependent code, so
+it is always built last: the roster reset drops it with the other two, and
+the custom level is applied after the last roster step (and after the
+manifest). `DolHammerspace.commit` keeps the three sections the file's tail
+in address order and refuses a data section grown into it. It is no roster
+data: `has_data` does not see it. `dol_hammerspace.cpu_slot` finds it;
+`DolHammerspace.set_cpu` sets or drops it.
+
+Two spare bytes of the text section's 0x20-byte marker, `0x807B7014` and
+`0x807B7015` (`dol_hammerspace.CUSTOM_CPU_FLAG`), are run-time flags of the
+custom CPU level: zero in the file, written by its match-start hook.
 
 The stock DOL uses 10 of its 18 section slots (T0, T1, D0–D7); T2–T6 and
 D8–D10 are free, and new sections are appended at the file end (`0x716F20`).
@@ -604,7 +621,9 @@ So the sections alone do not mean a roster was built: a DOL whose data
 section holds nothing but the magic counts as the stock roster
 (`DolHammerspace.has_data`). Turning the last option off on a stock output
 drops the sections and restores the arena words; with a roster the stubs
-stay until the next roster run.
+stay until the next roster run. That rebuild carries the custom CPU level:
+its record is read before, and its section is built again after, so the
+sections are only dropped when no option and no custom level is on.
 
 **Incompatible with the community Gecko codes they replace** (confirmed in
 Dolphin, 2026-10-08, on a stock roster too). With the Gecko codes "CPU vs
@@ -668,7 +687,10 @@ and the player memory levels leave them working:
   and writes the static s16 `0x80624B1E` (row 0, column 3 of the table at
   `0x80624B18` that the close play code at `0x80156A5C` adds to its frame
   check): 2 for a player record (r31) with +0x1A1 set, else 1 at the chosen
-  odds and 60 otherwise; outside CPU vs CPU it writes the stock 20 back.
+  odds and 60 otherwise; outside CPU vs CPU it writes the stock 20 back,
+  except during a custom CPU level match (flag byte `0x807B7014` set, since
+  2026-11-25): that entry is the custom level's "close-play press delay",
+  swapped in for the match, and is left alone (not tried in Dolphin).
 - `triple_take`, `strikeout_camera`, `outfield_dives`: plain patches at
   `0x802500BC`/`0x802529B4` (`beq` → nop, the same as the Gecko code's
   forced r0 = 1), `0x802504A0` (`li r0,0`) and `0x800E2750` (`cmplwi r0,6`).
@@ -863,9 +885,10 @@ of `main.dol` instead of creating the sections (see *Read-back*).
 **Compatibility check** (`SluggiesTools/gecko_compat.py`, 2026-10-16). A
 `main.dol` counts as Gecko compatible while it has no DOL hammerspace
 sections and all four `arena_lo` values are stock (`0x807B6E80` /
-`0x807B4E80`). Only two writers add the sections, and both check before they
-write: the roster runner (`Roster/runner.py`) and the game options
-(`GameOptions/runner.py`). Each compares the file before and after the change
+`0x807B4E80`). Three writers add the sections, and each checks before it
+writes: the roster runner (`Roster/runner.py`), the game options
+(`GameOptions/runner.py`) and the custom CPU level (`CustomCpu/runner.py`).
+Each compares the file before and after the change
 in memory. When the change breaks compatibility (compatible now, not after),
 the runner asks first (`slogger.ask`, kind `danger`). Cancel writes nothing.
 A game that is already incompatible is not asked about again. Planned chains
@@ -894,6 +917,7 @@ Changes that break compatibility on a stock output:
 - the config keys `ids`, `grid` or `wheel_order`, even empty (an `ids` key
   moves the per-ID tables into the sections);
 - every game option (CPU vs CPU, CPU management, `player_heap_*`);
+- the custom CPU level;
 - roster presets and packs that contain any of the above.
 
 Model patches, defragmenting, stat edits, stock renames, stock portraits,

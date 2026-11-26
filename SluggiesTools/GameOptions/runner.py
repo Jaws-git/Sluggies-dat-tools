@@ -59,6 +59,8 @@ def build(output_dir: str = OUTPUT_DIR, on=(), off=(), input_dir: str | None = N
         with open(vanilla_path, 'rb') as f:
             vanilla = dolfile.DolImage(f.read())
     log = game_options.remove(image, off, vanilla) + game_options.apply(image, on)
+    if 'outfield_dives' in set(on) | set(off):
+        log += game_options.refresh_custom_cpu(image, vanilla)
     on_now = game_options.detect(image)
     for option in game_options.OPTIONS:          # a group's levels: only the one that is on, or one line
         if option.group is None or option.key in on_now:

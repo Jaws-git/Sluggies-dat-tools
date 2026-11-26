@@ -14,6 +14,10 @@ Items, in staging order (a later one wins per field):
 * ``reset``: every field back to ``1_Input/main.dol``'s value, at its place
   in the order.
 
+A table that moved to the custom CPU level (``tables.MOVED``) is skipped in
+any file, with a note; a ``reset`` also puts those tables' bytes back to
+``1_Input`` (``Prepared.moved``).
+
 Unknown keys, values outside their storage (``fields.Value.problem``) and
 fields the DOL does not map refuse the whole set. The cross-field checks
 (``tables.problems``) run on the result (the game's values with every item
@@ -74,6 +78,7 @@ class Prepared:
     problems: list[tables.Problem] = field(default_factory=list)       # cross-field problems of the result
     legacy: bool = False                                   # an AI Gameplay Tool file is among the items
     values: dict = field(default_factory=dict)             # {field: (game value, value given)}: every field named
+    moved: list = field(default_factory=list)              # [(address, 1_Input bytes)]: a reset's moved tables
 
 
 def parse_item(text: str) -> 'Reset | str':
@@ -103,10 +108,19 @@ def _check_header(doc: dict, label: str) -> None:
         raise EditFileError(f'{label}: "name" is not a text')
 
 
-def parse_values(values: dict, label: str) -> dict:
-    """``{field: value}`` for a file's ``values``; unknown keys and unstorable values raise ``EditFileError``."""
+MOVED_NOTE = 'custom CPU level settings now (Custom CPU tab): not loaded'
+
+
+def parse_values(values: dict, label: str, notes: list | None = None) -> dict:
+    """``{field: value}`` for a file's ``values``; unknown keys and unstorable values raise ``EditFileError``.
+    Tables that moved to the custom CPU level are skipped and named in ``notes``."""
     out = {}
+    moved = [tables.MOVED[t] for t in values if t in tables.MOVED]
+    if moved and notes is not None:
+        notes.append(f'{label}: {", ".join(moved)}: {MOVED_NOTE}')
     for table, rows in values.items():
+        if table in tables.MOVED:
+            continue
         if table not in tables.TABLES_BY_KEY:
             raise EditFileError(f'{label}: unknown table {table!r} (known: {", ".join(tables.TABLES_BY_KEY)})')
         if not isinstance(rows, dict):
@@ -141,6 +155,9 @@ def prepare(image: dolfile.DolImage, documents: list, labels: list[str] | None =
     for doc, label in zip(documents, labels):
         if isinstance(doc, Reset):
             planned.update({f: (v, 'reset') for f, v in base.items() if image.is_mapped(f.address, f.size)})
+            prepared.moved = [(at, vanilla.read(at, n)) for at, n in tables.MOVED_RANGES
+                              if image.is_mapped(at, n) and vanilla.is_mapped(at, n)
+                              and image.read(at, n) != vanilla.read(at, n)]
             continue
         if legacy.is_legacy(doc):
             try:
@@ -152,7 +169,7 @@ def prepare(image: dolfile.DolImage, documents: list, labels: list[str] | None =
             values, origin = migrated.values, 'legacy'
         else:
             _check_header(doc, label)
-            values, origin = parse_values(doc['values'], label), 'edit'
+            values, origin = parse_values(doc['values'], label, prepared.notes), 'edit'
             if doc['format'] == SETTINGS_FORMAT:
                 lacking = [f for f in tables.FIELDS if f not in values]
                 if lacking:
@@ -189,6 +206,8 @@ def prepare(image: dolfile.DolImage, documents: list, labels: list[str] | None =
 def write(image: dolfile.DolImage, prepared: Prepared) -> None:
     for change in prepared.changes:
         image.write(change.field.address, change.raw)
+    for address, raw in prepared.moved:
+        image.write(address, raw)
 
 
 def describe(prepared: Prepared) -> list[str]:
@@ -204,6 +223,9 @@ def describe(prepared: Prepared) -> list[str]:
         parts.append(f'{cell} {short(c.before)} -> {short(c.after)}')
     if parts:
         lines.append(f'{tables.TABLES_BY_KEY[current].title}: ' + ', '.join(parts))
+    if prepared.moved:
+        lines.append('CPU tables that are custom CPU level settings now (star usage, charge odds, modifiers, '
+                     'preferred pitch): back to 1_Input')
     return lines
 
 

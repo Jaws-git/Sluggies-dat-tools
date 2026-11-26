@@ -25,6 +25,7 @@ COMMANDS = (
     (('--_run-script', 'SluggiesTools/Hammerspace/HammerspaceMain.py', '--help'), 'usage', (0,)),
     (('--export-sounds',), None, (0, 1)),                         # Sound/
     (('--apply-gameplay', 'reset', '--dry-run'), None, (0, 1)),   # Gameplay/
+    (('--custom-cpu-off', '--dry-run'), None, (0, 1)),            # CustomCpu/
     (('--save-roster', 'smoke_test.sluggiesroster'), None, (0, 1)),   # Roster/ packs
     (('--patch', 'smoke_test_missing.sluggie'), None, (0, 1)),    # model lookup, texture_helper
 )

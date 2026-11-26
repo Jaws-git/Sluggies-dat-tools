@@ -45,6 +45,18 @@ class PpcEncodingTests(unittest.TestCase):
         self.assertEqual(word(lambda a: a.blr()), 0x4E800020)
         self.assertEqual(word(lambda a: a.lbzx('r0', 'r3', 'r0')), 0x7C0300AE)
 
+    def test_update_loads_loop_branch_and_cache_words(self):
+        self.assertEqual(word(lambda a: a.lbzu('r6', 1, 'r9')), 0x8CC90001)
+        self.assertEqual(word(lambda a: a.stbu('r6', 1, 'r12')), 0x9CCC0001)
+        self.assertEqual(word(lambda a: a.bdnz(TEXT - 8)), 0x4200FFF8)
+        self.assertEqual(word(lambda a: a.dcbst(0, 'r11')), 0x7C00586C)
+        self.assertEqual(word(lambda a: a.icbi(0, 'r11')), 0x7C005FAC)
+        self.assertEqual(word(lambda a: a.sync()), 0x7C0004AC)
+        self.assertEqual(word(lambda a: a.isync()), 0x4C00012C)
+        a = ppc.Asm(TEXT)
+        a.label('byte').lbzu('r6', 1, 'r9').stbu('r6', 1, 'r12').bdnz('byte')
+        self.assertEqual(struct.unpack('>3I', a.assemble())[2], 0x4200FFF8)
+
     def test_conditional_branch_offsets(self):
         self.assertEqual(word(lambda a: a.bge(TEXT + 8, cr=1)), 0x40840008)
         self.assertEqual(word(lambda a: a.blt(TEXT + 0xC, cr=1)), 0x4184000C)

@@ -328,7 +328,11 @@ class CpuVsCpuExtrasTests(unittest.TestCase):
         self.assertEqual(words[-2], go.CLOSE_PLAY_STOCK)
         self.assertEqual(ppc.branch_target(words[-1], stub + 4 * (len(words) - 1)), site + 4)
         lis = [w & 0xFFFF for w in words if w >> 26 == 15]
-        self.assertEqual(lis, [ppc.ha(go.CLOSE_PLAY_ENTRY)])    # no stock heap address (0x811F..., 0x900D...)
+        # no stock heap address (0x811F..., 0x900D...): the custom CPU level's flag, then the entry
+        self.assertEqual(lis, [ppc.ha(go.CUSTOM_CPU_FLAG), ppc.ha(go.CLOSE_PLAY_ENTRY)])
+        flag = words.index(one(lambda a: a.lbz(11, ppc.lo(go.CUSTOM_CPU_FLAG), 11)))
+        self.assertLess(flag, words.index(one(lambda a: a.li(12, go.CLOSE_PLAY_STOCK_VALUE))))
+        self.assertEqual(ppc.branch_target(words[-1], stub + 4 * (len(words) - 1)), site + 4)
 
     def test_close_play_levels_replace_each_other(self):
         go.apply(self.image, ['cpu_vs_cpu', 'close_play_30'])

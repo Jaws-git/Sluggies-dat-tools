@@ -32,6 +32,18 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> dict:
     return out
 
 
+def dropped(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> list[str]:
+    """A line when ``image`` holds edits of the tables that moved to the custom CPU level (``tables.MOVED``): the
+    reset puts them back to ``1_Input`` and nothing carries them."""
+    count = sum(a != b for at, n in tables.MOVED_RANGES if image.is_mapped(at, n) and vanilla.is_mapped(at, n)
+                for a, b in zip(image.read(at, n), vanilla.read(at, n)))
+    if not count:
+        return []
+    return [f'not carried: {count} value{"s" if count != 1 else ""} of the star usage, charge odds, star swing '
+            'modifier and preferred pitch tables are back to 1_Input (they are custom CPU level settings now, on '
+            'the Custom CPU tab)']
+
+
 def apply(image: dolfile.DolImage, edits: dict) -> list[str]:
     """Write ``edits`` (``detect``) onto ``image``; log lines."""
     written = [f for f, raw in edits.items() if image.is_mapped(f.address, f.size)]

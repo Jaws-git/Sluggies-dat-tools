@@ -39,10 +39,8 @@ STOCK_BOOSTS = ((1, 1.0, 0, 10), (2, 1.1, 100, 200), (2, 1.3, 100, 200), (2, 1.5
 STOCK_ITEMS = ((20, 20, 20, 10, 20, 10), (20, 15, 20, 15, 15, 15), (20, 15, 15, 20, 15, 15))
 
 F = tables.field
-USAGE = F('star_usage', 'power', 'dire')
+BANANA = F('item_odds', '0', 'banana')
 COST = F('star_cost', '4', 'points')
-MOD = F('star_modifiers', 'level_4', 'special')
-PITCH = F('preferred_pitch', 'technique', 'pitch_2')
 STAMINA = F('stamina', 'star_pitch', 'cost')
 AMOUNT = F('star_boost', 'curve', 'amount')
 BOOST_MAX = F('star_boost', 'speed', 'max')
@@ -126,7 +124,7 @@ def legacy_doc(**changes) -> dict:
 
 class TableTests(unittest.TestCase):
     def test_every_field_is_unique_and_in_the_stock_sections(self):
-        self.assertEqual(len(tables.FIELDS), 20 + 3 + 8 + 8 + 16 + 2 + 64 + 18)
+        self.assertEqual(len(tables.FIELDS), 3 + 2 + 64 + 18)
         spans = set()
         for f in tables.FIELDS:
             for b in range(f.size):
@@ -140,14 +138,24 @@ class TableTests(unittest.TestCase):
         self.assertIs(F('star_boost', 'curve', 'amount'), fields.global_field('star_boost', 'curve', 'amount'))
 
     def test_storage_limits(self):
-        for f, bad in ((USAGE, 256), (USAGE, -1), (MOD, 128), (MOD, -129), (PITCH, 3), (COST, 0x8000),
-                       (F('star_boost', 'curve', 'add/mult'), 3), (AMOUNT, float('inf')), (USAGE, 1.5)):
+        for f, bad in ((BANANA, 256), (BANANA, -1), (COST, 0x8000),
+                       (F('star_boost', 'curve', 'add/mult'), 3), (AMOUNT, float('inf')), (BANANA, 1.5)):
             with self.subTest(f=tables.label(f), value=bad):
                 self.assertIsNotNone(f.problem(bad))
-        self.assertEqual(MOD.unpack(MOD.pack(-128)), -128)
+
+    def test_tables_moved_to_the_custom_cpu_level_are_no_fields(self):
+        for table, row, column in (('star_usage', 'power', 'dire'), ('charge_odds', 'speed', '2_strikes'),
+                                   ('star_modifiers', 'level_4', 'special'),
+                                   ('preferred_pitch', 'technique', 'pitch_2')):
+            self.assertIn(table, tables.MOVED)
+            with self.assertRaises(tables.FieldError):
+                F(table, row, column)
+        covered = {a for at, n in tables.MOVED_RANGES for a in range(at, at + n)}
+        self.assertEqual(len(covered), 20 + 8 + 8 + 16)
+        self.assertFalse(covered & {f.address + b for f in tables.FIELDS for b in range(f.size)})
 
     def test_labels(self):
-        self.assertEqual(tables.label(USAGE), 'Star usage odds: Power / Dire')
+        self.assertEqual(tables.label(BANANA), 'Item odds: 6+ innings left / Banana')
         self.assertEqual(tables.label(COST), 'Star costs: Non-captain')
 
 
@@ -155,7 +163,7 @@ class ReadTests(unittest.TestCase):
     def test_stock_values(self):
         values = read.values(image())
         self.assertEqual(len(values), len(tables.FIELDS))
-        self.assertEqual((values[USAGE], values[COST], values[MOD], values[STAMINA]), (95, 50, 5, -10))
+        self.assertEqual((values[BANANA], values[COST], values[STAMINA]), (20, 50, -10))
         self.assertAlmostEqual(values[F('star_boost', 'curveball speed', 'amount')], 1.1, places=6)
         self.assertEqual(read.missing_tables(image()), [])
         self.assertEqual(tables.problems(values), [])
@@ -168,32 +176,34 @@ class ReadTests(unittest.TestCase):
         with self.assertRaisesRegex(apply.EditFileError, 'not hold these gameplay tables'):
             apply.settings_document(bare)
         with self.assertRaisesRegex(apply.EditFileError, 'not in main.dol'):
-            apply.prepare(bare, [edits({USAGE: 50})])
+            apply.prepare(bare, [edits({BANANA: 25})])
 
 
 class ApplyTests(unittest.TestCase):
     def test_edit_file_and_same_count(self):
         target = image()
-        p = prepare(target, edits({USAGE: 50, COST: 75, AMOUNT: 2.25, MOD: 5}))
-        self.assertEqual([c.field for c in p.changes], [USAGE, COST, AMOUNT])
-        self.assertEqual(p.same, 1)                                            # MOD: stock 5 already
+        p = prepare(target, edits({BANANA: 25, COST: 75, AMOUNT: 2.25, STAMINA: -10}))
+        self.assertEqual([c.field for c in p.changes], [COST, AMOUNT, BANANA])
+        self.assertEqual(p.same, 1)                                            # STAMINA: stock -10 already
         apply.write(target, p)
-        self.assertEqual(read.value(target, USAGE), 50)
+        self.assertEqual(read.value(target, BANANA), 25)
         self.assertEqual(read.value(target, AMOUNT), 2.25)
-        self.assertEqual(apply.describe(p), ['Star usage odds: Power / Dire 95 -> 50', 'Star costs: Non-captain 50 -> 75',
-                                             'Star boosts: Curve / Amount 1.5 -> 2.25'])
+        self.assertEqual(apply.describe(p), ['Star costs: Non-captain 50 -> 75',
+                                             'Star boosts: Curve / Amount 1.5 -> 2.25',
+                                             'Item odds: 6+ innings left / Banana 20 -> 25'])
         self.assertEqual(apply.summary(p), '3 values in 3 tables')
 
     def test_later_item_wins_and_reset_order(self):
         target = image()
-        written(target, edits({USAGE: 50, SHELL: 30}))
-        p = prepare(target, edits({USAGE: 60}), edits({USAGE: 70}))
-        self.assertEqual([(c.field, c.after) for c in p.changes], [(USAGE, 70)])
-        p = prepare(target, edits({USAGE: 60}), apply.Reset())
-        self.assertEqual({(c.field, c.after, c.origin) for c in p.changes}, {(USAGE, 95, 'reset'), (SHELL, 20, 'reset')})
+        written(target, edits({BANANA: 25, SHELL: 30}))
+        p = prepare(target, edits({BANANA: 26}), edits({BANANA: 27}))
+        self.assertEqual([(c.field, c.after) for c in p.changes], [(BANANA, 27)])
+        p = prepare(target, edits({BANANA: 26}), apply.Reset())
+        self.assertEqual({(c.field, c.after, c.origin) for c in p.changes},
+                         {(BANANA, 20, 'reset'), (SHELL, 20, 'reset')})
         self.assertEqual(p.same, 0)
         p = prepare(target, apply.Reset(), edits({SHELL: 25}))
-        self.assertEqual({(c.field, c.after) for c in p.changes}, {(USAGE, 95), (SHELL, 25)})
+        self.assertEqual({(c.field, c.after) for c in p.changes}, {(BANANA, 20), (SHELL, 25)})
         with self.assertRaisesRegex(apply.EditFileError, '1_Input'):
             prepare(target, apply.Reset(), vanilla=False)
 
@@ -203,9 +213,9 @@ class ApplyTests(unittest.TestCase):
             'format': {'format': 'other', 'version': 1, 'values': {}},
             'version': {'format': apply.EDITS_FORMAT, 'version': 2, 'values': {}},
             'table': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'nope': {}}},
-            'row': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'star_usage': {'nope': {'dire': 1}}}},
-            'storage': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'star_usage': {'power': {'dire': 300}}}},
-            'whole': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'star_usage': {'power': {'dire': 5.5}}}},
+            'row': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'item_odds': {'nope': {'boo': 1}}}},
+            'storage': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'item_odds': {'0': {'boo': 300}}}},
+            'whole': {'format': apply.EDITS_FORMAT, 'version': 1, 'values': {'item_odds': {'0': {'boo': 5.5}}}},
         }
         for name, doc in bad.items():
             with self.subTest(name), self.assertRaises(apply.EditFileError):
@@ -213,24 +223,41 @@ class ApplyTests(unittest.TestCase):
 
     def test_cross_field_checks(self):
         target = image()
-        for name, values in (('item row', {SHELL: 70}), ('usage + modifier', {USAGE: 123}),
-                             ('modifier', {MOD: 33}), ('stamina', {STAMINA: 0}), ('star unit', {COST: 0})):
+        for name, values in (('item row', {SHELL: 70}), ('stamina', {STAMINA: 0}), ('star unit', {COST: 0})):
             with self.subTest(name), self.assertRaises(apply.EditFileError):
                 prepare(target, edits(values))
-        self.assertEqual(prepare(target, edits({USAGE: 122})).warnings, [])     # 122 + 5 = 127
+        self.assertEqual(prepare(target, edits({SHELL: 47})).warnings, [])      # the row totals 127
         # a problem the game already holds is a warning for a file that does not change it
         bad = {**read.values(target), SHELL: 70}
         target.write(SHELL.address, bytes([70]))
-        p = prepare(target, edits({USAGE: 50}))
+        p = prepare(target, edits({BANANA: 25}))
         self.assertEqual(len(p.warnings), 1)
         self.assertIn('totals 150', p.warnings[0])
         self.assertTrue(tables.problems(bad))
         self.assertFalse(prepare(target, edits({SHELL: 20})).warnings)        # the edit fixes it
 
+    def test_moved_tables_are_skipped_in_files_and_put_back_by_a_reset(self):
+        target = image()
+        doc = edits({COST: 75})
+        doc['values']['star_usage'] = {'power': {'dire': 50}}
+        doc['values']['preferred_pitch'] = {'nope': 1}                         # not read at all
+        p = prepare(target, doc)
+        self.assertEqual([c.field for c in p.changes], [COST])
+        self.assertEqual(len(p.notes), 1)
+        self.assertIn('Star usage odds, Preferred pitch: custom CPU level settings now', p.notes[0])
+        target.write(tables.STAR_USAGE, b'\x63')                               # an older version's edits
+        target.write(tables.CHARGE_ODDS + 1, b'\x07')
+        self.assertEqual(prepare(target, edits({COST: 75})).moved, [])
+        p = prepare(target, apply.Reset())
+        self.assertEqual([at for at, _raw in p.moved], [tables.STAR_USAGE, tables.CHARGE_ODDS])
+        self.assertIn('back to 1_Input', apply.describe(p)[-1])
+        apply.write(target, p)
+        self.assertEqual(target.to_bytes(), stock_dol())
+
 
 class SettingsTests(unittest.TestCase):
     def test_save_load_round_trip(self):
-        edited = written(image(), edits({USAGE: 50, COST: 75, AMOUNT: 1.7, BOOST_MAX: -300, PITCH: 1, SHELL: 7}))
+        edited = written(image(), edits({BANANA: 25, COST: 75, AMOUNT: 1.7, BOOST_MAX: -300, STAMINA: -20, SHELL: 7}))
         doc = json.loads(json.dumps(apply.settings_document(edited, 'mine')))
         self.assertEqual((doc['format'], doc['version'], doc['name']), (apply.SETTINGS_FORMAT, 1, 'mine'))
         self.assertEqual(sum(len(cols) for rows in doc['values'].values() for cols in rows.values()), len(tables.FIELDS))
@@ -244,11 +271,11 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(prepare(target, doc).changes)
 
     def test_missing_keys_keep_the_game_value(self):
-        doc = apply.settings_document(written(image(), edits({USAGE: 50})))
+        doc = apply.settings_document(written(image(), edits({COST: 75})))
         del doc['values']['item_odds']
         target = written(image(), edits({SHELL: 7}))
         p = prepare(target, doc)
-        self.assertEqual([(c.field, c.after) for c in p.changes], [(USAGE, 50)])
+        self.assertEqual([(c.field, c.after) for c in p.changes], [(COST, 75)])
         self.assertEqual(len(p.notes), 1)
         self.assertIn("18 values not in the file keep the game's value (Item odds)", p.notes[0])
         doc['values']['item_odds'] = {'0': {'mushroom': 3}}
@@ -264,7 +291,7 @@ class LegacyTests(unittest.TestCase):
         self.assertFalse(legacy.is_legacy(apply.settings_document(image())))
 
     def test_a_number_of_hundreds_of_digits_is_a_legacy_error(self):
-        for path in ('starConfig__Power__b5', 'starCostConfig__regular', 'staminaCost'):
+        for path in ('starCostConfig__regular', 'staminaCost'):
             with self.subTest(path), self.assertRaisesRegex(legacy.LegacyError, 'digits'):
                 legacy.migrate(legacy_doc(**{path: 10 ** 400}), read.values(image()))
 
@@ -277,9 +304,13 @@ class LegacyTests(unittest.TestCase):
                          modifierConfig__Level4__special=-7, pitchConfig__Technique__pitch2=1,
                          pitchConfig__Technique__prob2=44, staminaCost=-25, starBoostConfig__curve__amount=1.7,
                          starBoostConfig__speed__max=300, itemConfig__last__0=12)
-        values = legacy.migrate(doc, read.values(image())).values
-        expected = {USAGE: 50, COST: 75, F('charge_odds', 'speed', '2_strikes'): 33, MOD: -7, PITCH: 1,
-                    F('preferred_pitch', 'technique', 'chance_2'): 44, STAMINA: -25, BOOST_MAX: 300, SHELL: 12}
+        migrated = legacy.migrate(doc, read.values(image()))
+        values = migrated.values
+        self.assertEqual(len(migrated.notes), 1)            # its four CPU sections: custom CPU level settings now
+        self.assertIn('starConfig, chargeConfig, modifierConfig, pitchConfig', migrated.notes[0])
+        self.assertIn('not loaded', migrated.notes[0])
+        self.assertFalse({f.table for f in values} & set(tables.MOVED))
+        expected = {COST: 75, STAMINA: -25, BOOST_MAX: 300, SHELL: 12}
         for f, v in expected.items():
             self.assertEqual(values[f], v, tables.label(f))
         self.assertEqual(values[AMOUNT], struct.unpack('>f', struct.pack('>f', 1.7))[0])
@@ -288,50 +319,50 @@ class LegacyTests(unittest.TestCase):
         self.assertEqual(read.value(target, BOOST_MAX), 300)
 
     def test_only_changed_blocks(self):
-        migrated = legacy.migrate(legacy_doc(starConfig__Power__b5=50, starBoostConfig__curve__min=1),
+        migrated = legacy.migrate(legacy_doc(itemConfig__last__0=12, starBoostConfig__curve__min=1),
                                   read.values(image()))
-        self.assertEqual(migrated.blocks, ['Star usage odds', 'Star boosts: Curve'])
-        self.assertEqual(len(migrated.values), 20 + 4)          # whole star usage table, one star boost row
+        self.assertEqual(migrated.blocks, ['Star boosts: Curve', 'Item odds'])
+        self.assertEqual(len(migrated.values), 4 + 18)          # one star boost row, the whole item odds table
         # the game's own edits stay where the file holds the stock values
         target = written(image(), edits({SHELL: 7, COST: 99}))
-        written(target, legacy_doc(starConfig__Power__b5=50))
-        self.assertEqual((read.value(target, SHELL), read.value(target, COST), read.value(target, USAGE)), (7, 99, 50))
+        written(target, legacy_doc(staminaCost=-25))
+        self.assertEqual((read.value(target, SHELL), read.value(target, COST), read.value(target, STAMINA)),
+                         (7, 99, -25))
 
     def test_clamps_and_wrap(self):
-        doc = legacy_doc(starConfig__Power__b5=150.4, modifierConfig__Level4__special=-200,
+        doc = legacy_doc(itemConfig__last__1=150.4,
                          starBoostConfig__speed__max=40000, starBoostConfig__speed__min=-5,
                          itemConfig__first__2=20.5, staminaCost=-40000)
         migrated = legacy.migrate(doc, read.values(image()))
-        self.assertEqual(migrated.values[USAGE], 100)
-        self.assertEqual(migrated.values[MOD], -128)
+        self.assertEqual(migrated.values[F('item_odds', '2', 'fireball')], 100)
         self.assertEqual(migrated.values[BOOST_MAX], -25536)
         self.assertEqual(migrated.values[F('star_boost', 'speed', 'min')], 0)
         self.assertEqual(migrated.values[F('item_odds', '0', 'bob_omb')], 21)          # Math.round(20.5)
         self.assertEqual(migrated.values[STAMINA], -0x8000)
-        self.assertEqual(len(migrated.notes), 5)            # 4 clamps, 1 wrap
+        self.assertEqual(len(migrated.notes), 4)            # 3 clamps, 1 wrap
         self.assertTrue(any('40000 is stored as -25536' in n for n in migrated.notes))
 
     def test_partial_file(self):
         doc = {'starConfig': legacy_doc(starConfig__Speed__b1=9)['starConfig']}
         target = written(image(), edits({SHELL: 7}))
         p = prepare(target, doc)
-        self.assertEqual([(c.field, c.after) for c in p.changes], [(F('star_usage', 'speed', 'normal_0_1'), 9)])
-        self.assertEqual(len(p.notes), 1)
-        self.assertIn('starCostConfig, chargeConfig', p.notes[0])
+        self.assertEqual(p.changes, [])
+        self.assertEqual(len(p.notes), 2)
+        self.assertIn('starConfig: star usage', p.notes[0])
+        self.assertIn('starCostConfig, staminaCost', p.notes[1])
 
     def test_cross_field_problems_are_warnings(self):
-        p = prepare(image(), legacy_doc(modifierConfig__Level4__special=60, staminaCost=5))
-        self.assertEqual(len(p.warnings), 6)            # five usage values over 67, the stamina cost
+        p = prepare(image(), legacy_doc(staminaCost=5, itemConfig__first__0=90))
+        self.assertEqual(len(p.warnings), 2)            # the item row's total, the stamina cost
         self.assertTrue(any(w.startswith('Stamina costs: Star pitch 5') for w in p.warnings))
         with self.assertRaises(apply.EditFileError):    # an edit on top that touches a problem is refused
-            prepare(image(), legacy_doc(modifierConfig__Level4__special=60), edits({USAGE: 90}))
-        prepare(image(), legacy_doc(modifierConfig__Level4__special=60), edits({SHELL: 5}))
+            prepare(image(), legacy_doc(itemConfig__first__0=90), edits({BANANA: 25}))
+        prepare(image(), legacy_doc(itemConfig__first__0=90), edits({SHELL: 5}))
 
     def test_malformed(self):
-        for name, doc in (('missing class', legacy_doc(starConfig__Speed=...)),
-                          ('missing key', legacy_doc(chargeConfig__Power__charge2=...)),
+        for name, doc in (('missing stat', legacy_doc(starBoostConfig__curve=...)),
+                          ('missing key', legacy_doc(starBoostConfig__curve__amount=...)),
                           ('text', legacy_doc(staminaCost='x')),
-                          ('pitch type', legacy_doc(pitchConfig__Power__pitch01=3)),
                           ('boost op', legacy_doc(starBoostConfig__curve__addMult=0)),
                           ('items', legacy_doc(itemConfig__first=[1, 2])),
                           ('star cost', legacy_doc(starCostConfig__main=-1))):
@@ -341,13 +372,21 @@ class LegacyTests(unittest.TestCase):
 
 class CarryTests(unittest.TestCase):
     def test_detect_apply(self):
-        edited = written(image(), edits({USAGE: 50, AMOUNT: 2.0}))
+        edited = written(image(), edits({BANANA: 25, AMOUNT: 2.0}))
         found = carry.detect(edited, image())
-        self.assertEqual(set(found), {USAGE, AMOUNT})
+        self.assertEqual(set(found), {BANANA, AMOUNT})
         fresh = image()
-        self.assertEqual(carry.apply(fresh, found), ['carried: 2 values (Star boosts, Star usage odds)'])
+        self.assertEqual(carry.apply(fresh, found), ['carried: 2 values (Item odds, Star boosts)'])
         self.assertEqual(fresh.to_bytes(), edited.to_bytes())
         self.assertEqual(carry.apply(fresh, {}), [])
+
+    def test_moved_tables_are_not_carried(self):
+        edited = image()
+        edited.write(tables.STAR_USAGE, b'\x63\x63')
+        edited.write(tables.PREFERRED_PITCH + 9, b'\x07')
+        self.assertEqual(carry.detect(edited, image()), {})
+        self.assertIn('not carried: 3 values', carry.dropped(edited, image())[0])
+        self.assertEqual(carry.dropped(image(), image()), [])
 
     def test_stat_carry_skips_star_boosts(self):
         edited = written(image(), edits({AMOUNT: 2.0}))
@@ -407,7 +446,7 @@ class GameplayEnv(StatEnv):
 
 
 class PlannerTests(unittest.TestCase):
-    A = edits({USAGE: 50})
+    A = edits({BANANA: 25})
     B = edits({SHELL: 7})
 
     def plan(self, items, env):
@@ -421,7 +460,7 @@ class PlannerTests(unittest.TestCase):
         sections = b.to_json()['edits']
         self.assertEqual([(s['action'], s['target']) for s in sections], [('gameplay', '0xFF')] * 2)
         self.assertEqual(sections[0]['effects'], {'gameplay': '1 value in 1 table'})
-        self.assertIn('Star usage odds: Power / Dire 95 -> 50', sections[0]['notes'])
+        self.assertIn('Item odds: 6+ innings left / Banana 20 -> 25', sections[0]['notes'])
 
     def test_after_stat_edits_and_the_rebuild(self):
         changed = slot_plan.StatCheck('1 value', ['x'])
@@ -440,7 +479,7 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(any('dropped: the later reset' in n for n in b.notes), b.notes)
 
     def test_nothing_unless_something_comes_first(self):
-        same = edits({USAGE: 95})
+        same = edits({BANANA: 20})
         b = self.plan([{'op': 'gameplay', 'file': 'same.json'}], GameplayEnv({'same.json': same}))
         self.assertEqual((b.commands, [p.action for _e, p in b.skipped]), ([], ['gameplay']))
         b = self.plan([{'op': 'gameplay', 'file': 'a.json'}, {'op': 'gameplay', 'file': 'same.json'}],
@@ -451,8 +490,8 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(b.commands[-2], ('--apply-gameplay', 'same.json'))     # its star boosts must win
 
     def test_checked_together(self):
-        low = edits({F('star_modifiers', 'level_4', 'special'): -50})
-        high = edits({USAGE: 125})
+        low = edits({F('item_odds', '0', 'shell'): 0})
+        high = edits({BANANA: 60})                              # the row totals 140 alone, 120 with the other
         b = self.plan([{'op': 'gameplay', 'file': 'high.json'}], GameplayEnv({'high.json': high}))
         self.assertTrue(b.refused)
         b = self.plan([{'op': 'gameplay', 'file': 'low.json'}, {'op': 'gameplay', 'file': 'high.json'}],
@@ -481,19 +520,20 @@ class ViewTests(unittest.TestCase):
         return path
 
     def test_layers_and_marks(self):
-        snap = view.snapshot(self.out, self.inp, [self.item('a.json', edits({USAGE: 50}))])
+        snap = view.snapshot(self.out, self.inp, [self.item('a.json', edits({BANANA: 25}))])
         self.assertFalse(snap.readonly)
-        self.assertEqual((snap.current[COST], snap.vanilla[COST], snap.pending[USAGE]), (99, 50, 50))
+        self.assertEqual((snap.current[COST], snap.vanilla[COST], snap.pending[BANANA]), (99, 50, 25))
         drafts = {}
         view.set_draft(snap, drafts, SHELL, 70)
-        view.set_draft(snap, drafts, MOD, 5)                    # the value it shows: no draft
+        view.set_draft(snap, drafts, STAMINA, -10)              # the value it shows: no draft
         self.assertEqual(drafts, {SHELL: 70})
         marks = view.marks(snap, drafts)
-        self.assertEqual((marks[COST], marks[USAGE], marks[SHELL]), (view.CHANGED, view.PENDING, view.PROBLEM))
-        self.assertNotIn(MOD, marks)
-        self.assertEqual(view.tooltip(snap, drafts, USAGE), '1_Input: 95  /  pending: 50')
+        self.assertEqual((marks[COST], marks[BANANA], marks[SHELL]), (view.CHANGED, view.PENDING, view.PROBLEM))
+        self.assertNotIn(STAMINA, marks)
+        self.assertEqual(view.tooltip(snap, drafts, BANANA), '1_Input: 20  /  pending: 25')
         self.assertEqual(view.changed_count(snap), 2)
-        self.assertEqual(view.section_values(snap, 'star_usage'), {USAGE: 95, COST: 50})
+        self.assertEqual(view.section_values(snap, 'star_cost'), {COST: 50})
+        self.assertEqual(view.section_values(snap, 'item_odds'), {BANANA: 20})
 
     def test_reset_item_and_errors(self):
         snap = view.snapshot(self.out, self.inp, ['reset'])
@@ -510,12 +550,12 @@ class ViewTests(unittest.TestCase):
 
     def test_prune_drafts_and_staging_files(self):
         snap = view.snapshot(self.out, self.inp)
-        drafts = {COST: 99, USAGE: 40}
+        drafts = {COST: 99, BANANA: 24}
         view.prune_drafts(snap, drafts)
-        self.assertEqual(drafts, {USAGE: 40})
+        self.assertEqual(drafts, {BANANA: 24})
         staging = os.path.join(self.tmp, 'staging')
-        kept = view.write_edits(staging, {USAGE: 40})
-        gone = view.write_edits(staging, {USAGE: 41})
+        kept = view.write_edits(staging, {BANANA: 24})
+        gone = view.write_edits(staging, {BANANA: 23})
         copied = view.copy_for_staging(staging, self.item('mine.sluggiesgameplay', {}))
         self.assertTrue(os.path.basename(copied).startswith('load_1_mine'))
         view.prune_staging(staging, [kept])
@@ -529,19 +569,19 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(gui_grid.gameplay_item_label('reset'), 'every value back to 1_Input')
         self.assertEqual(gui_grid.gameplay_item_label('/x/load_2_mine.json'), 'loaded from mine.json')
         self.assertEqual(gui_grid.gameplay_item_label('/x/edit_3.json'), 'changed values')
-        state = {'gameplay': {'current': {'star_usage': {'power': {'dire': 50}}},
-                              'vanilla': {'star_usage': {'power': {'dire': 95}}}}}
+        state = {'gameplay': {'current': {'item_odds': {'0': {'banana': 25}}},
+                              'vanilla': {'item_odds': {'0': {'banana': 20}}}}}
         self.assertIn('1 value differ', gui_grid.gameplay_risk(state))
         self.assertIsNone(gui_grid.gameplay_risk({'gameplay': {'current': {}, 'vanilla': {}}}))
-        report = {'changes': [{'table': 'star_usage', 'row': 'power', 'column': 'dire', 'before': 95, 'after': 50}],
-                  'values': [{'table': 'star_usage', 'row': 'power', 'column': 'dire', 'before': 95, 'after': 50},
+        report = {'changes': [{'table': 'item_odds', 'row': '0', 'column': 'banana', 'before': 20, 'after': 25}],
+                  'values': [{'table': 'item_odds', 'row': '0', 'column': 'banana', 'before': 20, 'after': 25},
                              {'table': 'item_odds', 'row': '0', 'column': 'boo', 'before': 10, 'after': 10}],
                   'same': 1, 'notes': ['n'], 'warnings': [], 'legacy': True}
         dialog = gui_grid.gameplay_load_dialog(report, 'cpu_behavior.json', view.cell_labels(), 2)
         texts = [t for t, _k in dialog.lines]
         self.assertTrue(dialog.can_apply)
         self.assertIn('AI Gameplay Tool file', dialog.title)
-        self.assertIn('    Star usage odds: Power / Dire: 95 -> 50', texts)
+        self.assertIn('    Item odds: 6+ innings left / Banana: 20 -> 25', texts)
         self.assertIn('Stage replaces the 2 pending gameplay edits.', texts)
         everything = gui_grid.gameplay_load_dialog(report, 'x', view.cell_labels(), 0, only_diff=False)
         self.assertIn('    Item odds: 6+ innings left / Boo: 10', [t for t, _k in everything.lines])
@@ -583,16 +623,16 @@ class CliTests(unittest.TestCase):
         return cli.main([*argv, '--output-dir', self.out, '--input-dir', self.inp])
 
     def test_apply_dry_run_report_save_reset(self):
-        edit = self.path('edit.json', edits({USAGE: 50}))
+        edit = self.path('edit.json', edits({BANANA: 25}))
         report = self.path('report.json')
         self.assertEqual(self.main('--apply', edit, '--dry-run', '--report', report), 0)
         self.assertEqual(self.output().to_bytes(), stock_dol())
         with open(report, encoding='utf-8') as f:
             got = json.load(f)
-        self.assertEqual(got['changes'], [{'table': 'star_usage', 'row': 'power', 'column': 'dire', 'before': 95,
-                                           'after': 50, 'origin': 'edit'}])
+        self.assertEqual(got['changes'], [{'table': 'item_odds', 'row': '0', 'column': 'banana', 'before': 20,
+                                           'after': 25, 'origin': 'edit'}])
         self.assertEqual(self.main('--apply', edit), 0)
-        self.assertEqual(read.value(self.output(), USAGE), 50)
+        self.assertEqual(read.value(self.output(), BANANA), 25)
         saved = self.path('mine' + apply.EXTENSION)
         self.assertEqual(self.main('--save', saved), 0)
         with open(saved, encoding='utf-8') as f:
@@ -600,10 +640,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.main('--apply', 'reset'), 0)
         self.assertEqual(self.output().to_bytes(), stock_dol())
         self.assertEqual(self.main('--apply', saved), 0)
-        self.assertEqual(read.value(self.output(), USAGE), 50)
+        self.assertEqual(read.value(self.output(), BANANA), 25)
 
     def test_refusal_writes_nothing_and_reports(self):
-        bad = self.path('bad.json', edits({USAGE: 50}) | {'version': 9})
+        bad = self.path('bad.json', edits({BANANA: 25}) | {'version': 9})
         report = self.path('report.json')
         self.assertEqual(self.main('--apply', bad, '--report', report), 1)
         with open(report, encoding='utf-8') as f:

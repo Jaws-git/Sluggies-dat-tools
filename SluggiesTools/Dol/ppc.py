@@ -149,6 +149,7 @@ class Asm:
     def ori(self, ra, rs, imm): return self.word(d_form(24, rs, ra, _unsigned16(imm)))
     def andi_(self, ra, rs, imm): return self.word(d_form(28, rs, ra, _unsigned16(imm)))
     def xori(self, ra, rs, imm): return self.word(d_form(26, rs, ra, _unsigned16(imm)))
+    def xoris(self, ra, rs, imm): return self.word(d_form(27, rs, ra, _unsigned16(imm)))
     def add(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 266))
     def subf(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 40))  # rt = rb - ra
     def mullw(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 235))
@@ -186,12 +187,42 @@ class Asm:
     def sth(self, rs, d, ra): return self.word(d_form(44, rs, ra, d))
     def stw(self, rs, d, ra): return self.word(d_form(36, rs, ra, d))
     def stwu(self, rs, d, ra): return self.word(d_form(37, rs, ra, d))
+    def lbzu(self, rt, d, ra): return self.word(d_form(35, rt, ra, d))     # ra += d, then load
+    def stbu(self, rs, d, ra): return self.word(d_form(39, rs, ra, d))     # ra += d, then store
+    def stmw(self, rs, d, ra): return self.word(d_form(47, rs, ra, d))     # store rs..r31
+    def lmw(self, rt, d, ra): return self.word(d_form(46, rt, ra, d))      # load rt..r31
+    def stwx(self, rs, ra, rb): return self.word(x_form(rs, ra, rb, 151))
     def lbzx(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 87))
     def lhzx(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 279))
     def lwzx(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 23))
     def stbx(self, rs, ra, rb): return self.word(x_form(rs, ra, rb, 215))
     def lfs(self, ft, d, ra): return self.word(d_form(48, ft, ra, d))
     def stfs(self, fs, d, ra): return self.word(d_form(52, fs, ra, d))
+    def lfd(self, ft, d, ra): return self.word(d_form(50, ft, ra, d))
+    def stfd(self, fs, d, ra): return self.word(d_form(54, fs, ra, d))
+    def lfsx(self, ft, ra, rb): return self.word(x_form(ft, ra, rb, 535))
+
+    # -- floating point (single precision arithmetic) --------------------
+    def _fa(self, xo, t, a, b, c):
+        return self.word((59 << 26) | (_r(t) << 21) | (_r(a) << 16) | (_r(b) << 11) | (_r(c) << 6) | (xo << 1))
+
+    def _fx(self, xo, t, b):
+        return self.word((63 << 26) | (_r(t) << 21) | (_r(b) << 11) | (xo << 1))
+
+    def fdivs(self, t, a, b): return self._fa(18, t, a, b, 0)
+    def fsubs(self, t, a, b): return self._fa(20, t, a, b, 0)
+    def fadds(self, t, a, b): return self._fa(21, t, a, b, 0)
+    def fmuls(self, t, a, c): return self._fa(25, t, a, 0, c)
+    def fmadds(self, t, a, c, b): return self._fa(29, t, a, b, c)       # t = a * c + b
+    def fnmsubs(self, t, a, c, b): return self._fa(30, t, a, b, c)      # t = b - a * c
+    def fneg(self, t, b): return self._fx(40, t, b)
+    def fabs(self, t, b): return self._fx(264, t, b)
+    def fmr(self, t, b): return self._fx(72, t, b)
+    def frsqrte(self, t, b): return self._fx(26, t, b)
+    def fctiwz(self, t, b): return self._fx(15, t, b)                   # to a 32-bit integer, toward zero
+
+    def fcmpo(self, a, b, cr=0):
+        return self.word((63 << 26) | (_field(cr, 3, 'cr') << 23) | (_r(a) << 16) | (_r(b) << 11) | (32 << 1))
 
     def load_addr(self, rt, address: int) -> 'Asm':
         return self.lis(rt, ha(address)).addi(rt, rt, lo(address))
@@ -201,6 +232,12 @@ class Asm:
     def mtlr(self, rs): return self.word(x_form(rs, 0, 0, 467) | (0x100 << 11))
     def mtctr(self, rs): return self.word(x_form(rs, 0, 0, 467) | (0x120 << 11))
     def mftb(self, rt): return self.word(x_form(rt, 0, 0, 371) | (0x188 << 11))     # time base, lower word
+
+    # -- caches (code written at run time: dcbst, sync, icbi, isync) -------
+    def dcbst(self, ra, rb): return self.word(x_form(0, ra, rb, 54))
+    def icbi(self, ra, rb): return self.word(x_form(0, ra, rb, 982))
+    def sync(self): return self.word(0x7C0004AC)
+    def isync(self): return self.word(0x4C00012C)
 
     # -- control flow ----------------------------------------------------
     def nop(self): return self.word(0x60000000)
@@ -222,6 +259,12 @@ class Asm:
         _field(cr, 3, 'cr')
         resolve = self._target(target)
         self.items.append(lambda pc: bc_word(pc, resolve(), bo, bit + 4 * cr))
+        return self
+
+    def bdnz(self, target) -> 'Asm':
+        """Decrement ctr, branch while it is not zero."""
+        resolve = self._target(target)
+        self.items.append(lambda pc: bc_word(pc, resolve(), 16, 0))
         return self
 
     def beq(self, target, cr=0): return self.bc('beq', target, cr)

@@ -26,7 +26,7 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--set-char-voice', '--set-species-clip', '--set-stats',
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--write-slot-animation',
-                           '--write-voice-pack', '--game-options'})
+                           '--write-voice-pack', '--game-options', '--custom-cpu', '--custom-cpu-off'})
 STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
 CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the CPU vs CPU tab's button turns off (+ close plays)

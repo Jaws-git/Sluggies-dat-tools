@@ -71,8 +71,10 @@ class GameplayTab:
     # ------------------------------------------------------------------ build
     def build(self):
         with dpg.tab(label='Gameplay', tag='gameplay_tab'):
-            dpg.add_text('CPU behaviour, star boosts and item odds, written into main.dol (no Gecko codes). Typed '
-                         'values are staged per inner tab; "Patch Game" writes every pending edit.', wrap=1100)
+            dpg.add_text('Star and stamina costs, star boosts and item odds, written into main.dol (no Gecko codes). '
+                         'Typed values are staged per inner tab; "Patch Game" writes every pending edit. Star usage, '
+                         'charge swing odds, star swing modifiers and the preferred pitch are settings of the '
+                         'custom CPU level now (Custom CPU tab).', wrap=1100)
             with dpg.group(horizontal=True):
                 dpg.add_button(label='Patch Game', tag='gp_patch', width=PATCH_W, callback=lambda: self._on_patch())
                 dpg.bind_item_theme('gp_patch', 'primary_theme')

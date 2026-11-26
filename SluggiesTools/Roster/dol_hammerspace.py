@@ -1,4 +1,5 @@
-"""DOL hammerspace: a text and a data section above the boot stacks, with the MEM1 arena moved behind them.
+"""DOL hammerspace: a text and a data section above the boot stacks, with the MEM1 arena moved behind them, and
+an optional third section for the custom CPU level's code.
 
 Layout (US ``main.dol``; P2/P10 of the character-expansion plan, external tool):
 
@@ -7,7 +8,9 @@ Layout (US ``main.dol``; P2/P10 of the character-expansion plan, external tool):
                          so its frame writes land just above it
   0x807B7000-TEXT_LIMIT  our text section (hook stubs)
   DATA_BASE-             our data section (tables), up to ARENA_LO_MAX
-  arena low              end of the data section; OSInit takes it from four lis/addi pairs
+  cpu_base-              the custom CPU section (``CustomCpu/engine.py``), when that level is on: at the next
+                         ``CPU_ALIGN`` boundary behind the data section
+  arena low              end of the last section; OSInit takes it from four lis/addi pairs
 
 The game makes a fixed 15 MB MEM1 heap at arena low + 0x4006C, which must end
 below arena high, so arena low may rise to at most ``ARENA_LO_MAX`` (measured
@@ -15,8 +18,13 @@ by the external tool in six RAM dumps).
 
 Each section starts with a 0x20-byte marker: a 16-byte magic, then the
 section's used length (u32), so a later step can continue allocating where
-the last one stopped. Both sections are always the last bytes of the file;
+the last one stopped; the 12 bytes after it are zero (``CUSTOM_CPU_FLAG``
+uses two of the text marker's at run time). The sections are always the last bytes of the file;
 ``commit`` rewrites them and the arena constants together.
+
+The custom CPU section is position-dependent code built for its address, so it is always built last: a roster
+run drops it with the other sections (``reset``) and the custom CPU level puts it back after every roster step
+(``CustomCpu/carry``). Nothing else lives there, and it is no roster data (``has_data`` does not see it).
 """
 
 import struct
@@ -37,7 +45,13 @@ ARENA_LO_MAX = 0x808BF000
 MARKER_SIZE = 0x20
 TEXT_MAGIC = b'SLUGGIES ROSTER\x01'
 DATA_MAGIC = b'SLUGGIES ROSTER\x02'
+CPU_MAGIC = b'SLUGGIES CPUCODE'
+CPU_ALIGN = 0x1000
 STOCK_ARENA_VALUES = (0x807B6E80, 0x807B4E80)
+# Two of the text marker's spare bytes (zero in the file, so zero at boot; ``commit`` writes them as zero) are
+# run-time flags of the custom CPU level (``CustomCpu/engine.py``): +0 "this match plays the custom level",
+# +1 "its tables are swapped in". Fixed addresses, so a stub of another feature can test them.
+CUSTOM_CPU_FLAG = TEXT_BASE + 0x14
 
 
 class HammerspaceError(dolfile.DolError):
@@ -73,11 +87,21 @@ def set_arena_low(image: dolfile.DolImage, value: int) -> None:
         image.write_word(addi_site, (image.u32(addi_site) & 0xFFFF0000) | lo(value))
 
 
-class DolHammerspace:
-    """Our two sections in ``image``: allocate with ``code.put`` / ``data.put``, then ``commit``."""
+def cpu_slot(image: dolfile.DolImage):
+    """The custom CPU section's slot, or None."""
+    for slot in image.header.used_slots:
+        if slot.address > DATA_BASE and slot.size >= MARKER_SIZE \
+                and image.read(slot.address, len(CPU_MAGIC)) == CPU_MAGIC:
+            return slot
+    return None
 
-    def __init__(self, image: dolfile.DolImage, code: dolfile.Space, data: dolfile.Space):
-        self.image, self.code, self.data = image, code, data
+
+class DolHammerspace:
+    """Our two sections in ``image``: allocate with ``code.put`` / ``data.put``, then ``commit``. ``cpu``: the
+    custom CPU section as ``(address, bytes)`` or None; set it with ``set_cpu``."""
+
+    def __init__(self, image: dolfile.DolImage, code: dolfile.Space, data: dolfile.Space, cpu=None):
+        self.image, self.code, self.data, self.cpu = image, code, data, cpu
 
     @staticmethod
     def _load(image: dolfile.DolImage, base: int, magic: bytes) -> bytes | None:
@@ -100,7 +124,9 @@ class DolHammerspace:
             return None
         if text is None or data is None:
             raise HammerspaceError('only one of the two roster sections is present')
-        return cls(image, dolfile.Space(TEXT_BASE, TEXT_LIMIT, text), dolfile.Space(DATA_BASE, ARENA_LO_MAX, data))
+        extra = cpu_slot(image)
+        return cls(image, dolfile.Space(TEXT_BASE, TEXT_LIMIT, text), dolfile.Space(DATA_BASE, ARENA_LO_MAX, data),
+                   None if extra is None else (extra.address, image.read(extra.address, extra.size)))
 
     @classmethod
     def create(cls, image: dolfile.DolImage) -> 'DolHammerspace':
@@ -129,21 +155,40 @@ class DolHammerspace:
         return len(self.data.blob) > MARKER_SIZE
 
     @property
+    def cpu_base(self) -> int:
+        """Where the custom CPU section goes: behind the data section as it is now."""
+        return dolfile.align_up(self.data.here, CPU_ALIGN)
+
+    def set_cpu(self, payload: bytes | None) -> None:
+        """The custom CPU section's contents behind its marker (built for ``cpu_base + MARKER_SIZE``); None
+        drops the section. Written by ``commit``."""
+        self.cpu = None if payload is None else (
+            self.cpu_base, _marker(CPU_MAGIC, MARKER_SIZE + len(payload)) + bytes(payload))
+
+    @property
     def arena_low(self) -> int:
-        return dolfile.align_up(self.data.here)
+        end = self.data.here if self.cpu is None else max(self.data.here, self.cpu[0] + len(self.cpu[1]))
+        return dolfile.align_up(end)
 
     def commit(self) -> None:
-        """Write both sections (current contents) and point the arena start behind them."""
+        """Write the sections (current contents) and point the arena start behind them."""
         if self.arena_low > ARENA_LO_MAX:
-            raise HammerspaceError(f'data section would end at 0x{self.data.here:08X}, past 0x{ARENA_LO_MAX:08X}')
+            raise HammerspaceError(f'the added DOL sections would end at 0x{self.arena_low:08X}, past '
+                                   f'0x{ARENA_LO_MAX:08X}')
+        if self.cpu is not None and self.cpu[0] < dolfile.align_up(self.data.here):
+            raise HammerspaceError('the data section grew into the custom CPU section; deploy the custom CPU '
+                                   'level again')
         self.code.write(TEXT_BASE, _marker(TEXT_MAGIC, len(self.code.blob)))
         self.data.write(DATA_BASE, _marker(DATA_MAGIC, len(self.data.blob)))
         # Both sections are the file's tail: drop them (last first, so the file shrinks) and append anew.
-        old = [s for s in (self.image.section_at(TEXT_BASE), self.image.section_at(DATA_BASE)) if s is not None]
+        old = [s for s in (self.image.section_at(TEXT_BASE), self.image.section_at(DATA_BASE),
+                           cpu_slot(self.image)) if s is not None]
         for slot in sorted(old, key=lambda s: s.file_offset, reverse=True):
             self.image.remove_section(slot)
         self.image.add_section('text', TEXT_BASE, bytes(self.code.blob))
         self.image.add_section('data', DATA_BASE, bytes(self.data.blob))
+        if self.cpu is not None:
+            self.image.add_section('text', *self.cpu)
         set_arena_low(self.image, self.arena_low)
 
     def write(self, address: int, blob: bytes) -> None:
@@ -157,6 +202,8 @@ class DolHammerspace:
     def summary(self) -> str:
         return (f'text 0x{TEXT_BASE:08X}-0x{self.code.here:08X} (0x{len(self.code.blob):X} of '
                 f'0x{TEXT_LIMIT - TEXT_BASE:X}), data 0x{DATA_BASE:08X}-0x{self.data.here:08X}, '
+                + ('' if self.cpu is None else
+                   f'custom CPU 0x{self.cpu[0]:08X}-0x{self.cpu[0] + len(self.cpu[1]):08X}, ') +
                 f'arena low 0x{self.arena_low:08X} (limit 0x{ARENA_LO_MAX:08X})')
 
 
@@ -169,7 +216,7 @@ def remove_sections(image: dolfile.DolImage) -> bool:
         return False
     if hs.has_data:
         raise HammerspaceError('the roster sections hold roster data; reset the roster instead')
-    old = [s for s in (image.section_at(TEXT_BASE), image.section_at(DATA_BASE)) if s is not None]
+    old = [s for s in (image.section_at(TEXT_BASE), image.section_at(DATA_BASE), cpu_slot(image)) if s is not None]
     for slot in sorted(old, key=lambda s: s.file_offset, reverse=True):
         image.remove_section(slot)
     for site in inventory.group('arena_lo'):

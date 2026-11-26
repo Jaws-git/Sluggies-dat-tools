@@ -74,6 +74,7 @@ SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 STAT_EDITOR_SCRIPT = os.path.join(TOOLS_DIR, 'StatEditor', 'cli.py')
 GAMEPLAY_SCRIPT = os.path.join(TOOLS_DIR, 'Gameplay', 'cli.py')
+CUSTOM_CPU_SCRIPT = os.path.join(TOOLS_DIR, 'CustomCpu', 'runner.py')
 
 def python_script_command(script, *args):
     """Return a child-script command that works in source and frozen builds."""
@@ -529,6 +530,27 @@ def run_save_gameplay(path):
                           cwd=TOOLS_DIR).returncode == 0
 
 
+def run_custom_cpu(path=None, off=False, save=None, level=None, button=None, dry_run=False):
+    """The custom CPU level (a 5th button on the exhibition CPU level popup; CustomCpu/runner.py): ``path`` turns
+    it on with a settings file (.slgcpu; ``level``: the file's level column, ``button``: the button name),
+    ``off`` turns it off, ``save`` writes the deployed settings into a file. Writes main.dol and dt_na.dat in
+    3_Output_Dat; ``dry_run`` writes nothing."""
+    cmd = python_script_command(CUSTOM_CPU_SCRIPT)
+    if path:
+        cmd += ['--apply', os.path.abspath(path)]
+        if level:
+            cmd += ['--level', str(level)]
+        if button:
+            cmd += ['--button', button]
+    elif off:
+        cmd.append('--off')
+    elif save:
+        cmd += ['--save', os.path.abspath(save)]
+    if dry_run:
+        cmd.append('--dry-run')
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
 def run_export(debug=False, notex=False, untangle=False, glb=False, anim_glb=False):
     if importlib.util.find_spec('numpy') is None:
         slogger.error("Missing required package: numpy", source="dispatcher")
@@ -655,6 +677,10 @@ MODES = (
     Mode('apply_gameplay', lambda a: run_apply_gameplay(a.apply_gameplay, dry_run=a.dry_run, report=a.report),
          dry_run=True),
     Mode('save_gameplay', lambda a: run_save_gameplay(a.save_gameplay)),
+    Mode('custom_cpu', lambda a: run_custom_cpu(a.custom_cpu, level=a.cpu_level, button=a.cpu_button,
+                                                dry_run=a.dry_run), dry_run=True),
+    Mode('custom_cpu_off', lambda a: run_custom_cpu(off=True, dry_run=a.dry_run), dry_run=True),
+    Mode('custom_cpu_save', lambda a: run_custom_cpu(save=a.custom_cpu_save)),
     Mode('export', lambda a: run_export(debug=a.debug, notex=a.notex, untangle=a.untangle, glb=a.glb,
                                         anim_glb=a.anim_glb)),
     Mode('export_icons', lambda a: run_export_icons(use_output=a.use_output)),
@@ -748,6 +774,8 @@ def parse_args():
             '  python start.py --apply-gameplay my_settings.sluggiesgameplay --dry-run\n'
             '  python start.py --apply-gameplay reset\n'
             '  python start.py --save-gameplay my_settings.sluggiesgameplay\n'
+            '  python start.py --custom-cpu my_level.slgcpu --cpu-button "Brutal Level"\n'
+            '  python start.py --custom-cpu-off\n'
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
@@ -797,6 +825,9 @@ def parse_args():
     mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
     mode.add_argument('--apply-gameplay', nargs='+', metavar='ITEM', help='write gameplay settings (CPU behaviour, star boosts, item odds) into 3_Output_Dat/main.dol: edit or settings files (.sluggiesgameplay) or AI Gameplay Tool files (cpu_behavior.json), in order (a later one wins); the item reset puts every gameplay value back to 1_Input (with --dry-run: check and list the changes only)')
     mode.add_argument('--save-gameplay', metavar='FILE', help='save the gameplay settings of 3_Output_Dat/main.dol (CPU behaviour, star boosts, item odds) into a settings file (.sluggiesgameplay)')
+    mode.add_argument('--custom-cpu', metavar='FILE', help="turn the custom CPU level on (a 5th button on the exhibition CPU level popup) with a settings file (.slgcpu, also the Slugout's), or replace its settings; writes main.dol and dt_na.dat in 3_Output_Dat; use with --cpu-level / --cpu-button (with --dry-run: check only)")
+    mode.add_argument('--custom-cpu-off', action='store_true', help='turn the custom CPU level off: the stock popup and CPU code back')
+    mode.add_argument('--custom-cpu-save', metavar='FILE', help='save the deployed custom CPU level settings into a settings file (.slgcpu)')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Assets')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets")
     mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Assets/_SOUNDS as WAV files, one folder per archive group")
@@ -822,6 +853,8 @@ def parse_args():
     parser.add_argument('--equipment', metavar='FILE', help="--patch-slot: the slot file (2 bat, 3 left glove, 4 right glove, 5 extra bat; or bat, glove_l, glove_r, extra) a bat or glove .sluggie goes to (default: the file it was exported from); --clear-slot: reset only that equipment file, or 'all' four, instead of the models")
     parser.add_argument('--no-gear', action='store_true', help="--patch-slot of a model into a new ID: do not take the model's bats and gloves along")
     parser.add_argument('--no-trim', action='store_true', help='set-icon only: do not crop the transparent border before fitting')
+    parser.add_argument('--cpu-level', type=int, choices=(4, 5, 6), help='custom-cpu only: the level column of the settings file to read (default: its only one, else 4)')
+    parser.add_argument('--cpu-button', metavar='NAME', help='custom-cpu only: the button name, 1-25 characters (default: the file\'s, else the deployed one, else "Custom Level")')
     parser.add_argument('--report', metavar='FILE', help='apply-gameplay only: write the check as JSON into FILE (used by the GUI)')
     parser.add_argument('--focus', metavar='0xNN', help='stat-bridge-export only: the character the stat editor preselects')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input), stat edits included (gameplay settings are kept), and stop')
@@ -851,6 +884,8 @@ def parse_args():
     if args.dry_run and not (command is not None and command.dry_run):
         flags = [m.flag for m in MODES if m.dry_run]
         parser.error(f'--dry-run can only be used with {", ".join(flags[:-1])} or {flags[-1]}.')
+    if (args.cpu_level or args.cpu_button) and not args.custom_cpu:
+        parser.error('--cpu-level and --cpu-button can only be used with --custom-cpu.')
     if args.report and not args.apply_gameplay:
         parser.error('--report can only be used with --apply-gameplay.')
     if args.equipment and not (args.patch_slot or args.clear_slot):

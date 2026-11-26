@@ -71,10 +71,10 @@ def _slots(image: dolfile.DolImage, record: int) -> list[tuple[int, int]]:
 
 def _without_roster_sections(image: dolfile.DolImage) -> dolfile.DolImage:
     image = dolfile.DolImage(image.to_bytes())
-    for base in (dol_hammerspace.DATA_BASE, dol_hammerspace.TEXT_BASE):
-        slot = image.section_at(base)
-        if slot is not None:
-            image.remove_section(slot)
+    slots = [dol_hammerspace.cpu_slot(image)] + [image.section_at(base) for base in (dol_hammerspace.DATA_BASE,
+                                                                                    dol_hammerspace.TEXT_BASE)]
+    for slot in sorted((s for s in slots if s is not None), key=lambda s: s.file_offset, reverse=True):
+        image.remove_section(slot)
     manifest.strip_trailer(image)          # a run without DOL code keeps its manifest there
     return image
 

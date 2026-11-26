@@ -16,6 +16,9 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * Gameplay settings (``Gameplay/``: CPU behaviour, star boosts, item odds)
   are read before the reset and written back afterwards (``Gameplay/carry.py``),
   ``--remove`` included.
+* The custom CPU level (``CustomCpu/``) is read before the reset and rebuilt
+  afterwards from its settings record (``CustomCpu/carry.py``), ``--remove``
+  included.
 * Stat edits (values that differ from what the roster itself writes, e.g.
   from the stat editor) are read before the reset and written onto the new
   layout by character ID (``StatEditor/carry.py``); removed IDs lose theirs.
@@ -52,6 +55,7 @@ import slogger  # noqa: E402
 
 try:
     from .. import gecko_compat
+    from ..CustomCpu import carry as custom_cpu_carry
     from ..Dol import dolfile
     from ..GameOptions import game_options
     from ..Gameplay import carry as gameplay_carry
@@ -60,6 +64,7 @@ try:
     from . import datfile, derive, manifest, model_dirs, reset, steps
 except ImportError:
     import gecko_compat
+    from CustomCpu import carry as custom_cpu_carry
     from Dol import dolfile
     from GameOptions import game_options
     from Gameplay import carry as gameplay_carry
@@ -178,7 +183,13 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             sound = f.read()
     options = game_options.detect(dolfile.DolImage(current))
     gameplay = gameplay_carry.detect(dolfile.DolImage(current), dolfile.DolImage(vanilla))
-    stat_log: list[str] = []
+    stat_log: list[str] = [f'[gameplay] {line}' for line in gameplay_carry.dropped(
+        dolfile.DolImage(current), dolfile.DolImage(vanilla))]
+    try:
+        custom_cpu = custom_cpu_carry.detect(dolfile.DolImage(current))
+    except dolfile.DolError as exc:
+        custom_cpu = None
+        stat_log.append(f'[custom CPU] not carried over: {exc}')
     try:
         stat_edits = carry.detect(dolfile.DolImage(current), dolfile.DolImage(vanilla))
     except (bridge.BridgeError, dolfile.DolError) as exc:
@@ -232,6 +243,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     if gameplay:
         image = dolfile.DolImage(dol_bytes)
         log += [f'[gameplay] {line}' for line in gameplay_carry.apply(image, gameplay)]
+        dol_bytes = image.to_bytes()
+    if custom_cpu is not None:          # after the options: its swap table follows the outfield dive option
+        image = dolfile.DolImage(dol_bytes)
+        log += [f'[custom CPU] {line}' for line in custom_cpu_carry.apply(
+            image, dat, custom_cpu, dolfile.DolImage(vanilla), keep)]
         dol_bytes = image.to_bytes()
     result['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
     result['gecko_break'] = gecko_compat.breaks(current, dol_bytes)

@@ -54,6 +54,7 @@ import traceback
 import dearpygui.dearpygui as dpg
 import file_drop
 import gui_character_grid
+import gui_custom_cpu
 import gui_sounds
 import gui_effects
 import gui_gameplay
@@ -272,6 +273,7 @@ class SluggiesGui:
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
         self.gameplay_tab = gui_gameplay.GameplayTab(self)
+        self.custom_cpu_tab = gui_custom_cpu.CustomCpuTab(self)
         self.sounds_tab = gui_sounds.SoundsTab(self)
         self.effects_tab = gui_effects.EffectsTab(self)
         self.music_tab = gui_music.MusicTab(self)
@@ -1067,6 +1069,8 @@ class SluggiesGui:
             self.music_tab.on_open()
         if dpg.get_item_alias(tab) == 'gameplay_tab':
             self.gameplay_tab.refresh()
+        if dpg.get_item_alias(tab) == 'custom_cpu_tab':
+            self.custom_cpu_tab.refresh()
 
     def _on_send(self, *_):
         text = dpg.get_value('stdin_field')
@@ -1113,6 +1117,7 @@ class SluggiesGui:
                 self.grid_tab.build()
                 self.stat_tab.build()
                 self.gameplay_tab.build()
+                self.custom_cpu_tab.build()
                 self.sounds_tab.build()
                 self.effects_tab.build()
                 self.music_tab.build()
@@ -1165,6 +1170,7 @@ class SluggiesGui:
                 self._guarded('A popup failed to open', self._show_prompt_request)
                 self._guarded('The stat editor failed', self.stat_tab.tick)
                 self._guarded('The gameplay tab failed', self.gameplay_tab.tick)
+                self._guarded('The custom CPU tab failed', self.custom_cpu_tab.tick)
                 self._guarded('A notification failed', self.toast.tick)
                 dpg.render_dearpygui_frame()
         finally:

@@ -15,11 +15,14 @@ the s16 field (40000 becomes -25536, as its Gecko line made it). Every clamp
 and wrap gives a note.
 
 **Only what its codes changed.** The generator emits a block only where the
-file differs from its defaults, which equal the stock bytes: star usage,
-charge odds, modifiers, preferred pitch and item odds as whole tables; each
-star cost entry, the stamina cost and each star boost row on its own. The
-migration keeps exactly those blocks, "differs" tested against
-``1_Input/main.dol``; everything else keeps the game's value.
+file differs from its defaults, which equal the stock bytes: item odds as a
+whole table; each star cost entry, the stamina cost and each star boost row
+on its own. The migration keeps exactly those blocks, "differs" tested
+against ``1_Input/main.dol``; everything else keeps the game's value.
+
+**Not migrated**: its star usage, charge odds, modifier and preferred pitch
+sections (``MOVED_SECTIONS``). Those tables are custom CPU level settings now
+(``tables.MOVED``); a section that differs from the clean game gives a note.
 
 A malformed file (a missing key in a present section, a value that is not a
 number, a choice its own UI never offers) is refused.
@@ -114,6 +117,35 @@ class _Migration:
             self.out.same.append(name)
 
 
+# Sections whose tables are custom CPU level settings now (``tables.MOVED``): (section, row keys, value keys,
+# the clean game's values in that order). Not migrated; a section that differs from the clean game gives a note.
+MOVED_SECTIONS = (
+    ('starConfig', CLASSES, STAR_KEYS,
+     (5, 5, 20, 75, 95, 15, 15, 30, 80, 95, 1, 1, 10, 30, 60, 25, 25, 30, 50, 95)),
+    ('chargeConfig', CLASSES, ('charge01', 'charge2'), (40, 10, 90, 40, 30, 10, 40, 10)),
+    ('modifierConfig', LEVELS, ('normal', 'special'), (0, 0, 0, 0, -10, 0, -20, 5)),
+    ('pitchConfig', CLASSES, ('pitch01', 'pitch2', 'prob01', 'prob2'),
+     (0, 1, 70, 70, 1, 1, 85, 85, 0, 0, 85, 80, 0, 2, 50, 60)),
+)
+
+
+def _moved_sections(doc: dict, m: '_Migration') -> None:
+    changed = []
+    for section, rows, keys, stock in MOVED_SECTIONS:
+        entry = doc.get(section)
+        if entry is None:
+            continue
+        try:
+            given = tuple(js_round(entry[row][key]) for row in rows for key in keys)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            given = None                     # not read any more, so a malformed section is no refusal
+        if given != stock:
+            changed.append(section)
+    if changed:
+        m.out.notes.append(f'{", ".join(changed)}: star usage, charge odds, star swing modifiers and preferred pitch '
+                           'are custom CPU level settings now (Custom CPU tab): not loaded')
+
+
 def migrate(doc: dict, vanilla: dict) -> Migrated:
     """The values ``doc``'s Gecko codes wrote (module docstring); ``vanilla``: ``{field: value}`` of
     ``1_Input/main.dol`` (``read.values``). Raises ``LegacyError``."""
@@ -123,14 +155,7 @@ def migrate(doc: dict, vanilla: dict) -> Migrated:
     f = tables.field
     missing = []
 
-    star = doc['starConfig']
-    values = {}
-    for row, cls in zip(tables.CLASSES, CLASSES):
-        entry = _get(star, cls, 'starConfig')
-        for column, key in zip(tables.TABLES_BY_KEY['star_usage'].columns, STAR_KEYS):
-            where = f'starConfig.{cls}.{key}'
-            values[f('star_usage', row, column)] = m.percent(_get(entry, key, f'starConfig.{cls}'), where)
-    m.block('Star usage odds', values)
+    _moved_sections(doc, m)
 
     costs = doc.get('starCostConfig')
     if costs is None:
@@ -142,47 +167,6 @@ def migrate(doc: dict, vanilla: dict) -> Migrated:
             if not 0 <= points <= 0x7FFF:
                 raise LegacyError(f'{where}: {points} points is not a star cost the game can hold')
             m.block(tables.label(f('star_cost', row, 'points')), {f('star_cost', row, 'points'): points})
-
-    charge = doc.get('chargeConfig')
-    if charge is None:
-        missing.append('chargeConfig')
-    else:
-        values = {}
-        for row, cls in zip(tables.CLASSES, CLASSES):
-            entry = _get(charge, cls, 'chargeConfig')
-            for column, key in (('0_1_strikes', 'charge01'), ('2_strikes', 'charge2')):
-                values[f('charge_odds', row, column)] = m.percent(_get(entry, key, f'chargeConfig.{cls}'),
-                                                                  f'chargeConfig.{cls}.{key}')
-        m.block('Charge swing odds', values)
-
-    modifiers = doc.get('modifierConfig')
-    if modifiers is None:
-        missing.append('modifierConfig')
-    else:
-        values = {}
-        for row, level in zip(tables.TABLES_BY_KEY['star_modifiers'].rows, LEVELS):
-            entry = _get(modifiers, level, 'modifierConfig')
-            for column in ('normal', 'special'):
-                where = f'modifierConfig.{level}.{column}'
-                values[f('star_modifiers', row, column)] = m.clamp(_get(entry, column, f'modifierConfig.{level}'),
-                                                                   -0x80, 0x7F, where, 'signed byte,')
-        m.block('Star swing modifiers', values)
-
-    pitch = doc.get('pitchConfig')
-    if pitch is None:
-        missing.append('pitchConfig')
-    else:
-        values = {}
-        for row, cls in zip(tables.CLASSES, CLASSES):
-            entry = _get(pitch, cls, 'pitchConfig')
-            for strikes, pkey, ckey in (('0_1', 'pitch01', 'prob01'), ('2', 'pitch2', 'prob2')):
-                kind = _get(entry, pkey, f'pitchConfig.{cls}')
-                if kind not in (0, 1, 2) or isinstance(kind, bool):
-                    raise LegacyError(f'pitchConfig.{cls}.{pkey}: {kind!r} is not a pitch type (0, 1 or 2)')
-                values[f('preferred_pitch', row, f'pitch_{strikes}')] = int(kind)
-                values[f('preferred_pitch', row, f'chance_{strikes}')] = m.percent(
-                    _get(entry, ckey, f'pitchConfig.{cls}'), f'pitchConfig.{cls}.{ckey}')
-        m.block('Preferred pitch', values)
 
     if 'staminaCost' not in doc:
         missing.append('staminaCost')

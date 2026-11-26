@@ -16,8 +16,6 @@ table is the stat editor's own (``fields.GLOBAL_FIELDS``, table
 
 Tables (readers found by cross-reference and disassembly):
 
-* ``star_usage`` (``0x80624778``): class x situation u8 %, the CPU's
-  star-swing / star-pitch odds (FUN_800C5778, FUN_800C710C).
 * ``star_cost`` (``0x8062BD40``): a 6-entry s16 table in team star points,
   stock ``0, 100, 100, 0, 50, 50``. **Entry 4 is also the HUD's star unit**:
   FUN at ``0x8033A71C`` copies it to ``r13 - 0x99C``, and the star gauge code
@@ -30,11 +28,6 @@ Tables (readers found by cross-reference and disassembly):
   stored into a team's points in six places (``sth`` after FUN_80180804, e.g.
   ``0x804E16B4``): what for is unknown. 0 is the dive check, 2 and 3 are
   unknown; only 1, 4 and 5 are fields.
-* ``charge_odds`` (``0x80797218``): class x strikes u8 % (FUN_800C5974).
-* ``star_modifiers`` (``0x80797210``): CPU level x situation s8, added to the
-  star usage roll (FUN_800C5778).
-* ``preferred_pitch`` (``0x807971C0``): class x strikes pitch type (0 curve,
-  1 fast, 2 change), then the chance of throwing it at ``+8`` (FUN_800C7378).
 * ``stamina`` (``0x80627B8E``, ``0x80627B90``): the stamina a star pitch and a
   charge pitch cost, two s16 of a row at ``0x80627B88`` (the charge pitch's
   confirmed in Dolphin, 2026-10-22: −40 there tires the pitcher faster).
@@ -49,11 +42,19 @@ Cross-field checks (``problems``):
 
 * an item row totals at most 127: the pick sign-extends the roll
   (``extsb`` at ``0x80458530``); weights are relative, they need not total 100;
-* star usage + the largest star swing modifier is at most 127: the roll's sum
-  is sign-extended from a byte (``extsb`` at ``0x800C5934``), a larger sum wraps
-  negative and the CPU never star-swings;
 * the stamina costs stay negative (a drain);
 * the non-captain star cost stays above 0: it is the HUD's star unit, a divisor.
+
+**Moved to the custom CPU level** (``MOVED``; ``CustomCpu/settings.py``, its
+``sluggies_`` and charge swing settings): ``star_usage`` (``0x80624778``,
+class x situation u8 %, FUN_800C5778 / FUN_800C710C), ``charge_odds``
+(``0x80797218``, class x strikes u8 %, FUN_800C5974), ``star_modifiers``
+(``0x80797210``, CPU level x situation s8, added to the star usage roll) and
+``preferred_pitch`` (``0x807971C0``, class x strikes pitch type, then the
+chance at ``+8``, FUN_800C7378). They are no gameplay fields any more: a
+custom match swaps its own values in, and levels 1-4 play the clean game's.
+Files that still name them load without them, with a note (``apply``,
+``legacy``); a reset and a roster run put their bytes back to ``1_Input``.
 """
 
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ except ImportError:
 
 GlobalField = fields.GlobalField
 
-TABS = (('cpu', 'CPU Behaviour'), ('boosts', 'Star Boosts'), ('items', 'Item Odds'))
+TABS = (('cpu', 'Star and Stamina Costs'), ('boosts', 'Star Boosts'), ('items', 'Item Odds'))
 
 CLASSES = ('balanced', 'power', 'speed', 'technique')
 CLASS_LABELS = ('Balanced', 'Power', 'Speed', 'Technique')
@@ -91,37 +92,24 @@ class Table:
     note: str = ''
 
 
+# Tables that are custom CPU level settings now (module docstring): key -> title, and their bytes.
+MOVED = {'star_usage': 'Star usage odds', 'charge_odds': 'Charge swing odds',
+         'star_modifiers': 'Star swing modifiers', 'preferred_pitch': 'Preferred pitch'}
+MOVED_RANGES = ((STAR_USAGE, 20), (STAR_MODIFIERS, 8), (CHARGE_ODDS, 8), (PREFERRED_PITCH, 16))
+
 SECTIONS = (
-    ('star_usage', 'cpu', 'Star usage'),
-    ('charge_odds', 'cpu', 'Charge swing odds'),
-    ('star_modifiers', 'cpu', 'Star swing modifiers'),
-    ('pitching', 'cpu', 'Pitching'),
+    ('star_cost', 'cpu', 'Star costs'),
+    ('stamina', 'cpu', 'Stamina costs'),
     ('star_boost', 'boosts', 'Star boosts'),
     ('item_odds', 'items', 'Item odds'),
 )
 
 TABLES = (
-    Table('star_usage', 'Star usage odds', 'cpu', 'star_usage', CLASSES, CLASS_LABELS,
-          ('normal_0_1', 'normal_2', 'special_0_1', 'special_2', 'dire'),
-          ('Normal, 0-1 strikes', 'Normal, 2 strikes', 'Special, 0-1 strikes', 'Special, 2 strikes', 'Dire'),
-          '% per class. Special: runners on 2nd/3rd (not 1st) or bases loaded. Dire: 2 strikes, 2 outs, bottom '
-          'of the final inning.'),
-    Table('star_cost', 'Star costs', 'cpu', 'star_usage', ('1', '4', '5'),
+    Table('star_cost', 'Star costs', 'cpu', 'star_cost', ('1', '4', '5'),
           ('Alt. captain', 'Non-captain', 'Main captain'), ('points',), ('Points',),
           'Team star points a star swing or star pitch costs. The non-captain cost is also one star on the match '
           'HUD (stock 50), so changing it rescales the star gauge; it must stay above 0.'),
-    Table('charge_odds', 'Charge swing odds', 'cpu', 'charge_odds', CLASSES, CLASS_LABELS,
-          ('0_1_strikes', '2_strikes'), ('0-1 strikes', '2 strikes'),
-          '% per class, rolled only when the CPU does not star-swing.'),
-    Table('star_modifiers', 'Star swing modifiers', 'cpu', 'star_modifiers',
-          ('level_1', 'level_2', 'level_3', 'level_4'), ('Level 1', 'Level 2', 'Level 3', 'Level 4'),
-          ('normal', 'special'), ('Normal', 'Special'),
-          'Added to the star usage odds by CPU level (-128 to 127). Level 1 never star-swings.'),
-    Table('preferred_pitch', 'Preferred pitch', 'cpu', 'pitching', CLASSES, CLASS_LABELS,
-          ('pitch_0_1', 'chance_0_1', 'pitch_2', 'chance_2'),
-          ('Pitch, 0-1 strikes', 'Chance %', 'Pitch, 2 strikes', 'Chance %'),
-          'When the chance fails, the CPU throws a random pitch.'),
-    Table('stamina', 'Stamina costs', 'cpu', 'pitching', ('star_pitch', 'charge_pitch'),
+    Table('stamina', 'Stamina costs', 'cpu', 'stamina', ('star_pitch', 'charge_pitch'),
           ('Star pitch', 'Charge pitch'), ('cost',), ('Stamina',), 'Stamina a pitch drains (negative).'),
     Table('star_boost', 'Star boosts', 'boosts', 'star_boost', fields.keys(fields.STAR_BOOST_STATS_LIST),
           ('Displayed pitching', 'Curveball speed', 'Fastball speed', 'Curve', 'Curse ball', 'Displayed batting',
@@ -146,26 +134,9 @@ def _fields() -> tuple[GlobalField, ...]:
     def put(kind, table, row, column, address, choices=None):
         out.append(GlobalField(kind, choices, table=table, row=row, column=column, address=address))
 
-    t = TABLES_BY_KEY['star_usage']
-    for i, row in enumerate(t.rows):
-        for j, column in enumerate(t.columns):
-            put('u8', t.key, row, column, STAR_USAGE + len(t.columns) * i + j)
     t = TABLES_BY_KEY['star_cost']
     for row in t.rows:
         put('s16', t.key, row, 'points', STAR_COST + 2 * int(row))
-    t = TABLES_BY_KEY['charge_odds']
-    for i, row in enumerate(t.rows):
-        for j, column in enumerate(t.columns):
-            put('u8', t.key, row, column, CHARGE_ODDS + 2 * i + j)
-    t = TABLES_BY_KEY['star_modifiers']
-    for i, row in enumerate(t.rows):
-        for j, column in enumerate(t.columns):
-            put('s8', t.key, row, column, STAR_MODIFIERS + 2 * i + j)
-    t = TABLES_BY_KEY['preferred_pitch']
-    for i, row in enumerate(t.rows):
-        for j, strikes in enumerate(('0_1', '2')):
-            put('u8', t.key, row, f'pitch_{strikes}', PREFERRED_PITCH + 2 * i + j, tuple(range(len(PITCH_TYPES))))
-            put('u8', t.key, row, f'chance_{strikes}', PREFERRED_PITCH + 8 + 2 * i + j)
     put('s16', 'stamina', 'star_pitch', 'cost', STAMINA)
     put('s16', 'stamina', 'charge_pitch', 'cost', STAMINA + 2)
     out += [f for f in fields.GLOBAL_FIELDS if f.table == 'star_boost']
@@ -230,14 +201,6 @@ def problems(values: dict) -> list[Problem]:
             if total > ROLL_LIMIT:
                 out.append(Problem(f'Item odds: {row_label} totals {total}; at most {ROLL_LIMIT} (the game reads the '
                                    'roll as a signed byte)', tuple(row_fields)))
-    modifiers = [f for f in BY_TABLE['star_modifiers'] if f in values]
-    if len(modifiers) == len(BY_TABLE['star_modifiers']):
-        top = max(values[f] for f in modifiers)
-        top_fields = tuple(f for f in modifiers if values[f] == top)
-        for f in BY_TABLE['star_usage']:
-            if f in values and values[f] + top > ROLL_LIMIT:
-                out.append(Problem(f'{label(f)}: {values[f]} + star swing modifier {top} = {values[f] + top}; at '
-                                   f'most {ROLL_LIMIT}, or the CPU never star-swings', (f,) + top_fields))
     unit = FIELD_LOOKUP[('star_cost', '4', 'points')]
     if unit in values and values[unit] <= 0:
         out.append(Problem(f'{label(unit)} {values[unit]}: must stay above 0 (it is one star on the match HUD, the '

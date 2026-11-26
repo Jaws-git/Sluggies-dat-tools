@@ -25,7 +25,9 @@ Turning an option off writes the stock words back. On a roster-built DOL its
 stub stays behind as unused bytes until the next roster run rebuilds the
 section; without a roster (sections holding only option stubs) ``remove``
 rebuilds the sections from the options still on, or drops them and restores
-the stock arena start when none is, so the DOL is stock again.
+the stock arena start when none is, so the DOL is stock again. The custom CPU
+level (``CustomCpu/``) keeps its code in a section of its own behind them;
+``remove`` carries it through that rebuild.
 """
 
 import struct
@@ -189,7 +191,8 @@ def _defense_change_stub(base: int, site: int) -> Asm:
 # player record r31 (*(0x807098C8 + 4 * the player's +0x16)) is set, else 1 or 60 from the low bit of a stock
 # heap halfword (0x900D5BFC, the game object +4). The stub draws from the time base instead (mftb modulo 100,
 # no heap address), so the odds of the 1 can be set; 50% is the Gecko code. Outside CPU vs CPU it writes the
-# stock value back (the Gecko code left its last value there for the next human match). Static data and r13 /
+# stock value back (the Gecko code left its last value there for the next human match), except during a custom
+# CPU level match (CustomCpu/engine.py), whose "close-play press delay" is this entry. Static data and r13 /
 # register reads only: a roster run or a player memory level moves none of it. The stub uses r0, r11, r12 and
 # cr0: r0 is loaded by the stock instruction, r11 and r12 are set again before they are read, and cr0 is set by
 # the `cmpw` right after the site.
@@ -200,6 +203,7 @@ CLOSE_PLAY_STOCK_VALUE = 0x14
 CLOSE_PLAY_ABILITY, CLOSE_PLAY_ABILITY_VALUE = 0x1A1, 2        # r31 + 0x1A1: the baserunning ability
 CLOSE_PLAY_HIT, CLOSE_PLAY_MISS = 1, 60                        # the Gecko code's two values
 CLOSE_PLAY_LEVELS = tuple(range(0, 101, 10))                   # % of draws that write CLOSE_PLAY_HIT
+CUSTOM_CPU_FLAG = dol_hammerspace.CUSTOM_CPU_FLAG                # non-zero during a custom CPU level match
 CLOSE_PLAY_GECKO = 50
 
 
@@ -217,9 +221,13 @@ def _close_play_stub(percent: int):
         a.li(12, CLOSE_PLAY_HIT).cmplwi(11, percent).blt('store')
         a.li(12, CLOSE_PLAY_MISS).b('store')
         a.label('stock')
+        # A custom CPU level match swapped its own press delay into the entry: leave it (the match-start hook
+        # puts the saved value back afterwards).
+        a.lis(11, ha(CUSTOM_CPU_FLAG)).lbz(11, lo(CUSTOM_CPU_FLAG), 11).cmpwi(11, 0).bne('back')
         a.li(12, CLOSE_PLAY_STOCK_VALUE)
         a.label('store')
         a.lis(11, ha(CLOSE_PLAY_ENTRY)).sth(12, lo(CLOSE_PLAY_ENTRY), 11)
+        a.label('back')
         a.word(CLOSE_PLAY_STOCK)
         a.b(site + 4)
         return a
@@ -1007,13 +1015,42 @@ def remove(image: dolfile.DolImage, keys, vanilla: dolfile.DolImage | None = Non
     hs = dol_hammerspace.DolHammerspace.open(image)
     if hs is None or hs.has_data:
         return log
+    engine = _custom_cpu()
+    custom_cpu = engine.detect(image)       # its section goes with the others: carried like the options
     still_on = [key for key in detect(image) if BY_KEY[key].hooks]     # plain patches don't live in the sections
     for key in still_on:
         _unhook(image, BY_KEY[key])
+    if custom_cpu is not None:
+        engine.unhook(image)
     dol_hammerspace.remove_sections(image)
     if still_on:
         apply(image, still_on)
-        log.append('unused option stubs removed (the options still on were rebuilt)')
+    if custom_cpu is not None:
+        engine.apply_dol(image, custom_cpu, vanilla.read if vanilla is not None else None)
+    if still_on or custom_cpu is not None:
+        log.append('unused option stubs removed (' + ' and '.join(
+            (['the options still on'] if still_on else []) + (['the custom CPU level'] if custom_cpu is not None
+                                                              else [])) + ' rebuilt)')
     else:
         log.append('no option is on: the added DOL sections are removed and the arena start is stock again')
     return log
+
+
+def _custom_cpu():
+    """``CustomCpu/engine`` (imported late: it is a user of the DOL hammerspace like this module)."""
+    try:
+        from ..CustomCpu import engine
+    except ImportError:
+        from CustomCpu import engine
+    return engine
+
+
+def refresh_custom_cpu(image: dolfile.DolImage, vanilla: dolfile.DolImage | None = None) -> list[str]:
+    """Rebuild the custom CPU level's block when it is on: its swap table holds the "outfield dive" option's
+    word as it was when the block was built, so the block follows a change of that option."""
+    engine = _custom_cpu()
+    record = engine.detect(image)
+    if record is None:
+        return []
+    engine.apply_dol(image, record, vanilla.read if vanilla is not None else None)
+    return ['custom CPU level: rebuilt for the outfield dive option']

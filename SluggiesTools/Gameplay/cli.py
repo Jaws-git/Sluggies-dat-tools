@@ -75,7 +75,7 @@ def apply_items(items: list[str], output_dir: str = OUTPUT_DIR, dry_run: bool = 
     """Check the items and write them into ``output_dir/main.dol`` (not with ``dry_run``)."""
     dol_path, image = _output_dol(output_dir)
     prepared = check(image, items, input_dir)
-    if prepared.changes and not dry_run:
+    if (prepared.changes or prepared.moved) and not dry_run:
         apply.write(image, prepared)
         tmp = dol_path + '.gameplay_tmp'
         with open(tmp, 'wb') as f:
@@ -143,7 +143,7 @@ def main(argv=None) -> int:
     for warning in prepared.warnings:
         slogger.warning(warning, source=SOURCE)
     same = f'; {prepared.same} already as given' if prepared.same else ''
-    if not prepared.changes:
+    if not prepared.changes and not prepared.moved:
         slogger.info(f'nothing to change: main.dol holds these values already{same}', source=SOURCE)
     elif args.dry_run:
         slogger.info(f'dry run: {apply.summary(prepared)} would change{same}; nothing written', source=SOURCE)
