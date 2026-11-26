@@ -535,6 +535,28 @@ class TestPromptMarker(unittest.TestCase):
         self.assertEqual(offenders, [], "use slogger.ask() instead of input()")
 
 
+class TestNarrowConsole(unittest.TestCase):
+    """A console that is not UTF-8 (cp1252 on the Windows CI runner) gets ``?`` for what it cannot encode."""
+
+    def test_unencodable_characters_do_not_raise_in_logging(self):
+        import io
+        from unittest import mock
+        raw = io.BytesIO()
+        console = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        with mock.patch("sys.stdout", console):
+            slog = _fresh_slogger(tmpdir)
+        self.addCleanup(_fresh_slogger, tmpdir)                 # later tests get handlers on the real stdout
+        with mock.patch.object(logging, "raiseExceptions", True), \
+                mock.patch.object(logging.Handler, "handleError", side_effect=AssertionError("logging error")):
+            slog.info("32,768 → 34,152 ä", source="t")
+        console.flush()
+        self.assertIn("32,768 ? 34,152 ä".encode("cp1252"), raw.getvalue())
+        with open(slog._log_file_path, encoding="utf-8") as f:
+            self.assertIn("32,768 → 34,152 ä", f.read())    # the file keeps the real text
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     unittest.main()

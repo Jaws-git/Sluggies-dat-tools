@@ -148,6 +148,21 @@ class _FlushingFileHandler(logging.FileHandler):
 # Public API
 # ---------------------------------------------------------------------------
 
+class _ConsoleHandler(logging.StreamHandler):
+    """A stream handler for consoles that are not UTF-8 (cp1252 on Windows runners): characters the stream
+    cannot encode are written as ``?`` instead of raising inside ``logging`` ("--- Logging error ---")."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        encoding = getattr(self.stream, "encoding", None)
+        if not encoding:
+            return message
+        try:
+            return message.encode(encoding, "replace").decode(encoding, "replace")
+        except LookupError:
+            return message
+
+
 def configure(
     log_dir: Optional[str] = None,
     log_file: Optional[str] = None,
@@ -186,7 +201,7 @@ def configure(
     formatter = _SluggiesFormatter()
 
     # --- stdout handler -------------------------------------------------
-    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler = _ConsoleHandler(sys.stdout)
     stdout_handler.setLevel(logging.INFO)
     stdout_handler.setFormatter(formatter)
     _root_logger.addHandler(stdout_handler)
