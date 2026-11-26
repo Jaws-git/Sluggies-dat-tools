@@ -11,6 +11,7 @@ claims) into the list of bones a new custom submesh may attach to.
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -498,6 +499,50 @@ def key_leaves_rest(channel: str, index: int, value: float) -> bool:
     if rest is None or not 0 <= index < len(rest):
         return False
     return abs(float(value) - rest[index]) > POSE_REST_TOL
+
+
+_DUPLICATED_BONE_NAME_RE = re.compile(r'^bone_\d+\.\d+$')
+_MODEL_BONE_NAME_RE = re.compile(r'^bone_\d+$')
+
+
+def donor_bone_count(bones: Iterable[Tuple[str, bool]]) -> int:
+    """How many of the armature's bones are the model's own. *bones* is
+    ``(name, SluggiesUserAdded)`` per bone. Only a ``bone_<id>`` name counts:
+    a hand-made bone (a rig helper, or one not adopted yet) is no model bone,
+    and counting it would shift every added bone's id by one against the
+    exporter, which numbers them from the .sluggie's bone count."""
+    return sum(1 for name, user_added in bones if not user_added and _MODEL_BONE_NAME_RE.match(name))
+
+
+def hand_made_bone_names(bones: Iterable[Tuple[str, bool, bool]]) -> List[str]:
+    """Names of the bones made with Blender's own tools that the model should
+    take as added bones. *bones* is ``(name, has the importer's properties,
+    deforms)`` per bone.
+
+    A bone drawn or extruded in Edit Mode has none of the properties the
+    importer and Add Bone write; one duplicated from a model bone carries
+    copies of them under Blender's ``bone_<id>.<nnn>`` name. Neither is known
+    to the exporter until it is adopted (properties set, renamed to the next
+    ``bone_<id>``). A bone with Deform off is a rig helper (an IK target, a
+    control) and stays out of the model."""
+    return [
+        name for name, has_properties, deforms in bones
+        if deforms and (not has_properties or _DUPLICATED_BONE_NAME_RE.match(name))
+    ]
+
+
+def hand_made_bone_error(names: Iterable[str]) -> Optional[str]:
+    """Export-time message for :func:`hand_made_bone_names`, or None."""
+    names = list(names)
+    if not names:
+        return None
+    shown = ", ".join(names[:5]) + (f" (and {len(names) - 5} more)" if len(names) > 5 else "")
+    return (
+        f"{shown}: made with Blender's own bone tools, so the model does not know "
+        f"{'it' if len(names) == 1 else 'them'} yet. Click 'Renumber Added Bones' in the Sluggies "
+        "sidebar to take them into the model as added bones (or untick Deform on a helper bone "
+        "that should stay out of the game), then export again."
+    )
 
 
 def added_bone_name_error(renames: Dict[str, str]) -> Optional[str]:

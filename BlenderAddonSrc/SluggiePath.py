@@ -89,7 +89,8 @@ def stored(arm_obj):
 
 
 def _blend_dir():
-    path = bpy.data.filepath
+    # While an add-on is being enabled, bpy.data is a restricted stand-in without `filepath`.
+    path = getattr(bpy.data, 'filepath', '')
     return os.path.dirname(os.path.abspath(path)) if path else ''
 
 

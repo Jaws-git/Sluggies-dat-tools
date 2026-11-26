@@ -21,8 +21,9 @@ def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
     the same PNG, so each copy was encoded and stored separately (Tiny Kong,
     2026-09-27: four 512 KB copies of one image). Merging here fixes such
     ``.sluggie`` files without a re-export. ``DesiredTextureAssignments``
-    indices and custom submesh ``AdditionalTextureFileName`` bindings are
-    remapped to the kept entry.
+    indices and the ``AdditionalTextureFileName`` bindings of custom
+    submeshes and of rebuilt submeshes' new surfaces are remapped to the
+    kept entry.
     """
     additions = model.get('AdditionalTextureDescriptors') or []
     if len(additions) < 2:
@@ -56,12 +57,21 @@ def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
     for order, first in enumerate(canonical):
         kept_name.setdefault(
             additions[order].get('TextureFileName'), additions[first].get('TextureFileName'))
+    owners = []
     for cs in model.get('CustomSubmeshes') or []:
-        for owner in [cs] + list(cs.get('AdditionalSurfaces') or []):
-            texture_assignment = owner.get('TextureAssignment') or {}
-            name = texture_assignment.get('AdditionalTextureFileName')
-            if name in kept_name:
-                texture_assignment['AdditionalTextureFileName'] = kept_name[name]
+        owners += [cs] + list(cs.get('AdditionalSurfaces') or [])
+    # New surfaces of a rebuilt donor submesh bind additions by file name too
+    # (a bat replaced by a mesh with two materials of one colour, 2026-11-26).
+    for submesh in model.get('Submeshes') or []:
+        for key in ('RigidRebuild', 'SkinnedRebuild'):
+            rebuild = submesh.get(key)
+            if isinstance(rebuild, dict):
+                owners += [s for s in rebuild.get('NewSurfaces') or [] if isinstance(s, dict)]
+    for owner in owners:
+        texture_assignment = owner.get('TextureAssignment') or {}
+        name = texture_assignment.get('AdditionalTextureFileName')
+        if name in kept_name:
+            texture_assignment['AdditionalTextureFileName'] = kept_name[name]
 
     model['AdditionalTextureDescriptors'] = [additions[order] for order in kept]
     _slogger.info(

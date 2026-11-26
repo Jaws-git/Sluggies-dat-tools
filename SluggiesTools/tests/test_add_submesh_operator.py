@@ -495,7 +495,15 @@ class MakeSubmeshOperatorStructureTests(unittest.TestCase):
         poll = self._method('poll')
         self.assertIn("context.mode != 'OBJECT'", poll)
         self.assertIn("obj.type != 'MESH'", poll)
-        self.assertIn('_is_donor_mesh(obj)', poll)
+        # An imported mesh is refused, unless another object holds the same
+        # submesh: a copy of it can become a submesh of its own.
+        self.assertIn('_is_imported_original(obj)', poll)
+        original = self._function('_is_imported_original')
+        self.assertIn('_is_donor_mesh(obj) and _donor_copy_original(obj) is None', original)
+        make = self._method('_make_submesh')
+        self.assertIn('_strip_donor_object_props(obj)', make)
+        self.assertIn('_drop_unused_material_slots(obj)', make)
+        self.assertIn("f'rigid:{surface_id}'", self._function('_donor_copy_template_of'))
 
     def test_execute_keeps_world_position_and_rebinds_to_one_bone(self):
         self.assertIn('_ordered_host_bone_choices(context, arm_obj, exclude=obj)', self._method('_make_submesh'))

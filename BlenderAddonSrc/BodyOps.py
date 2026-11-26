@@ -5,7 +5,6 @@ Registered by ``SluggiesToolsPanel.register``.
 Never imports ``SluggiesToolsPanel``.
 """
 
-import re
 import bpy
 from . import HostBones
 from . import ModelCheckCore
@@ -16,6 +15,7 @@ from .ExportTextures import (
 )
 from .SceneModels import (
     _BODY_SUBMESH,
+    _DONOR_OBJECT_PROP_RE,
     _SURFACE_ID_RE,
     _body_objects,
     _body_submesh,
@@ -62,11 +62,6 @@ _OLD_BODY_WARNING = "The current main body becomes a rigid submesh and keeps onl
 
 # Join or Replace meshes keeps a replaced body whole instead.
 _BACKUP_BODY_NOTE = "The current main body is set aside as '<name>.backup', off the armature and not exported."
-
-
-# Object properties the importer writes on a donor submesh besides
-# REQUIRED_PROPS (UV binding, legacy per-surface shader modes).
-_DONOR_OBJECT_PROP_RE = re.compile(r'^(UV\d+_(TextureIndex|WrapS|WrapT)|DS_.+_ShaderMode)$')
 
 
 def _dominant_bone_choice(arm_obj, obj, choices):

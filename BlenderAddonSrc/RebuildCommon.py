@@ -12,7 +12,8 @@ Sections:
 
 - fields and index buffers;
 - int16 quantization and the position range (the worst-vertex scan, the
-  first format that fits, a donor's candidate formats);
+  first format that fits, a donor's candidate formats), and the float32
+  formats;
 - per-loop attributes pooled by value: normals, UVs, colours;
 - donor submesh facts and the rebuild reasons;
 - face -> surface routing;
@@ -173,6 +174,63 @@ def quantize_int16_all(values, divisor):
         return [quantize_int16(value, divisor, '') for value in values]
     except ValueError:
         return None
+
+
+# Float formats: components are stored as big-endian float32 with no
+# fixed-point shift (many stadium meshes: positions 0x40, some UVs 0x40).
+# Nibbles 7 and 0xA are four bytes wide too (binfmt._WIDE_VECTOR_FORMATS) but
+# occur in no exported model, so only 4 is written.
+FLOAT_FORMAT_NIBBLES = (4, 7, 0xA)
+FLOAT32_FORMAT_NIBBLE = 4
+FLOAT32_MAX = 3.4028234663852886e38
+
+
+def is_float_format(quantize_info) -> bool:
+    """Whether *quantize_info* stores four-byte components (no int16 divisor)."""
+    return (int(quantize_info) >> 4) in FLOAT_FORMAT_NIBBLES
+
+
+def is_float32_format(quantize_info) -> bool:
+    """Whether *quantize_info* is the float32 format the rebuilds can write."""
+    return (int(quantize_info) >> 4) == FLOAT32_FORMAT_NIBBLE
+
+
+def float32_value(value, context):
+    """*value* as a float a float32 can hold, rejecting (never clamping) one
+    that is not finite or too large. *context* names what is being encoded."""
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f'{context}: value is not finite ({value})')
+    if abs(value) > FLOAT32_MAX:
+        raise ValueError(f'{context}: value {value:g} is outside the float32 range')
+    return value
+
+
+def float32_all(values):
+    """Every value of *values* as a float32-safe float, or None when one is
+    refused (the encoders then walk again to name it)."""
+    try:
+        return [float32_value(value, '') for value in values]
+    except ValueError:
+        return None
+
+
+def encode_float_positions(object_name, geometry) -> bytes:
+    """Big-endian float32 position buffer (three components per vertex) for a
+    rebuilt donor submesh whose position format is float32. No range to
+    outgrow and no quantization step."""
+    if len(geometry.positions) > U16_LIMIT:
+        raise ValueError(
+            f'{object_name}: {len(geometry.positions)} vertices exceed the uint16 index range'
+        )
+    values = float32_all(value for position in geometry.positions for value in position)
+    if values is None:          # a refused component: walk again to name it
+        values = []
+        for index, position in enumerate(geometry.positions):
+            vertex = geometry.source_vertices[index]
+            for axis, value in zip('xyz', position):
+                values.append(float32_value(value, f'{object_name} vertex {vertex} {axis}'))
+    return struct.pack(f'>{len(values)}f', *values)
 
 
 def position_extent(geometry):
@@ -338,10 +396,19 @@ def encode_loop_normals(object_name, geometry, loop_normals, normal_format, pinn
 
 def encode_loop_uvs(object_name, geometry, loop_uvs, uv_format):
     """Per-loop Blender UVs to game ST. The importer flips V (``t = 1 - v``),
-    so export flips it back, as encode_mesh_hammerspace does."""
+    so export flips it back, as encode_mesh_hammerspace does. A float32
+    channel (some stadium meshes) stores the coordinates as they are."""
     comp_count, quantize_info = uv_format
-    divisor = int16_divisor(quantize_info)
     records = []
+    if is_float32_format(quantize_info):
+        padding = [0.0] * (comp_count - 2)
+        for loop in loop_order(geometry):
+            u, v = loop_uvs[loop]
+            s = float32_value(u, f'{object_name} loop {loop} UV u')
+            t = float32_value(1.0 - v, f'{object_name} loop {loop} UV v (stored as 1 - v)')
+            records.append(struct.pack(f'>{comp_count}f', s, t, *padding))
+        return dedupe_records(records)
+    divisor = int16_divisor(quantize_info)
     for loop in loop_order(geometry):
         u, v = loop_uvs[loop]
         quantized = quantize_int16_all((u, 1.0 - v), divisor)
@@ -576,14 +643,20 @@ def donor_submesh_facts(index: int, sub: dict) -> dict:
     )
 
 
-def donor_position_format_error(donor: DonorSubmesh, object_name: str, rebuild_name: str) -> Optional[str]:
-    """Only int16 donor positions can be rebuilt. *rebuild_name* is how the
-    text calls the path (``rigid rebuild``, ``body rebuild``)."""
+def donor_position_format_error(
+    donor: DonorSubmesh, object_name: str, rebuild_name: str, float_positions: bool = False,
+) -> Optional[str]:
+    """Int16 donor positions can be rebuilt, and float32 ones where the path
+    writes them (*float_positions*: the rigid rebuild; the body's interleaved
+    records are int16 only). *rebuild_name* is how the text calls the path
+    (``rigid rebuild``, ``body rebuild``)."""
     if (donor.position_quantize >> 4) == 3:
         return None
+    if float_positions and is_float32_format(donor.position_quantize):
+        return None
     return (
-        f'{object_name}: this submesh stores positions in format {donor.position_quantize} '
-        f'(not int16), which the {rebuild_name} does not support; keep its topology, '
+        f'{object_name}: this submesh stores positions in format {donor.position_quantize}, '
+        f'which the {rebuild_name} does not support; keep its topology, '
         'transform and surfaces unchanged.'
     )
 

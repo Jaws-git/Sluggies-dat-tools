@@ -48,6 +48,7 @@ class ModelScope:
     for_export: bool = False
     reimport_textures: bool = True           # export option; the dialog assumes on
     unparented: list = field(default_factory=list)  # meshes tied only by VertexBufferOffset
+    colliders: list = field(default_factory=list)   # collision-only meshes: never drawn, not in `meshes`
     texture_error: str = ""                  # why the texture context can't be resolved
     _textures: object = None
 
@@ -113,13 +114,18 @@ def _load_model(path, cache):
 
 
 def gather_scopes(context):
-    """One scope per Sluggies armature in the scene (hidden and excluded
-    collections included): its child meshes, meshes whose Armature modifier
-    targets it, and unparented meshes whose VertexBufferOffset matches a
-    submesh of its .sluggie."""
+    """One scope per Sluggies armature in the scene (hidden collections
+    included): its child meshes, meshes whose Armature modifier targets it,
+    and unparented meshes whose VertexBufferOffset matches a submesh of its
+    .sluggie. Objects only in deactivated collections (unticked in the
+    Outliner) are not part of the view layer and are left out: they are
+    references or set-aside copies. Collision-only meshes go to the scope's
+    ``colliders``, not its ``meshes`` (``core.is_collision_only``)."""
     cache = {}
     scopes = {}
-    objects = list(context.scene.objects)
+    excluded = core.excluded_collections(_layer_exclusion_tree(context.view_layer.layer_collection))
+    objects = [obj for obj in context.scene.objects
+               if core.in_active_collection((c.name for c in obj.users_collection), excluded)]
     for obj in objects:
         if is_sluggies_armature(obj):
             path = SluggiePath.resolve(obj)
@@ -137,7 +143,8 @@ def gather_scopes(context):
         if owner is None or owner.name not in scopes:
             owner = next((a for a in _modifier_armatures(obj) if a.name in scopes), None)
         if owner is not None:
-            scopes[owner.name].meshes.append(obj)
+            scope = scopes[owner.name]
+            (scope.colliders if _is_collision_only(obj) else scope.meshes).append(obj)
         elif all(prop in obj for prop in core.REQUIRED_PROPS):
             loose.append(obj)
     for obj in loose:
@@ -146,6 +153,19 @@ def gather_scopes(context):
         if len(matches) == 1:
             matches[0].unparented.append(obj)
     return list(scopes.values())
+
+
+def _layer_exclusion_tree(layer_collection):
+    """The view layer's collections as core.excluded_collections reads them."""
+    return (layer_collection.collection.name, layer_collection.exclude,
+            [_layer_exclusion_tree(child) for child in layer_collection.children])
+
+
+def _is_collision_only(obj):
+    collision = getattr(obj, 'sluggies_collision', None)
+    return core.is_collision_only(
+        collision is not None and collision.enabled, bool(obj.get('SluggiesCustomSubmesh')),
+        all(prop in obj for prop in core.REQUIRED_PROPS))
 
 
 def _sluggies_meshes(objects):
@@ -325,7 +345,7 @@ def _used_new_surfaces(obj):
 # ---------------------------------------------------------------------------
 
 def check_edit_mode(context, scope):
-    for obj in [scope.armature] + scope.meshes:
+    for obj in [scope.armature] + scope.meshes + scope.colliders:
         if obj is not None and obj.mode == 'EDIT':
             yield Finding("edit_mode", ERROR, obj.name, "In Edit Mode",
                           "Export is not possible in Edit Mode. Switch to Object Mode (Tab) and "
@@ -383,7 +403,18 @@ def check_added_bone_names(context, scope):
     if arm is None:
         return
     bones = arm.data.bones
-    donor_count = sum(1 for b in bones if not b.get('SluggiesUserAdded'))
+    hand_made = HostBoneScene._hand_made_bones(arm)
+    if hand_made:
+        yield Finding("hand_made_bones", ERROR, arm.name,
+                      core.plural(len(hand_made), "Hand-made bone") + " not in the model",
+                      f"{', '.join(hand_made)}: made with Blender's own bone tools, so no mesh can be "
+                      "attached to them and they are not exported. 'Renumber Added Bones' in the "
+                      "Sluggies sidebar (the fix here) takes them into the model as added bones "
+                      "(bone_<id> names). Untick Deform on a helper bone that should stay out of "
+                      "the game.",
+                      "renumber_bones", {"armature": arm.name})
+        return
+    donor_count = HostBoneScene._donor_bone_count(arm)
     renames = HostBones.added_bone_renames(donor_count, [
         (b.name, int(b.get('SluggiesCreationOrder', 0))) for b in bones if b.get('SluggiesUserAdded')])
     message = HostBones.added_bone_name_error(renames)
@@ -396,8 +427,12 @@ def check_donor_bones(context, scope):
     arm = scope.armature
     if arm is None or scope.model is None or scope.for_export:
         return
+    # Bones made with Blender's own tools are no renamed originals: the ones that deform are
+    # check_added_bone_names' finding, helpers (Deform off) are left alone.
+    hand_made = set(HostBoneScene._hand_made_bones(arm))
     bones = [core.BoneInfo(b.name, b.parent.name if b.parent else None, bool(b.get('SluggiesUserAdded')))
-             for b in arm.data.bones]
+             for b in arm.data.bones
+             if 'SluggiesUserAdded' in b.keys() and b.name not in hand_made]
     problems = core.donor_bone_problems(bones, scope.model.get("BoneHierarchy") or [], stadium=scope.stadium)
     texts = {
         "renamed": ("Original bone renamed", "Original bones renamed",
@@ -554,10 +589,13 @@ def check_duplicate_claims(context, scope):
         if scope.for_export:
             yield Finding("duplicate_claim", ERROR, objs[1].name, "Same submesh twice",
                           f"{objs[0].name} and {objs[1].name} both belong to submesh {index}. Select "
-                          "only one of them and export again.")
+                          "only one of them and export again. To keep both in the game, turn one into "
+                          "a submesh of its own first: 'Make Active Mesh into a Submesh' in the "
+                          "Sluggies sidebar.")
         else:
             yield Finding("duplicate_claim", INFO, objs[1].name, f"Same submesh as {objs[0].name}",
-                          f"{names} all belong to submesh {index}; export only one of them.")
+                          f"{names} all belong to submesh {index}; export only one of them, or turn "
+                          "the others into submeshes of their own ('Make Active Mesh into a Submesh').")
     by_custom = {}
     for obj in scope.meshes:
         if _is_custom(obj):
@@ -698,7 +736,7 @@ def check_collision(context, scope):
     """Stadium collision settings the exporter refuses."""
     if scope.model is None:
         return
-    enabled = [obj for obj in scope.meshes
+    enabled = [obj for obj in scope.meshes + scope.colliders
                if getattr(obj, 'sluggies_collision', None) is not None and obj.sluggies_collision.enabled]
     for obj in enabled:
         if obj.sluggies_collision.invisible and not _is_custom(obj) \
@@ -708,6 +746,14 @@ def check_collision(context, scope):
     message = StadiumCollisionExport.chunk_error(scope.model.get("ChunkNumber"), [obj.name for obj in enabled])
     if message:
         yield Finding("collision_chunk", ERROR, scope.name, "Collision not possible here", message)
+    elif scope.colliders:
+        # One line for all of them: the checks of a drawn mesh do not apply to a collider.
+        count = len(scope.colliders)
+        shown = ", ".join(obj.name for obj in scope.colliders[:4]) + (" ..." if count > 4 else "")
+        yield Finding("collision_only", INFO, scope.name,
+                      core.plural(count, "collision mesh", "collision meshes") + ": not drawn, fine as they are",
+                      f"{shown}: exported as stadium collision only (their triangles and Solid for the "
+                      "ball settings). They need no submesh link, Armature modifier, material or UV map.")
 
 
 def check_custom_host_bone(context, scope):
@@ -1204,7 +1250,7 @@ def check_stray_objects(context, scopes):
     a downloaded rig's), so export never reads them; and other geometry
     (curves, text, ...) on a Sluggies armature, which it never reads either.
     Objects only in hidden or excluded collections are references: skipped."""
-    claimed = {obj.name for scope in scopes for obj in scope.meshes + scope.unparented}
+    claimed = {obj.name for scope in scopes for obj in scope.meshes + scope.unparented + scope.colliders}
     visible = core.visible_collections(_layer_collection_tree(context.view_layer.layer_collection))
     for obj in context.scene.objects:
         if not any(c.name in visible for c in obj.users_collection):

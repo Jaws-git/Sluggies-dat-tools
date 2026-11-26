@@ -807,6 +807,9 @@ _RIGID_REBUILD_M3_CHANNEL_FIELDS = {
 _RIGID_REBUILD_NEW_SURFACE_KEY_RE = re.compile(r'^sm(\d+)_new(\d+)$')
 #: int16 position formats: GX format nibble 3 (s16), any fixed-point shift.
 _RIGID_REBUILD_POSITION_FORMAT_NIBBLE = 3
+#: float32 positions (GX format nibble 4; many stadium meshes): a rigid rebuild
+#: writes them as they are, three 4-byte components, no shift to widen.
+_RIGID_REBUILD_FLOAT_POSITION_FORMAT_NIBBLE = 4
 #: The ``VertexBufferQuantizeInfo`` a rebuild entry may carry: any s16 format
 #: (shift 0..15). The exporter writes one, coarser than the donor's, only when
 #: the mesh outgrew the donor's range; s16 keeps the 2-byte components, so
@@ -1088,16 +1091,28 @@ def _validate_rigid_rebuilds(model: dict) -> None:
         if comp_count != 3:
             fail(f'needs a rigid donor submesh (VertexBufferCompCount 3), got {comp_count!r}')
         quantize = vb.get('VertexBufferQuantizeInfo')
-        if not isinstance(quantize, int) or isinstance(quantize, bool) \
-                or (quantize >> 4) != _RIGID_REBUILD_POSITION_FORMAT_NIBBLE:
+        if not isinstance(quantize, int) or isinstance(quantize, bool) or (quantize >> 4) not in (
+                _RIGID_REBUILD_POSITION_FORMAT_NIBBLE, _RIGID_REBUILD_FLOAT_POSITION_FORMAT_NIBBLE):
             fail(
-                f'donor position format {quantize!r} is not int16 (high nibble '
-                f'{_RIGID_REBUILD_POSITION_FORMAT_NIBBLE}); only int16 rigid positions can be rebuilt'
+                f'donor position format {quantize!r} is neither int16 (high nibble '
+                f'{_RIGID_REBUILD_POSITION_FORMAT_NIBBLE}) nor float32 (high nibble '
+                f'{_RIGID_REBUILD_FLOAT_POSITION_FORMAT_NIBBLE}); only those rigid positions can be rebuilt'
             )
             quantize = _CUSTOM_SUBMESH_POSITION_FORMAT[1]
-        quantize_error = _rebuild_position_quantize_error(rebuild)
-        if quantize_error:
-            fail(quantize_error)
+        float_positions = (quantize >> 4) == _RIGID_REBUILD_FLOAT_POSITION_FORMAT_NIBBLE
+        if float_positions:
+            # A float32 donor keeps its format: there is no shift to widen and no int16 pose delta.
+            if rebuild.get('VertexBufferQuantizeInfo') not in (None, quantize):
+                fail(
+                    f"VertexBufferQuantizeInfo {rebuild.get('VertexBufferQuantizeInfo')!r} cannot change "
+                    f'the float32 donor position format {quantize}'
+                )
+            if rebuild.get('FacialPoses') is not None:
+                fail('FacialPoses cannot be rebuilt on a float32 position format')
+        else:
+            quantize_error = _rebuild_position_quantize_error(rebuild)
+            if quantize_error:
+                fail(quantize_error)
         position_stride = 3 * _vb_comp_size(quantize)
 
         in_place = _rigid_rebuild_in_place_edit_fields(sub)

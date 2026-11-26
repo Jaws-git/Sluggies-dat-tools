@@ -33,7 +33,8 @@ _ADAPT_STEPS = (
     # ('TRANSFORM', "Scale and Position", _ADAPT_TRANSFORM_DESCRIPTION),
     ('MESHES', "Join or Replace Meshes",
      "For the Sluggies armature selected (or above the selected object): join each added mesh into the "
-     "main body, let one replace it, add it as a rigid submesh on a free bone, or ignore it"),
+     "main body, let one replace it, add it as a rigid submesh on a free bone, let it replace or join "
+     "one of the model's own rigid meshes (a bat, a glove), or ignore it"),
     ('WEIGHTS', "Map Weights or Autorig",
      "For the Sluggies armature selected (or above the selected object): map the main body's vertex "
      "groups from its old rig onto the Sluggers bones, or weight it automatically"),

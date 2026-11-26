@@ -235,14 +235,50 @@ def _next_new_bone_creation_order(arm_obj):
     return max(orders) + 1 if orders else 0
 
 
+def _hand_made_bones(arm_obj):
+    """Names of *arm_obj*'s bones made with Blender's own tools that the
+    model should take as added bones (HostBones.hand_made_bone_names); none
+    for an armature whose bone metadata is out of date."""
+    if not HostBones.bone_metadata_is_current(arm_obj.get('SluggiesBoneMetadataVersion')):
+        return []
+    return HostBones.hand_made_bone_names(
+        (b.name, 'SluggiesUserAdded' in b.keys(), b.use_deform) for b in arm_obj.data.bones)
+
+
+def _donor_bone_count(arm_obj):
+    return HostBones.donor_bone_count(
+        (b.name, bool(b.get('SluggiesUserAdded'))) for b in arm_obj.data.bones)
+
+
+def _adopt_hand_made_bones(arm_obj):
+    """Give every hand-made bone (_hand_made_bones) what Add Bone gives a new
+    one: no mesh, no skinning, no track, the next creation order. Its name
+    is left to _renumber_added_bones. Returns the adopted names."""
+    names = _hand_made_bones(arm_obj)
+    for name in names:
+        bone = arm_obj.data.bones[name]
+        bone['SluggiesUserAdded'] = False       # not counted by the creation order below
+        bone['SluggiesCreationOrder'] = _next_new_bone_creation_order(arm_obj)
+        bone['SluggiesUserAdded'] = True
+        bone['SluggiesGeoIdRaw'] = HostBones.GEO_ID_FREE
+        bone['SluggiesSkinned'] = False
+        bone['SluggiesDrawPriority'] = 0
+        bone['SluggiesInheritTransform'] = True
+        bone['track_id'] = HostBones.NO_TRACK
+        BoneRoles.bone_collection(arm_obj.data, BoneRoles.ADDED).assign(bone)
+    return names
+
+
 def _renumber_added_bones(arm_obj):
     """Rename Add Bone bones to the `bone_<id>` the exporter will give them
-    (HostBones.added_bone_renames). Renaming a Bone makes Blender rename the
+    (HostBones.added_bone_renames), after taking hand-made bones in as added
+    bones (_adopt_hand_made_bones). Renaming a Bone makes Blender rename the
     matching vertex groups on every mesh the armature deforms, so custom
     submeshes keep their host. Two passes, since a target name can still be
     held by another added bone. Returns the applied renames."""
+    _adopt_hand_made_bones(arm_obj)
     bones = arm_obj.data.bones
-    donor_count = sum(1 for b in bones if not b.get('SluggiesUserAdded'))
+    donor_count = _donor_bone_count(arm_obj)
     renames = HostBones.added_bone_renames(donor_count, [
         (b.name, int(b.get('SluggiesCreationOrder', 0)))
         for b in bones if b.get('SluggiesUserAdded')
@@ -269,13 +305,18 @@ def _renumber_added_bones_reporting(op, arm_obj, undo_step=False):
     caller is a dialog's invoke, which changes data before the user
     confirmed: the rename gets an undo step of its own, so Cancel leaves it
     as a step that can be undone instead of merging it into the next one."""
+    adopted = _hand_made_bones(arm_obj)
     renames = _renumber_added_bones(arm_obj)
-    if renames:
+    if adopted:
+        op.report({"INFO"}, "Hand-made bones taken into the model as added bones: " + ", ".join(
+            f"{name} (now {renames[name]})" if name in renames else name for name in adopted))
+    plain = {old: new for old, new in renames.items() if old not in adopted}
+    if plain:
         op.report({"INFO"}, "Renumbered added bones: " + ", ".join(
-            f"{old} -> {new}" for old, new in sorted(renames.items())))
-        if undo_step:
-            bpy.ops.ed.undo_push(message="Renumber added bones")
-    return renames
+            f"{old} -> {new}" for old, new in sorted(plain.items())))
+    if (renames or adopted) and undo_step:
+        bpy.ops.ed.undo_push(message="Renumber added bones")
+    return renames or {name: name for name in adopted}
 
 
 def _unused_bone_name(arm_obj):

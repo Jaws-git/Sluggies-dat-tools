@@ -475,6 +475,46 @@ def _submesh_position_half_extents(sub) -> tuple[float, float, float]:
     )
 
 
+def _submesh_position_extents(sub) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """``(min xyz, max xyz)`` of a submesh's (bone-local) position array."""
+    comp = _vb_comp_size(sub.vertex_quantize_info)
+    count = len(sub.vertex_data) // (comp * 3)
+    code = 'f' if comp == 4 else 'h'
+    values = struct.unpack(f'>{count * 3}{code}', sub.vertex_data[:count * 3 * comp])
+    divisor = 1 if comp == 4 else 1 << (sub.vertex_quantize_info & 0xF)
+    return (
+        tuple(min(values[axis::3], default=0.0) / divisor for axis in range(3)),
+        tuple(max(values[axis::3], default=0.0) / divisor for axis in range(3)),
+    )
+
+
+def _update_gpl_bounds_boxes(gpl_bytes: bytes, rebuilt_submeshes) -> tuple[bytes, list[int]]:
+    """Rewrite the culling box of every rebuilt submesh in a stadium's
+    GPLUserData bounds table (see ``_gpl_user_data_bounds_descriptor``).
+
+    The game culls mesh i with box i in bone-local space, and every vanilla
+    box is its mesh's exact ``min xyz, max xyz`` (checked on Yoshi Park and
+    Wario City, 2026-11-26). A rebuilt mesh that grew, moved on its bone or
+    changed bones would otherwise keep the donor's box and vanish at some
+    camera angles. Returns the section and the submesh indices whose box
+    was written (none where the model has no reachable table)."""
+    _magic, user_data_len, user_data_ptr, count, _desc_ptr = struct.unpack_from('>5I', gpl_bytes, 0)
+    if not user_data_ptr or not user_data_len or user_data_ptr + user_data_len > len(gpl_bytes):
+        return gpl_bytes, []
+    offset = _gpl_user_data_bounds_descriptor(gpl_bytes[user_data_ptr:user_data_ptr + user_data_len], count)
+    if offset is None:
+        return gpl_bytes, []
+    out = bytearray(gpl_bytes)
+    written = []
+    for sub in rebuilt_submeshes:
+        if not 0 <= sub.submesh_index < count:
+            continue
+        low, high = _submesh_position_extents(sub)
+        struct.pack_into('>6f', out, user_data_ptr + offset + 8 + 24 * sub.submesh_index, *low, *high)
+        written.append(sub.submesh_index)
+    return bytes(out), written
+
+
 # Stadium Type 6 values: 00000374 draws a texture's transparent texels opaque
 # (black), 00000570 cuts them out (Yoshi Park, Dolphin, 2026-10-01). Character
 # surfaces pair 00000374 with cut-out textures too, so this is stadium-only.
@@ -1199,7 +1239,9 @@ def PatchGPLReplaceRigidSubmeshes(
     """Rebuild every donor submesh
     that carries a RigidRebuild as a fresh blob before GPLUserData and point
     its descriptor at it; the old blob is dropped when it leads the blob
-    region (_drop_donor_blobs), else it stays unreferenced. Returns the new
+    region (_drop_donor_blobs), else it stays unreferenced. In a stadium
+    with a culling-box table the rebuilt meshes' boxes follow their new
+    extents (_update_gpl_bounds_boxes). Returns the new
     section and its length (the value to hand PatchGPLAppendSubmesh as
     ``donor_gpl_length``, since any UV-rebuild tail is folded in)."""
     rebuilt = [sub for sub in parsed.mesh.submeshes if sub.rigid_rebuild is not None]
@@ -1207,6 +1249,7 @@ def PatchGPLReplaceRigidSubmeshes(
         return gpl_bytes, (len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length)
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
     blobs = []
+    new_submeshes = []
     for sub in rebuilt:
         donor_color = None
         if sub.rigid_rebuild.color_data is None:
@@ -1224,7 +1267,14 @@ def PatchGPLReplaceRigidSubmeshes(
         )
         blob, name_off = _build_rigid_submesh_blob(new_sub)
         blobs.append((sub.submesh_index, blob, name_off))
+        new_submeshes.append(new_sub)
     out, length, dropped = _splice_blobs_before_user_data(gpl_bytes, blobs, donor_gpl_length)
+    out, boxed = _update_gpl_bounds_boxes(out, new_submeshes)
+    if boxed:
+        _slogger.info(
+            f"[GPL] updated the GPLUserData culling box of rebuilt submesh(es) {', '.join(map(str, boxed))}",
+            source='hammerspace.main',
+        )
     for submesh_index, blob, _name_off in blobs:
         _slogger.info(
             f'[GPL] replaced submesh {submesh_index} with a {len(blob):,}-byte rebuilt blob'

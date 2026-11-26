@@ -16,7 +16,8 @@ A donor rigid (CompCount 3) submesh takes one of two paths per export:
 
 The rebuild keeps the donor's formats -- except that positions which outgrew
 the donor's s16 range step to a coarser shift (``VertexBufferQuantizeInfo``
-on the entry), as custom submeshes do -- pools equal values,
+on the entry), as custom submeshes do; a float32 donor format (positions
+and UVs of many stadium meshes) is written as float32 -- pools equal values,
 mirrors UV channel 1 from channel 0 when the donor channels are identical
 and names surfaces by key.
 
@@ -82,8 +83,8 @@ def donor_rigid_submesh(index: int, sub: dict, facial_submeshes: Iterable[int] =
 
 
 def donor_position_format_error(donor: DonorRigidSubmesh, object_name: str) -> Optional[str]:
-    """Only int16 donor positions can be rebuilt."""
-    return rc.donor_position_format_error(donor, object_name, 'rigid rebuild')
+    """Int16 and float32 donor positions can be rebuilt."""
+    return rc.donor_position_format_error(donor, object_name, 'rigid rebuild', float_positions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +141,7 @@ def positions_moved(
     equal values; an Object Mode move, or a host change that keeps the world
     position, does not. A float donor format (some stadium meshes) has no
     quantization step, so it compares with a small relative tolerance."""
-    if (quantize_info >> 4) in (4, 7, 0xA):
+    if rc.is_float_format(quantize_info):
         pairs = zip((mesh_local[i] for i in geometry.source_vertices), geometry.positions)
         return any(
             abs(float(a) - float(b)) > FLOAT_POSITION_TOLERANCE * max(1.0, abs(float(a)))
@@ -218,15 +219,26 @@ def build_rigid_rebuild_entry(
     adds ``FacialPoses`` and pins the normal entries of animated vertices."""
     warnings = warnings if warnings is not None else []
     infos = infos if infos is not None else []
-    position_format = cse.select_position_format(
-        object_name, host_bone_id, geometry, rc.donor_position_candidates(donor.position_quantize),
-    )
-    position_quantize = position_format[1]
-    widened = rc.widened_position_info(object_name, donor.position_quantize, position_quantize)
-    if widened:
-        infos.append(widened)
     # The vertex and face counts are checked here, before the facial poses pack vertex indices as uint16.
-    positions = cse.encode_positions(object_name, geometry, position_format)
+    if rc.is_float32_format(donor.position_quantize):
+        # A float32 donor (many stadium meshes) keeps its format: nothing to outgrow or widen.
+        if facial_keys is not None:
+            raise ValueError(
+                f'{object_name}: facial poses on a submesh with float positions '
+                f'(format {donor.position_quantize}) cannot be rebuilt'
+            )
+        position_quantize = donor.position_quantize
+        widened = None
+        positions = rc.encode_float_positions(object_name, geometry)
+    else:
+        position_format = cse.select_position_format(
+            object_name, host_bone_id, geometry, rc.donor_position_candidates(donor.position_quantize),
+        )
+        position_quantize = position_format[1]
+        widened = rc.widened_position_info(object_name, donor.position_quantize, position_quantize)
+        if widened:
+            infos.append(widened)
+        positions = cse.encode_positions(object_name, geometry, position_format)
     faces_data, faces_count = cse.encode_faces(object_name, geometry.faces)
     if len(routing.indices) != faces_count:
         raise ValueError(f'{object_name}: {len(routing.indices)} surface indices for {faces_count} faces')

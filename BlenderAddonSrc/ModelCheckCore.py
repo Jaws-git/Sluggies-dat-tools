@@ -384,6 +384,43 @@ def clipboard_text(path: str) -> str:
     return os.path.basename(path) if os.path.normcase('2_Output_Assets') in parts[:-1] else os.path.abspath(path)
 
 
+def in_active_collection(collection_names: Iterable[str], excluded: Set[str]) -> bool:
+    """Whether an object is part of the view layer: at least one of the
+    collections it is in (*collection_names*) is not deactivated. *excluded*
+    holds the names of the collections whose every place in the view layer
+    is unticked in the Outliner ("Exclude from View Layer"). An object in no
+    collection at all is not in the view layer either."""
+    return any(name not in excluded for name in collection_names)
+
+
+def excluded_collections(node) -> Set[str]:
+    """Names of the collections deactivated in the view layer. *node* is the
+    view layer's collection tree as ``(name, excluded, [child nodes])``. A
+    child can be ticked again under an unticked parent, so each collection
+    counts by its own flag; one linked into several parents is excluded only
+    when every one of its places is."""
+    seen: Dict[str, bool] = {}
+
+    def walk(node):
+        name, excluded, children = node
+        seen[name] = seen.get(name, True) and bool(excluded)
+        for child in children:
+            walk(child)
+
+    walk(node)
+    return {name for name, excluded in seen.items() if excluded}
+
+
+def is_collision_only(collision_enabled: bool, custom_submesh: bool, has_submesh_props: bool) -> bool:
+    """A mesh the game never draws: "Solid for the ball" is on and it is
+    neither an imported submesh nor a custom submesh. The stadium's original
+    colliders and collision meshes made by hand are such meshes. Export reads
+    only their triangles and collision settings, so the checks of a drawn
+    mesh (submesh link, Armature modifier, materials, UVs, one bone) do not
+    apply to them."""
+    return bool(collision_enabled) and not custom_submesh and not has_submesh_props
+
+
 def visible_collections(node) -> Set[str]:
     """Names of the collections shown in the viewport. *node* is the view
     layer's collection tree as ``(name, hidden, [child nodes])``; a

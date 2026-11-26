@@ -100,28 +100,51 @@ class SluggiesConvertMaterialRow(bpy.types.PropertyGroup):
         return template is not None and template.shader_mode in TemplateSources.SPECULAR_SHADER_MODES
 
 
-def _is_body_surface(mat):
-    """A surface the body exports already: an imported sm0 one or an
-    Add-material surface of sm0."""
+def _is_donor_surface(mat, index):
+    """A surface the model's own submesh *index* exports already: an imported
+    sm<index> one or an Add-material surface of sm<index>."""
     if mat.get('SluggiesNewSurface'):
-        return mat.get('SluggiesSurfaceOwner') == f'sm{_BODY_SUBMESH}' \
+        return mat.get('SluggiesSurfaceOwner') == f'sm{index}' \
             and all(prop in mat for prop in ModelCheckCore.NEW_SURFACE_PROPS)
     match = _SURFACE_ID_RE.match(str(mat.get('SurfaceId') or ''))
-    return match is not None and int(match.group(1)) == _BODY_SUBMESH
+    return match is not None and int(match.group(1)) == index
+
+
+def _is_body_surface(mat):
+    """A surface the body exports already."""
+    return _is_donor_surface(mat, _BODY_SUBMESH)
+
+
+def _static_submesh_index(model, obj):
+    """The submesh index of *obj* when it is one of the model's own static
+    (rigid, three position components) meshes, else None."""
+    if obj.get('SluggiesCustomSubmesh') or int(obj.get('VertexBufferCompCount') or 0) != 3 \
+            or 'VertexBufferOffset' not in obj:
+        return None
+    return ModelCheckCore.submesh_index_by_offset(model, obj['VertexBufferOffset'])
 
 
 def _convert_material_targets(context, arm_obj, model):
-    """[(material or None, rigid custom submesh or None)]: each material of
-    *arm_obj*'s main body (None) and rigid custom submeshes that is not one
-    of its surfaces yet, once per owner. A rigid submesh without any
-    material is listed with None: a new one is made for it."""
+    """[(material or None, object or None)]: each material of *arm_obj*'s
+    main body (None), of its own rigid meshes (a mesh that replaced one or
+    was joined into one brings plain materials) and of its rigid custom
+    submeshes that is not one of its surfaces yet, once per owner. A rigid
+    custom submesh without any material is listed with None: a new one is
+    made for it."""
     body = _body_submesh(model)
     targets = []
     body_materials = [slot.material for obj in (_body_objects(context, arm_obj, body) if body else ())
                       for slot in obj.material_slots if slot.material is not None]
     targets += [(mat, None) for mat in dict.fromkeys(body_materials) if not _is_body_surface(mat)]
     for obj in sorted(context.view_layer.objects, key=lambda o: o.name):
-        if obj.type != 'MESH' or obj.parent is not arm_obj or not obj.get('SluggiesCustomSubmesh'):
+        if obj.type != 'MESH' or obj.parent is not arm_obj:
+            continue
+        static_index = _static_submesh_index(model, obj)
+        if static_index is not None:
+            materials = dict.fromkeys(slot.material for slot in obj.material_slots if slot.material is not None)
+            targets += [(mat, obj) for mat in materials if not _is_donor_surface(mat, static_index)]
+            continue
+        if not obj.get('SluggiesCustomSubmesh'):
             continue
         custom_submesh_id = str(obj.get('CustomSubmeshId') or '')
         materials = list(dict.fromkeys(slot.material for slot in obj.material_slots if slot.material is not None))
@@ -292,8 +315,10 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
         body = _body_submesh(model)
         body_meshes = {obj.data for obj in (_body_objects(context, arm_obj, body) if body else ())}
 
-        # Rows by owner, each with its own (unshared) material.
-        body_rows, rigid_rows = [], {}
+        # Rows by owner, each with its own (unshared) material. The body and
+        # the model's own rigid meshes take Add-material surfaces of their
+        # submesh (`sm<N>`), rigid custom submeshes their own surfaces.
+        body_rows, static_rows, rigid_rows = [], {}, {}
         material_users = _material_meshes()
         for row in self.rows:
             obj = bpy.data.objects.get(row.object_name) if row.object_name else None
@@ -302,13 +327,20 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
                 continue
             if mat is not None:
                 mat = _own_material(mat, {obj.data} if obj is not None else body_meshes, material_users)
+            static_index = _static_submesh_index(model, obj) if obj is not None else None
             if obj is None:
                 body_rows.append((row, mat))
+            elif static_index is not None:
+                if mat is not None:
+                    static_rows.setdefault(static_index, []).append((row, mat))
             else:
                 rigid_rows.setdefault(obj, []).append((row, mat))
+        donor_rows = ([(_BODY_SUBMESH, body_rows)] if body_rows else []) + sorted(static_rows.items())
+        static_count = sum(len(entries) for entries in static_rows.values())
 
         links = nodes = 0
-        for _row, mat in body_rows + [entry for entries in rigid_rows.values() for entry in entries]:
+        for _row, mat in ([entry for _index, entries in donor_rows for entry in entries]
+                          + [entry for entries in rigid_rows.values() for entry in entries]):
             if mat is not None:
                 removed_links, removed_nodes = AdaptCleanup.convert_material_nodes(mat)
                 links += removed_links
@@ -318,9 +350,8 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
         collect = self.collect_textures and bool(bpy.data.filepath)
         folder = TextureFolder.folder_for(bpy.data.filepath) if collect else None
         converted, notes = TextureFolder.convert(_model_images(context), folder)
-        owner = f'sm{_BODY_SUBMESH}'
-        existing = _surface_ids_in_file() if body_rows else []    # kept up to date per row
-        for row, mat in body_rows:
+        existing = _surface_ids_in_file() if donor_rows else []    # kept up to date per row
+        for owner, (row, mat) in ((f'sm{index}', entry) for index, entries in donor_rows for entry in entries):
             old_surface_id = mat.get('SurfaceId')
             if old_surface_id in existing:
                 existing.remove(old_surface_id)
@@ -367,8 +398,10 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
                     mat['SpecularStrength'] = row.strength
 
         rigid_count = sum(len(entries) for entries in rigid_rows.values())
-        lines = [f"Converted {_materials(len(body_rows) + rigid_count)}: "
-                 f"{len(body_rows)} on the main body, {rigid_count} on rigid submeshes"] if self.rows else []
+        lines = [f"Converted {_materials(len(body_rows) + static_count + rigid_count)}: "
+                 f"{len(body_rows)} on the main body, "
+                 + (f"{static_count} on the model's own rigid meshes, " if static_count else "")
+                 + f"{rigid_count} on rigid submeshes"] if self.rows else []
         if links or nodes:
             lines.append(f"Removed {links} node link{'s' if links != 1 else ''} and "
                          f"{nodes} node{'s' if nodes != 1 else ''} that did not feed a shader's colour")

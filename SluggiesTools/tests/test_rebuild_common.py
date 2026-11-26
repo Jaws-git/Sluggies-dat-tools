@@ -88,7 +88,7 @@ class SharedTextTests(unittest.TestCase):
     """The two texts that differ only by the name of the path."""
 
     def _donor(self, cls, **extra):
-        return cls(index=1, position_quantize=0x40, normal_format=None, color_format=None, uv_formats={},
+        return cls(index=1, position_quantize=0x70, normal_format=None, color_format=None, uv_formats={},
                    uv_mirrored=False, faces=[], face_surfaces=[], drawable_surfaces={}, facial=False, **extra)
 
     def test_position_format_error_names_its_path(self):

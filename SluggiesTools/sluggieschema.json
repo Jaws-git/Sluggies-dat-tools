@@ -335,7 +335,7 @@
                   },
                   "VertexBufferData": {
                     "type": "string",
-                    "description": "Position buffer in the donor's VertexBufferQuantizeInfo (int16 formats only), host-bone local, with the rebuilt vertex count."
+                    "description": "Position buffer, host-bone local, with the rebuilt vertex count: big-endian int16 in VertexBufferQuantizeInfo when set, else in the donor's format, which is int16 or float32 (0x40, many stadium meshes: three float32 per vertex, VertexBufferQuantizeInfo and FacialPoses not allowed)."
                   },
                   "NormalBufferData": {
                     "type": "string",

@@ -25,6 +25,9 @@ from HostBones import (  # noqa: E402
     STATUS_RECOMMENDED,
     added_bone_name_error,
     added_bone_renames,
+    donor_bone_count,
+    hand_made_bone_error,
+    hand_made_bone_names,
     ADDED_TRACK_IDS,
     next_added_track_id,
     key_leaves_rest,
@@ -122,6 +125,39 @@ class AddedBoneRenameTests(unittest.TestCase):
         message = added_bone_name_error({'bone_92': 'bone_91'})
         self.assertIn('bone_92 exports as bone_91', message)
         self.assertIn('Renumber Added Bones', message)
+
+
+class HandMadeBoneTests(unittest.TestCase):
+    """Bones made with Blender's own tools (Mario Stadium test scene, 2026-11-26:
+    `bone_0.001` extruded from bone_0) are taken in as added bones."""
+
+    def test_a_bone_without_the_importer_properties_is_hand_made(self):
+        bones = [('bone_0', True, True), ('bone_0.001', False, True), ('Bone', False, True)]
+        self.assertEqual(hand_made_bone_names(bones), ['bone_0.001', 'Bone'])
+
+    def test_a_duplicated_model_bone_is_hand_made_although_it_copied_the_properties(self):
+        self.assertEqual(hand_made_bone_names([('bone_3', True, True), ('bone_3.001', True, True)]), ['bone_3.001'])
+
+    def test_a_helper_bone_with_deform_off_stays_out(self):
+        self.assertEqual(hand_made_bone_names([('ik_target', False, False), ('bone_2.004', True, False)]), [])
+
+    def test_model_and_added_bones_are_not_hand_made(self):
+        self.assertEqual(hand_made_bone_names([('bone_0', True, True), ('bone_91', True, True)]), [])
+
+    def test_error_names_the_bones_and_the_fix(self):
+        self.assertIsNone(hand_made_bone_error([]))
+        message = hand_made_bone_error(['bone_0.001'])
+        self.assertIn('bone_0.001', message)
+        self.assertIn('Renumber Added Bones', message)
+        self.assertIn('Deform', message)
+        self.assertIn('and 2 more', hand_made_bone_error([f'b{i}' for i in range(7)]))
+
+    def test_donor_bone_count_ignores_hand_made_and_added_bones(self):
+        # A helper or not yet adopted bone must not shift the added bones' ids:
+        # the exporter numbers them from the .sluggie's bone count.
+        bones = [('bone_0', False), ('bone_1', False), ('ik_target', False), ('bone_0.001', False), ('bone_2', True)]
+        self.assertEqual(donor_bone_count(bones), 2)
+        self.assertEqual(added_bone_renames(donor_bone_count(bones), [('bone_2', 0)]), {})
 
 
 class NextAddedTrackIdTests(unittest.TestCase):

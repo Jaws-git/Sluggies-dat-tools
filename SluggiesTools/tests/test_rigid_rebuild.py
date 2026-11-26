@@ -20,6 +20,7 @@ import FacialPoseRebuild as fpr  # noqa: E402
 import GeometryRebuild  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import BlockAssembly  # noqa: E402
+import RigidSubmesh  # noqa: E402
 from SluggiesTools import patch_dispatch  # noqa: E402
 import synthetic_donor  # noqa: E402
 import test_skinned_rebuild  # noqa: E402
@@ -243,9 +244,27 @@ class RigidRebuildValidatorTests(unittest.TestCase):
         self.model['Submeshes'][0]['RigidRebuild'] = _identity_rebuild(self.model)
         self._refused(r'sub0: .*VertexBufferCompCount 3')
 
-    def test_float_position_format_is_refused(self):
+    def test_unknown_position_format_is_refused(self):
+        self.sub['VertexBuffer']['VertexBufferQuantizeInfo'] = 0x70
+        self._refused('neither int16')
+
+    def test_float_position_format_takes_twelve_byte_positions(self):
+        # Many stadium meshes store float32 positions (QuantizeInfo 0x40).
         self.sub['VertexBuffer']['VertexBufferQuantizeInfo'] = 0x40
-        self._refused('not int16')
+        self._refused('out of range for 4 vertices')       # the int16 bytes read as 12-byte positions
+        count = synthetic_donor.RIGID_VERTEX_COUNT
+        self.sub['RigidRebuild']['VertexBufferData'] = _b64(struct.pack(f'>{count * 3}f', *range(count * 3)))
+        main._validate_rigid_rebuilds(self.model)
+
+    def test_float_position_format_cannot_be_widened_or_carry_facial_poses(self):
+        self.sub['VertexBuffer']['VertexBufferQuantizeInfo'] = 0x40
+        count = synthetic_donor.RIGID_VERTEX_COUNT
+        self.sub['RigidRebuild']['VertexBufferData'] = _b64(struct.pack(f'>{count * 3}f', *range(count * 3)))
+        self.sub['RigidRebuild']['VertexBufferQuantizeInfo'] = 0x38
+        self._refused('cannot change the float32 donor position format 64')
+        del self.sub['RigidRebuild']['VertexBufferQuantizeInfo']
+        self.sub['RigidRebuild']['FacialPoses'] = []
+        self._refused('FacialPoses cannot be rebuilt on a float32 position format')
 
     def test_in_place_edit_fields_are_refused(self):
         self.sub['VertexBuffer']['VertexBufferDataEdited'] = self.sub['VertexBuffer']['VertexBufferData']
@@ -787,6 +806,87 @@ class RigidRebuildBuildTests(unittest.TestCase):
         rebuilt = _blob(gpl, RIGID)
         self.assertEqual(rebuilt['records'][6][4:8], bytes.fromhex(f'1111000{synthetic_donor.TEXTURE_COUNT}'))
         self.assertEqual(result.validation_report['validator_facts']['tex_texture_count'], synthetic_donor.TEXTURE_COUNT + 1)
+
+
+class RigidRebuildFloatFormatTests(unittest.TestCase):
+    """Stadium meshes with float32 positions and UVs (QuantizeInfo 0x40)."""
+
+    @staticmethod
+    def _float_formats(data: dict) -> None:
+        # The .sluggie dict only: the rebuilt blob takes its formats from it.
+        sub = data['SluggiesModel']['Submeshes'][RIGID]
+        sub['VertexBuffer']['VertexBufferQuantizeInfo'] = 0x40
+        for uv in sub['UVChannels']:
+            uv['UVChannelQuantizeInfo'] = 0x40
+
+    def test_float_rebuild_writes_float_arrays(self):
+        env = self.enterContext(synthetic_donor.donor_environment(self._float_formats))
+        data = env.reload()
+        model = data['SluggiesModel']
+        model['UseHammerspace'] = True
+        count = 5
+        faces = _fan(count)
+        flat = [index for face in faces for index in face]
+        positions = struct.pack(f'>{count * 3}f', *(v * 37.5 - 200.25 for v in range(count * 3)))
+        uvs = struct.pack(f'>{count * 2}f', *(v * 0.125 for v in range(count * 2)))
+        rebuild = _identity_rebuild(model)
+        rebuild.update({
+            'VertexBufferData': _b64(positions), 'FacesCount': len(faces), 'FacesData': _u16s(flat),
+            'FaceSurfaceIndices': _u16s([0] * len(faces)),
+            'UVChannels': [
+                {'UVChannelIndex': channel, 'UVChannelData': _b64(uvs), 'UVFacesData': _u16s(flat)}
+                for channel in range(synthetic_donor.UV_CHANNEL_COUNT)
+            ],
+        })
+        model['Submeshes'][RIGID]['RigidRebuild'] = rebuild
+        result = main.BuildModelBlock(data, main.SectionModes(gpl='build'), sluggie_path=env.sluggie_path)
+        self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
+
+        blob = _blob(_gpl_section(result.block), RIGID)
+        self.assertEqual(blob['positions'], (0x40, 3, positions))
+        self.assertEqual(_record_faces(blob, synthetic_donor.SURFACE_STATE_INDEX), sorted(faces))
+
+
+class BoundsBoxUpdateTests(unittest.TestCase):
+    """A rebuilt stadium mesh's culling box follows its new extents."""
+
+    @staticmethod
+    def _gpl(user_data: bytes, count: int) -> bytes:
+        header = struct.pack('>5I', 0, len(user_data), 0x20, count, 0x14) + bytes(12)
+        return header + user_data
+
+    @staticmethod
+    def _table(count: int) -> bytes:
+        boxes = b''.join(struct.pack('>6f', *([float(i)] * 6)) for i in range(count))
+        return struct.pack('>IHH', 8 + 24 * count, 1, count) + boxes
+
+    @staticmethod
+    def _sub(index: int, quantize: int, raw: bytes):
+        return mock.Mock(submesh_index=index, vertex_quantize_info=quantize, vertex_data=raw)
+
+    def test_boxes_of_rebuilt_meshes_are_rewritten_behind_a_kind_0_descriptor(self):
+        kind0 = struct.pack('>IHH', 12, 0, 1) + bytes(4)
+        gpl = self._gpl(kind0 + self._table(3), 3)
+        floats = self._sub(1, 0x40, struct.pack('>6f', -2.5, 0.0, 7.0, 4.0, -1.5, 9.25))
+        shorts = self._sub(2, 0x38, struct.pack('>6h', 256, -512, 0, -128, 64, 768))
+        out, written = RigidSubmesh._update_gpl_bounds_boxes(gpl, [floats, shorts])
+
+        self.assertEqual(written, [1, 2])
+        self.assertEqual(len(out), len(gpl))
+        table = 0x20 + len(kind0)
+        self.assertEqual(out[:table + 8 + 24], gpl[:table + 8 + 24])          # header, kind 0, box 0
+        self.assertEqual(struct.unpack_from('>6f', out, table + 8 + 24), (-2.5, -1.5, 7.0, 4.0, 0.0, 9.25))
+        self.assertEqual(struct.unpack_from('>6f', out, table + 8 + 48), (-0.5, -2.0, 0.0, 1.0, 0.25, 3.0))
+
+    def test_a_model_without_a_reachable_table_is_left_alone(self):
+        sub = self._sub(0, 0x40, struct.pack('>3f', 1.0, 2.0, 3.0))
+        for gpl in (
+            struct.pack('>5I', 0, 0, 0, 3, 0x14) + bytes(12),                 # no user data
+            self._gpl(self._table(2), 3),                                     # table of another mesh count
+            self._gpl(struct.pack('>IHH', 16, 0, 1) + bytes(4) + self._table(3), 3),   # sta04: padded kind 0
+        ):
+            with self.subTest(length=len(gpl)):
+                self.assertEqual(RigidSubmesh._update_gpl_bounds_boxes(gpl, [sub]), (gpl, []))
 
 
 class RigidRebuildCarriedColorTests(unittest.TestCase):

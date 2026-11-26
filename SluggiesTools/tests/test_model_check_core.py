@@ -228,6 +228,41 @@ class TestVisibleCollections(unittest.TestCase):
         self.assertIn("Shared", core.visible_collections(tree))
 
 
+class TestExcludedCollections(unittest.TestCase):
+    """Objects only in deactivated collections are not checked."""
+
+    def test_each_collection_counts_by_its_own_flag(self):
+        # A child can be ticked again under an unticked parent.
+        tree = ("Scene Collection", False, [
+            ("Backups", True, [("Kept", False, []), ("Old", True, [])]),
+            ("Model", False, []),
+        ])
+        self.assertEqual(core.excluded_collections(tree), {"Backups", "Old"})
+
+    def test_a_collection_linked_twice_is_excluded_only_when_every_place_is(self):
+        tree = ("Scene Collection", False, [("A", False, [("Shared", False, [])]), ("B", True, [("Shared", True, [])])])
+        self.assertEqual(core.excluded_collections(tree), {"B"})
+
+    def test_an_object_counts_when_any_of_its_collections_is_active(self):
+        excluded = {"Backups"}
+        self.assertTrue(core.in_active_collection(["Model"], excluded))
+        self.assertTrue(core.in_active_collection(["Backups", "Model"], excluded))
+        self.assertFalse(core.in_active_collection(["Backups"], excluded))
+        self.assertFalse(core.in_active_collection([], excluded))
+
+
+class TestCollisionOnly(unittest.TestCase):
+    """Stadium colliders are never drawn: the drawn-mesh checks skip them."""
+
+    def test_a_solid_mesh_that_is_no_model_mesh_is_a_collider(self):
+        self.assertTrue(core.is_collision_only(True, False, False))
+
+    def test_model_meshes_and_plain_meshes_are_not(self):
+        self.assertFalse(core.is_collision_only(True, True, False))     # a solid custom submesh is drawn too
+        self.assertFalse(core.is_collision_only(True, False, True))     # a solid imported mesh
+        self.assertFalse(core.is_collision_only(False, False, False))   # a stray mesh still gets its findings
+
+
 class TestStaysBpyFree(unittest.TestCase):
     def test_no_bpy_import(self):
         tree = ast.parse((BLENDER_ADDON_DIR / 'ModelCheckCore.py').read_text(encoding='utf-8'))

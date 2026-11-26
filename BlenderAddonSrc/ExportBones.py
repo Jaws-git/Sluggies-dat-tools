@@ -129,13 +129,20 @@ def _srt_type_for(bone_name, translation, rotation, scale, warnings):
 
 
 def added_bone_name_error(candidates, context):
-    """Error text when an Add Bone bone's ``bone_<N>`` name differs from the id
+    """Error text when the armature holds a hand-made bone that was not taken
+    into the model yet (``HostBones.hand_made_bone_names``), or when an Add
+    Bone bone's ``bone_<N>`` name differs from the id
     ``encode_bone_hierarchy_edited`` assigns it, else None."""
     arm_obj = _find_root_scale_armature(candidates, context)
     if arm_obj is None:
         return None
     bones = arm_obj.data.bones
-    donor_count = sum(1 for b in bones if not b.get('SluggiesUserAdded'))
+    if HostBones.bone_metadata_is_current(arm_obj.get('SluggiesBoneMetadataVersion')):
+        hand_made = HostBones.hand_made_bone_error(HostBones.hand_made_bone_names(
+            (b.name, 'SluggiesUserAdded' in b.keys(), b.use_deform) for b in bones))
+        if hand_made:
+            return hand_made
+    donor_count = HostBones.donor_bone_count((b.name, bool(b.get('SluggiesUserAdded'))) for b in bones)
     return HostBones.added_bone_name_error(HostBones.added_bone_renames(donor_count, [
         (b.name, int(b.get('SluggiesCreationOrder', 0)))
         for b in bones if b.get('SluggiesUserAdded')

@@ -290,6 +290,31 @@ class TextureNameConsumersTests(unittest.TestCase):
         self.assertEqual(cs['AdditionalSurfaces'][0]['TextureAssignment']['AdditionalTextureFileName'], 'a.png')
         self.assertEqual(len(model['AdditionalTextureDescriptors']), 1)
 
+    def test_merge_remaps_the_new_surfaces_of_rebuilt_submeshes(self):
+        # A bat replaced by a mesh with two materials of one colour (2026-11-26):
+        # both new surfaces bind identical PNGs, and the second lost its texture.
+        def surfaces():
+            return [_surface(texture={'AdditionalTextureFileName': 'a.png'}),
+                    _surface(texture={'AdditionalTextureFileName': 'b.png'}),
+                    _surface(texture={'DonorTextureIndex': 0})]
+
+        model = {
+            'TextureDescriptors': [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+            'AdditionalTextureDescriptors': [
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'b.png', 'TemplateTextureIndex': 0},
+            ],
+            'Submeshes': [{'SkinnedRebuild': {'NewSurfaces': surfaces()}}, {'RigidRebuild': {'NewSurfaces': surfaces()}},
+                          {}],
+        }
+        with mock.patch.object(texture_helper, 'find_duplicate_additional_textures', return_value=[0, 0]):
+            main._merge_duplicate_texture_additions(model, 'x.sluggie')
+        for submesh, key in zip(model['Submeshes'], ('SkinnedRebuild', 'RigidRebuild')):
+            assignments = [s['TextureAssignment'] for s in submesh[key]['NewSurfaces']]
+            self.assertEqual(assignments, [{'AdditionalTextureFileName': 'a.png'},
+                                           {'AdditionalTextureFileName': 'a.png'}, {'DonorTextureIndex': 0}])
+        self.assertEqual(len(model['AdditionalTextureDescriptors']), 1)
+
 
 # --- exporter side (bpy-free) ----------------------------------------------------
 

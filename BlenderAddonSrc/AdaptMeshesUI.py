@@ -21,13 +21,17 @@ from .SceneModels import (
     _body_submesh,
     _bone_id_from_name,
     _bone_metadata_is_current,
+    _donor_mesh_objects,
     _draw_cached,
     _model_is_stadium,
     _owning_armature,
     _reports_failure,
     _selected_sluggies_armature,
+    _strip_donor_object_props,
 )
 from .HostBoneScene import (
+    _UNIFORM_BONE_CACHE,
+    _object_world_bbox_center,
     _ordered_host_bone_choices,
     _preview_active_bone,
     _renumber_added_bones_reporting,
@@ -49,6 +53,8 @@ from .AdaptSteps import (
 )
 from .SubmeshOps import (
     _convert_to_custom_submesh,
+    _ensure_armature_modifier,
+    _parent_keeping_world,
 )
 from .BodyOps import (
     _BACKUP_BODY_NOTE,
@@ -68,11 +74,26 @@ _ADAPT_MESH_ACTIONS = (
     ('REPLACE', "Replaces main body",
      "The mesh becomes the skinned main body (submesh 0); " + _BACKUP_BODY_NOTE[0].lower() + _BACKUP_BODY_NOTE[1:]),
     ('RIGID', "Add as rigid submesh", "A custom submesh that follows one bone rigidly"),
+    ('REPLACE_STATIC', "Replaces rigid mesh",
+     "The mesh takes the place of one of the model's own rigid meshes, on that mesh's bone: "
+     "a bat, a glove, a cap. The current one is set aside as '<name>.backup', off the armature and "
+     "not exported"),
+    ('JOIN_STATIC', "Join into rigid mesh",
+     "Merge the mesh into one of the model's own rigid meshes; it follows that mesh's bone"),
     ('IGNORE', "Ignore", "Leave the mesh as it is"),
 )
+_STATIC_ACTIONS = ('REPLACE_STATIC', 'JOIN_STATIC')
 
 
 _ADAPT_MESH_BONE_ENUM = 'adapt_meshes.bone'
+_ADAPT_MESH_STATIC_ENUM = 'adapt_meshes.static'
+_NO_STATIC_ITEMS = [('NONE', "No rigid mesh", "This model has no rigid mesh of its own", 0)]
+
+_BACKUP_STATIC_NOTE = "A replaced rigid mesh is set aside as '<name>.backup', off the armature and not exported."
+
+# Identifier of each rigid mesh the open dialog offers -> the name of its
+# object in the scene ('' when it has none). Filled by the dialog's invoke.
+_STATIC_TARGET_OBJECTS = {}
 
 
 def _adapt_meshes_armature(context):
@@ -97,6 +118,56 @@ def _adapt_mesh_bone_items(self, context):
     return _cached_enum_items(_ADAPT_MESH_BONE_ENUM, _pointer(arm_obj), lambda: _host_bone_items(context, arm_obj))
 
 
+def _adapt_mesh_static_items(self, context):
+    return _cached_enum_items(_ADAPT_MESH_STATIC_ENUM, _pointer(_adapt_meshes_armature(context)),
+                              lambda: list(_NO_STATIC_ITEMS))
+
+
+def _current_static_object(objects):
+    """Of the objects of one rigid submesh, the one that is its current
+    state: an imported edit (`_edit`), else the first."""
+    return next((o for o in objects if o.name.endswith('_edit')), objects[0] if objects else None)
+
+
+def _static_mesh_targets(context, arm_obj, model):
+    """[(submesh index, its object in the scene or None)] for each of the
+    model's own rigid meshes: the rigid (three position components)
+    submeshes of the .sluggie."""
+    by_offset = {}
+    for obj in _donor_mesh_objects(context, arm_obj):
+        if 'VertexBufferOffset' in obj:
+            by_offset.setdefault(str(obj['VertexBufferOffset']), []).append(obj)
+    targets = []
+    for index, submesh in enumerate(model.get('Submeshes') or []):
+        vertex_buffer = submesh.get('VertexBuffer') or {}
+        if int(vertex_buffer.get('VertexBufferCompCount') or 0) != 3:
+            continue
+        objects = by_offset.get(str(vertex_buffer.get('VertexBufferOffset')), [])
+        targets.append((index, _current_static_object(objects)))
+    return targets
+
+
+def _static_mesh_items(targets):
+    items = [
+        (f'sm{index}', obj.name if obj is not None else f"submesh {index} (not in the scene)",
+         f"The model's rigid mesh {index}" + (f" ({obj.name})" if obj is not None else ""), number)
+        for number, (index, obj) in enumerate(targets)
+    ]
+    return items or list(_NO_STATIC_ITEMS)
+
+
+def _static_owner_bone_id(arm_obj, index, obj):
+    """The bone rigid mesh *index* follows: the one its object *obj* is on
+    (it may have been reassigned), else the model's owner bone."""
+    bone_id = _uniform_bone_id(obj) if obj is not None else None
+    if bone_id is not None:
+        return bone_id
+    return next(
+        (b_id for b in arm_obj.data.bones
+         if (b_id := _bone_id_from_name(b.name)) is not None and not b.get('SluggiesUserAdded')
+         and int(b.get('SluggiesGeoIdRaw', HostBones.GEO_ID_FREE)) == index), None)
+
+
 class SluggiesAdaptMeshRow(bpy.types.PropertyGroup):
     """One mesh of the Join or Replace meshes dialog (name: the object's)."""
     action: EnumProperty(  # type: ignore[valid-type]
@@ -110,6 +181,11 @@ class SluggiesAdaptMeshRow(bpy.types.PropertyGroup):
         description="Free bone the rigid submesh follows",
         items=_adapt_mesh_bone_items,
         update=_update_adapt_mesh_bone,
+    )
+    static: EnumProperty(  # type: ignore[valid-type]
+        name="Rigid mesh",
+        description="The model's own rigid mesh the mesh replaces or is joined into",
+        items=_adapt_mesh_static_items,
     )
 
 
@@ -164,7 +240,63 @@ def _adapt_mesh_faults(wm):
         elif len(group) > 1:
             faulty.update(r.name for r in group)
             messages.append(f"{bone} is picked for more than one rigid submesh")
+    by_static = {}
+    for row in rows:
+        if row.action in _STATIC_ACTIONS:
+            by_static.setdefault(row.static, []).append(row)
+    for static, group in by_static.items():
+        replacing_static = [r for r in group if r.action == 'REPLACE_STATIC']
+        if static == 'NONE':
+            faulty.update(r.name for r in group)
+            messages.append("This model has no rigid mesh of its own: add the meshes as rigid submeshes")
+        elif len(replacing_static) > 1:
+            faulty.update(r.name for r in replacing_static)
+            messages.append("Only one mesh can replace a rigid mesh; join the others into it")
+        elif not replacing_static and not _STATIC_TARGET_OBJECTS.get(static):
+            faulty.update(r.name for r in group)
+            messages.append("That rigid mesh is not in the scene: let one mesh replace it instead")
     return faulty, messages
+
+
+def _follow_one_bone(obj, bone_id):
+    """Every vertex of *obj* in the one vertex group `bone_<bone_id>`, full
+    weight, and no other group: what a rigid mesh exports with."""
+    obj.vertex_groups.clear()
+    group = obj.vertex_groups.new(name=f'bone_{bone_id}')
+    group.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+    _UNIFORM_BONE_CACHE.clear()
+
+
+def _make_static(obj, arm_obj, model, index, bone_id):
+    """Turn the mesh *obj* into the model's rigid mesh *index*, where it is:
+    that submesh's VertexBuffer* properties, one full-weight vertex group on
+    *bone_id*, an Armature modifier, the armature as parent and its render UV
+    map named like channel 0. Its materials stay plain until Convert
+    Materials. Returns notes."""
+    notes = []
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+        notes.append(f"{obj.name}'s mesh data was shared, so it got its own copy")
+    _strip_donor_object_props(obj)
+    for prop in ('SluggiesCustomSubmesh', 'CustomSubmeshId', 'TemplateSource'):
+        if prop in obj:
+            del obj[prop]
+    for prop, value in ModelCheckCore.mesh_props_for_submesh(model, index).items():
+        obj[prop] = value
+    notes += [f"{obj.name}: {note}" for note in _use_body_uv_name(obj)]
+    _follow_one_bone(obj, bone_id)
+    _ensure_armature_modifier(obj, arm_obj)
+    _parent_keeping_world(obj, arm_obj)
+    return notes
+
+
+def _join_into_static(context, static_obj, objs, bone_id):
+    """Merge the meshes *objs* into the rigid mesh object *static_obj*, as
+    _join_into_body does for the body; the joined mesh then follows *bone_id*
+    alone. Returns notes."""
+    notes = _join_into_body(context, static_obj, objs)
+    _follow_one_bone(static_obj, bone_id)
+    return notes
 
 
 def _join_into_body(context, body_obj, objs):
@@ -256,6 +388,11 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
         _renumber_added_bones_reporting(self, arm_obj, undo_step=True)
         ordered = _ordered_host_bone_choices(context, arm_obj)
         _set_enum_items(_ADAPT_MESH_BONE_ENUM, _pointer(arm_obj), _host_bone_items(context, arm_obj, ordered))
+        statics = _static_mesh_targets(context, arm_obj, model)
+        _set_enum_items(_ADAPT_MESH_STATIC_ENUM, _pointer(arm_obj), _static_mesh_items(statics))
+        _STATIC_TARGET_OBJECTS.clear()
+        _STATIC_TARGET_OBJECTS.update({f'sm{index}': obj.name if obj is not None else '' for index, obj in statics})
+        self._statics = statics
         if not self.reopen:
             body = _body_submesh(model)
             wm.sluggies_adapt_mesh_armature = arm_obj.name
@@ -269,12 +406,18 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
     def _fill_rows(self, context, arm_obj, ordered):
         """One row per addable mesh: a skinned one (several vertex groups)
         joins the body, others become rigid submeshes; every row gets its
-        own free bone in case it becomes rigid."""
+        own free bone in case it becomes rigid, and the rigid mesh nearest
+        it in case it replaces or joins one. On a model without a skinned
+        body (a bat, a glove, an item) the usual wish is another object in
+        the place of its rigid mesh, often made of several parts: the first
+        mesh replaces the nearest one and the others join it."""
         wm = context.window_manager
         rows = wm.sluggies_adapt_mesh_rows
         rows.clear()
         _sluggies, addable = _adapt_mesh_inventory(context, arm_obj)
         pool = list(ordered)
+        statics = getattr(self, '_statics', [])
+        replaced = None     # the rigid mesh the first row replaces on a model without a body
         # Rigid meshes pick their bones first.
         for obj in sorted(addable, key=lambda o: len(o.vertex_groups) > 1):
             row = rows.add()
@@ -284,7 +427,34 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
             if choice is not None:
                 row.bone = f'bone_{choice.bone_id}'
                 pool.remove(choice)
-            row.action = 'JOIN' if skinned else 'RIGID'
+            static = replaced if replaced is not None else self._nearest_static(obj, statics)
+            if static is not None:
+                row.static = f'sm{static}'
+            if skinned:
+                row.action = 'JOIN'
+            elif static is not None and not wm.sluggies_adapt_mesh_has_body:
+                row.action = 'REPLACE_STATIC' if replaced is None else 'JOIN_STATIC'
+                replaced = static
+            elif static is not None and choice is None:
+                row.action = 'JOIN_STATIC'
+            else:
+                row.action = 'RIGID'
+
+    @staticmethod
+    def _nearest_static(obj, statics):
+        """The submesh index of the rigid mesh nearest *obj* (those without
+        an object in the scene last), or None when the model has none."""
+        if not statics:
+            return None
+        center = _object_world_bbox_center(obj)
+
+        def distance(entry):
+            _index, static_obj = entry
+            if static_obj is None:
+                return float('inf')
+            return (_object_world_bbox_center(static_obj) - center).length
+
+        return min(statics, key=distance)[0]
 
     def draw(self, context):
         layout = self.layout
@@ -320,12 +490,20 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
             choice.prop(row, 'action', text="")
             if row.action == 'RIGID':
                 choice.prop(row, 'bone', text="")
+            elif row.action in _STATIC_ACTIONS:
+                choice.prop(row, 'static', text="")
         if not len(wm.sluggies_adapt_mesh_rows):
             box.label(text="None: assign meshes to this armature first (step 2)")
 
-        layout.label(text="Only one mesh can be the fully skinned main body.", icon='INFO')
+        if wm.sluggies_adapt_mesh_has_body:
+            layout.label(text="Only one mesh can be the fully skinned main body.", icon='INFO')
         if any(row.action == 'REPLACE' for row in wm.sluggies_adapt_mesh_rows):
             layout.label(text=_BACKUP_BODY_NOTE, icon='INFO')
+        if any(row.action == 'REPLACE_STATIC' for row in wm.sluggies_adapt_mesh_rows):
+            layout.label(text=_BACKUP_STATIC_NOTE, icon='INFO')
+        if any(row.action in _STATIC_ACTIONS for row in wm.sluggies_adapt_mesh_rows):
+            layout.label(text="A rigid mesh follows one bone: its vertex groups are replaced by that bone.",
+                         icon='INFO')
         for message in messages:
             line = layout.row()
             line.alert = True
@@ -354,7 +532,7 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
         arm_obj = _adapt_meshes_armature(context)
         if arm_obj is not None:
             arm_obj.data.show_names = wm.sluggies_adapt_mesh_names_shown
-        _drop_enum_items(_ADAPT_MESH_BONE_ENUM)
+        _drop_enum_items(_ADAPT_MESH_BONE_ENUM, _ADAPT_MESH_STATIC_ENUM)
 
     def _apply(self, context):
         wm = context.window_manager
@@ -377,7 +555,18 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
         joins = [obj for obj, _bone in chosen['JOIN']]
         new_body = chosen['REPLACE'][0][0] if chosen['REPLACE'] else None
         rigid = chosen['RIGID']
-        if not (joins or new_body or rigid):
+        # Rigid meshes: {submesh index: {'replace': object or None, 'join': [objects]}}
+        static_plan = {}
+        for row in wm.sluggies_adapt_mesh_rows:
+            obj = bpy.data.objects.get(row.name)
+            if obj is None or row.action not in _STATIC_ACTIONS or not row.static.startswith('sm'):
+                continue
+            entry = static_plan.setdefault(int(row.static[2:]), {'replace': None, 'join': []})
+            if row.action == 'REPLACE_STATIC':
+                entry['replace'] = obj
+            else:
+                entry['join'].append(obj)
+        if not (joins or new_body or rigid or static_plan):
             self.report({"INFO"}, "Nothing to change")
             return {"CANCELLED"}
 
@@ -403,6 +592,22 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
                 body_obj = next((o for o in bodies if o.name.endswith('_edit')), bodies[0] if bodies else None)
                 if body_obj is None:
                     raise ValueError("No main body object in the scene to join into")
+            statics = dict(_static_mesh_targets(context, arm_obj, model))
+            by_offset = {}
+            for donor in _donor_mesh_objects(context, arm_obj):
+                by_offset.setdefault(str(donor.get('VertexBufferOffset')), []).append(donor)
+            for index, entry in static_plan.items():
+                if index not in statics:
+                    raise ValueError(f"The model has no rigid mesh {index}")
+                current = statics[index]
+                entry['bone'] = _static_owner_bone_id(arm_obj, index, current)
+                if entry['bone'] is None:
+                    raise ValueError(f"No bone of {arm_obj.name} owns rigid mesh {index}")
+                offset = str(ModelCheckCore.mesh_props_for_submesh(model, index).get('VertexBufferOffset'))
+                entry['old'] = [o for o in by_offset.get(offset, []) if o is not entry['replace']]
+                entry['target'] = entry['replace'] or current
+                if entry['target'] is None:
+                    raise ValueError(f"Rigid mesh {index} is not in the scene: let one mesh replace it")
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -427,6 +632,23 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
                 context, obj, arm_obj, bone_id, template, tex_dir, set_up_materials=False)
             lines.append(f"{obj.name} is now rigid submesh {custom_submesh_id} on bone_{bone_id}")
             notes += [f"{obj.name}: {note}" for note in obj_notes]
-        lines.append("Next: weight the main body with Map Weights or Autorig")
+        for index, entry in sorted(static_plan.items()):
+            target, bone_id = entry['target'], entry['bone']
+            if entry['replace'] is not None:
+                if not any(slot.material is not None for slot in target.material_slots):
+                    notes.append(f"{target.name} has no material; give it one before Convert Materials")
+                notes += _make_static(target, arm_obj, model, index, bone_id)
+                lines.append(f"{target.name} is now rigid mesh {index} on bone_{bone_id}")
+                backups = _set_aside_old_bodies(entry['old'])
+                if backups:
+                    lines.append(f"Set aside (off the armature, not exported): {', '.join(backups)}")
+            if entry['join']:
+                names = ", ".join(obj.name for obj in entry['join'])
+                notes += _join_into_static(context, target, entry['join'], bone_id)
+                lines.append(f"Joined into {target.name} (rigid mesh {index}, bone_{bone_id}): {names}")
+        if static_plan:
+            lines.append("Next: Convert Materials turns the new materials into the model's surfaces")
+        if body is not None:
+            lines.append("Next: weight the main body with Map Weights or Autorig")
         _report_adapt_summary(self, context, "Join or Replace Meshes", lines + notes)
         return {"FINISHED"}

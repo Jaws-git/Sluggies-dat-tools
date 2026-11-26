@@ -26,10 +26,13 @@ from .SurfaceMaterials import (
 from .SceneModels import (
     _INVALID_SUBMESH_NAME_CHARS_RE,
     _SUBMESH_NAME_RE,
+    _SURFACE_ID_RE,
     _add_material_mesh_kind,
     _any_sluggies_armature_imported,
     _bone_id_from_name,
     _bone_metadata_is_current,
+    _donor_copy_original,
+    _draw_cached,
     _find_target_armature,
     _is_donor_mesh,
     _model_is_stadium,
@@ -38,6 +41,7 @@ from .SceneModels import (
     _reports_failure,
     _rigid_mesh_kind,
     _sluggies_armatures,
+    _strip_donor_object_props,
 )
 from .HostBoneScene import (
     _UNIFORM_BONE_CACHE,
@@ -778,6 +782,68 @@ def _rename_uv_map(obj, new_name, layer=None):
                 node.uv_map = new_name
 
 
+def _is_imported_original(obj):
+    """An imported mesh Make Submesh must leave alone: the only object of its
+    submesh. A copy of one (see _donor_copy_original) can become a submesh of
+    its own. Asked on every redraw, so kept until the scene changes."""
+    return _draw_cached(
+        ('imported_original', obj.as_pointer()),
+        lambda: _is_donor_mesh(obj) and _donor_copy_original(obj) is None)
+
+
+def _drop_unused_material_slots(obj):
+    """Remove the material slots of *obj* no face uses. A part separated from
+    an imported mesh keeps every slot of the whole mesh (76 on a Mario
+    Stadium mesh), and each slot would become a surface of the new submesh.
+    Returns how many were removed."""
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+    mesh = obj.data
+    face_slots = [0] * len(mesh.polygons)
+    mesh.polygons.foreach_get('material_index', face_slots)
+    used = sorted(set(face_slots))
+    slot_materials = [slot.material for slot in obj.material_slots]
+    if not slot_materials or len(used) == len(slot_materials) or not used:
+        return 0
+    kept = [slot_materials[index] for index in used if index < len(slot_materials)]
+    if len(kept) != len(used):          # a face on a slot that does not exist: leave it to the compaction
+        return 0
+    remap = {old: new for new, old in enumerate(used)}
+    mesh.materials.clear()
+    for mat in kept:
+        mesh.materials.append(mat)
+    mesh.polygons.foreach_set('material_index', [remap[index] for index in face_slots])
+    mesh.update()
+    return len(slot_materials) - len(kept)
+
+
+def _donor_copy_template_of(model, stadium):
+    """template_of for _make_submesh_materials on a copy of an imported rigid
+    mesh: each imported surface keeps its look as `rigid:<SurfaceId>`, an
+    Add-material surface keeps its template, and whatever the model cannot
+    resolve for a custom submesh gets the default."""
+    default = ModelCheckCore.default_template(stadium)
+
+    def template_of(mat):
+        surface_id = str(mat.get('SurfaceId') or '')
+        if mat.get('SluggiesNewSurface'):
+            candidate = str(mat.get('TemplateSource') or '')
+        elif _SURFACE_ID_RE.match(surface_id):
+            candidate = f'rigid:{surface_id}'
+        else:
+            candidate = ''
+        if candidate:
+            try:
+                _custom_submesh_template_texture_index(model, candidate)
+                CustomSubmeshExport.attribute_plan(model, candidate)
+                return candidate
+            except (ValueError, KeyError):
+                pass
+        return default
+
+    return template_of
+
+
 class SLUGGIES_OT_make_submesh(bpy.types.Operator):
     """Turn the active mesh into a custom rigid submesh on a free bone, where
     it is (export then uses Hammerspace)"""
@@ -809,8 +875,9 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         if obj is None or obj.type != 'MESH':
             cls.poll_message_set("Make a mesh object active")
             return False
-        if _is_donor_mesh(obj):
-            cls.poll_message_set("This mesh is an imported part of the model")
+        if _is_imported_original(obj):
+            cls.poll_message_set(
+                "This mesh is an imported part of the model (a copy of it can become a new submesh)")
             return False
         if not _any_sluggies_armature_imported(context):
             cls.poll_message_set("Import a Sluggies model first")
@@ -841,6 +908,10 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         layout.prop(self, 'armature')
         layout.prop(self, 'host_bone')
         col = layout.column(align=True)
+        original = _donor_copy_original(context.active_object)
+        if original is not None:
+            col.label(text=f"Copy of {original.name}: becomes a new submesh,", icon='DUPLICATE')
+            col.label(text="its materials keep their look where possible.")
         col.label(text="All vertex groups are replaced by the host bone.", icon='INFO')
         col.label(text="Materials get the default template; ones without")
         col.label(text="a texture get a PNG in their colour in tex/.")
@@ -861,7 +932,8 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
 
     def _make_submesh(self, context):
         obj = context.active_object
-        if obj is None or obj.type != 'MESH' or _is_donor_mesh(obj):
+        original = _donor_copy_original(obj)
+        if obj is None or obj.type != 'MESH' or (_is_donor_mesh(obj) and original is None):
             self.report({"ERROR"}, "Make a mesh object active that is not an imported part of a model")
             return {"CANCELLED"}
         arm_obj = _make_submesh_armature(self)
@@ -900,11 +972,24 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
             self.report({"ERROR"}, error)
             return {"CANCELLED"}
 
+        # A copy of an imported mesh stops being that submesh: its twin keeps
+        # it, and the copy's surfaces keep the imported look where they can.
+        template_of = None
+        dropped_slots = 0
+        if original is not None:
+            template_of = _donor_copy_template_of(model, _model_is_stadium(arm_obj))
+            _strip_donor_object_props(obj)
+            dropped_slots = _drop_unused_material_slots(obj)
         custom_submesh_id, notes = _convert_to_custom_submesh(
             context, obj, arm_obj, bone_id, template_source, tex_dir,
-            str(obj.get('CustomSubmeshId') or '') if was_custom else '')
+            str(obj.get('CustomSubmeshId') or '') if was_custom else '', template_of=template_of)
         _select_new_object(context, obj)
-        message = f"{obj.name} is now custom submesh {custom_submesh_id} on bone_{bone_id} ({template_source})"
+        message = (f"{obj.name} is now custom submesh {custom_submesh_id} on bone_{bone_id} "
+                   f"({obj.get('TemplateSource') or template_source})")
+        if original is not None:
+            message += f"; {original.name} stays the imported submesh"
+            if dropped_slots:
+                message += f"; removed {dropped_slots} material slot(s) no face uses"
         self.report({"INFO"}, "; ".join([message] + notes))
         return {"FINISHED"}
 

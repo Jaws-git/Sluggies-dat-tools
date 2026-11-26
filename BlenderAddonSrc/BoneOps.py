@@ -33,12 +33,14 @@ from .EnumItems import (
 
 class SLUGGIES_OT_renumber_added_bones(bpy.types.Operator):
     """Rename added bones to the ids they export with, after an added bone
-    was deleted. Add Bone, Add Submesh and Reassign do this automatically;
+    was deleted, and take bones made with Blender's own tools into the model
+    as added bones. Add Bone, Add Submesh and Reassign do this automatically;
     export refuses while the names are out of step."""
     bl_idname = "sluggies.renumber_added_bones"
     bl_label = "Renumber Added Bones"
     bl_description = ("Rename added bones (and their vertex groups) to the bone ids "
-                      "they export with, e.g. after deleting an added bone")
+                      "they export with, e.g. after deleting an added bone. Bones made "
+                      "with Blender's own tools become added bones too (not with Deform off)")
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

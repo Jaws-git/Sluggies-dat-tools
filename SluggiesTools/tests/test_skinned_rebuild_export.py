@@ -98,7 +98,8 @@ class DonorFactsTests(unittest.TestCase):
         _model, _sub, donor = _donor_body()
         self.assertIsNone(sre.donor_position_format_error(donor, 'body'))
         donor.position_quantize = 0x40
-        self.assertIn('not int16', sre.donor_position_format_error(donor, 'body'))
+        self.assertIn('format 64, which the body rebuild does not support',
+                      sre.donor_position_format_error(donor, 'body'))
 
 
 class DecisionTests(unittest.TestCase):

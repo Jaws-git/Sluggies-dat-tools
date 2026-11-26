@@ -245,6 +245,38 @@ def _is_donor_mesh(obj):
         and any(prop in obj for prop in ModelCheckCore.REQUIRED_PROPS)
 
 
+# Object properties the importer writes on a donor submesh besides
+# REQUIRED_PROPS (UV binding, legacy per-surface shader modes).
+_DONOR_OBJECT_PROP_RE = re.compile(r'^(UV\d+_(TextureIndex|WrapS|WrapT)|DS_.+_ShaderMode)$')
+
+
+def _donor_copy_original(obj):
+    """The other object on *obj*'s armature that carries the same imported
+    submesh, when *obj* is an imported mesh with such a twin (the user
+    duplicated the mesh, or separated a part of it), else None. One of the
+    two can become a new custom submesh (Make Submesh); both cannot export
+    as the same submesh."""
+    if obj is None or obj.type != 'MESH' or not _is_donor_mesh(obj) or 'VertexBufferOffset' not in obj:
+        return None
+    arm_obj = _mesh_armature(obj)
+    if arm_obj is None:
+        return None
+    offset = str(obj['VertexBufferOffset'])
+    for other in arm_obj.children:
+        if other is not obj and other.type == 'MESH' and _is_donor_mesh(other) \
+                and str(other.get('VertexBufferOffset')) == offset:
+            return other
+    return None
+
+
+def _strip_donor_object_props(obj):
+    """Drop what ties *obj* to an imported submesh (it becomes a mesh of its own)."""
+    for prop in ModelCheckCore.REQUIRED_PROPS + ('SluggiesRigidPlacement',) + tuple(
+            key for key in obj.keys() if _DONOR_OBJECT_PROP_RE.match(key)):
+        if prop in obj:
+            del obj[prop]
+
+
 def _sluggies_armatures(context):
     return [o for o in context.view_layer.objects
             if o.type == 'ARMATURE' and 'SluggiesBoneMetadataVersion' in o.keys()]

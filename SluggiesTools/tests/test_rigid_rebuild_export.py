@@ -116,8 +116,11 @@ class DonorFactsTests(unittest.TestCase):
     def test_float_position_format_error(self):
         donor = rre.donor_rigid_submesh(RIGID, self.sub)
         self.assertIsNone(rre.donor_position_format_error(donor, 'cap'))
-        donor.position_quantize = 0x40
-        self.assertIn('not int16', rre.donor_position_format_error(donor, 'cap'))
+        donor.position_quantize = 0x40      # float32: many stadium meshes
+        self.assertIsNone(rre.donor_position_format_error(donor, 'cap'))
+        donor.position_quantize = 0x70
+        self.assertIn('format 112, which the rigid rebuild does not support',
+                      rre.donor_position_format_error(donor, 'cap'))
 
     def test_vertex_bone_problem_messages(self):
         self.assertIsNone(rre.vertex_bone_problem('cap', [{5}, {5}, {5}]))
@@ -399,6 +402,55 @@ class BuildEntryTests(unittest.TestCase):
             self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
             layout = BlockValidator.validate_model_block(result.block)['facts']['gpl_submesh_layout']
             self.assertEqual(layout[RIGID]['position_quantize_info'], 57)
+
+    def _float_donor(self):
+        self.donor.position_quantize = 0x40
+        self.donor.uv_formats = {0: (2, 0x40), 1: (2, 0x40)}
+
+    def test_float_donor_keeps_float_positions_and_uvs(self):
+        # Stadium meshes: float32 positions and UVs (QuantizeInfo 0x40).
+        self._float_donor()
+        far = self._far(40000.0)                       # no range to outgrow
+        infos = []
+        entry = self._entry(geometry=far, infos=infos)
+        self.assertNotIn('VertexBufferQuantizeInfo', entry)
+        self.assertEqual(infos, [])
+        raw = FieldCodec.decode_field(entry['VertexBufferData'])
+        self.assertEqual(raw, struct.pack(f'>{3 * len(far.positions)}f', *(v for p in far.positions for v in p)))
+        uv_raw = FieldCodec.decode_field(entry['UVChannels'][0]['UVChannelData'])
+        indices = struct.unpack('>18H', FieldCodec.decode_field(entry['UVChannels'][0]['UVFacesData']))
+        for loop, index in enumerate(indices):
+            u, v = self.loop_uvs[loop]
+            self.assertEqual(struct.unpack_from('>2f', uv_raw, index * 8), (u, 1.0 - v))
+
+    def test_float_donor_refuses_bad_values_and_facial_poses(self):
+        self._float_donor()
+        with self.assertRaisesRegex(ValueError, 'head vertex 0 x: value is not finite'):
+            self._entry(geometry=self._far(float('inf')))
+        with self.assertRaisesRegex(ValueError, 'outside the float32 range'):
+            self._entry(geometry=self._far(1e39))
+        with self.assertRaisesRegex(ValueError, 'head loop 0 UV u: value is not finite'):
+            self._entry(loop_uvs_by_channel={0: [(float('nan'), 0.0)] * 18, 1: None})
+        with self.assertRaisesRegex(ValueError, 'facial poses on a submesh with float positions'):
+            self._entry(facial_keys=[])
+
+    def test_float_entry_round_trips_through_the_patcher(self):
+        def float_formats(data):
+            sub = data['SluggiesModel']['Submeshes'][RIGID]
+            sub['VertexBuffer']['VertexBufferQuantizeInfo'] = 0x40
+            for uv in sub['UVChannels']:
+                uv['UVChannelQuantizeInfo'] = 0x40
+
+        self._float_donor()
+        entry = self._entry()
+        with synthetic_donor.donor_environment(float_formats) as env:
+            data = env.reload()
+            data['SluggiesModel']['UseHammerspace'] = True
+            data['SluggiesModel']['Submeshes'][RIGID]['RigidRebuild'] = entry
+            result = main.BuildModelBlock(data, main.SectionModes(gpl='build'), sluggie_path=env.sluggie_path)
+            self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
+            layout = BlockValidator.validate_model_block(result.block)['facts']['gpl_submesh_layout']
+            self.assertEqual(layout[RIGID]['position_quantize_info'], 0x40)
 
     def test_positions_beyond_the_widest_format_are_refused(self):
         with self.assertRaisesRegex(ValueError, 'widest position format'):
