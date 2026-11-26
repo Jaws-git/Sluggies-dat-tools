@@ -593,9 +593,19 @@ def check_duplicate_claims(context, scope):
                           "a submesh of its own first: 'Make Active Mesh into a Submesh' in the "
                           "Sluggies sidebar.")
         else:
-            yield Finding("duplicate_claim", INFO, objs[1].name, f"Same submesh as {objs[0].name}",
-                          f"{names} all belong to submesh {index}; export only one of them, or turn "
-                          "the others into submeshes of their own ('Make Active Mesh into a Submesh').")
+            # The one that stays the imported submesh: an imported edit (`_edit`), else the first.
+            keeper = next((o for o in objs if o.name.split('.')[0].endswith('_edit')), objs[0])
+            for obj in objs:
+                if obj is keeper:
+                    continue
+                yield Finding("duplicate_claim", INFO, obj.name, f"Same submesh as {keeper.name}",
+                              f"{names} all belong to submesh {index} (a copy or a separated part keeps "
+                              "the properties of the mesh it came from); only one of them can export as "
+                              f"it. Make into submesh turns {obj.name} into a submesh of its own on a "
+                              f"bone you pick: its link to submesh {index} is removed, its materials "
+                              f"keep their look, and {keeper.name} stays the imported submesh. Or "
+                              "export only one of them.",
+                              action_id="make_submesh", action_args={"object": obj.name})
     by_custom = {}
     for obj in scope.meshes:
         if _is_custom(obj):
