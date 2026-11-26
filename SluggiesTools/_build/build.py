@@ -50,6 +50,9 @@ def find_blender_addon_zip() -> Path:
 WIIMMS_VERSION = "v2.42a-r8989"
 WIIMMS_ARCHIVE = f"szs-{WIIMMS_VERSION}-cygwin64.zip"
 WIIMMS_URL = f"https://szs.wiimm.de/download/{WIIMMS_ARCHIVE}"
+# The official archive is kept in the repository: szs.wiimm.de often refuses or drops HTTPS connections,
+# which failed CI builds. The download is only the fallback for a checkout without the file.
+WIIMMS_VENDORED = TOOLING_ROOT / "vendor" / WIIMMS_ARCHIVE
 WIIMMS_SHA256 = "ac54b82806d5867d2d9f003df972164138ae4f7a7ab8f29d8397664f31c9e892"
 # Inside PyInstaller's contents directory; start.py adds its bin/ to PATH.
 WIIMMS_DIR = PACKAGE / "_internal" / "tools" / "wiimms-szs-tools"
@@ -164,9 +167,13 @@ def bundle_wiimms_tools() -> None:
 
     destination = WIIMMS_DIR
     with tempfile.TemporaryDirectory(prefix="sluggies-wiimms-") as temporary:
-        archive = Path(temporary) / WIIMMS_ARCHIVE
-        print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
-        download(WIIMMS_URL, archive)
+        if WIIMMS_VENDORED.exists():
+            archive = WIIMMS_VENDORED
+            print(f"Using vendored Wiimms SZS Tools {WIIMMS_VERSION}")
+        else:
+            archive = Path(temporary) / WIIMMS_ARCHIVE
+            print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
+            download(WIIMMS_URL, archive)
 
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         if digest != WIIMMS_SHA256:
