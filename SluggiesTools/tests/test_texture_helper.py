@@ -191,6 +191,7 @@ class ResolveTexDirTests(unittest.TestCase):
 
     def test_relative_sluggie_path_resolves_against_cwd(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir = os.path.realpath(temp_dir)  # macOS: /var -> /private/var; getcwd() returns the real path
             model_dir = os.path.join(temp_dir, "model")
             os.makedirs(model_dir)
 
@@ -201,6 +202,7 @@ class ResolveTexDirTests(unittest.TestCase):
 
     def test_bare_filename_resolves_against_cwd(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir = os.path.realpath(temp_dir)  # macOS: /var -> /private/var; getcwd() returns the real path
             with _chdir(temp_dir):
                 tex_dir = resolve_tex_dir("model.sluggie")
 
