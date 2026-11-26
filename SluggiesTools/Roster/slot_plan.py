@@ -2200,7 +2200,7 @@ def _slg_banks(plan: Plan, model: slgmodel.SlgModel, env: Env, char: dict, direc
     for file, data in sorted(model.anims.items()):
         what = anim.label(file).lower()
 
-        def skip(why):
+        def skip(why, what=what):
             plan.warnings.append(f'{target_name} keeps its {what}: the one in {file_name} {why}')
         stock_data = env.vanilla_block(directory, file)
         try:
