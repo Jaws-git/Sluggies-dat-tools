@@ -938,7 +938,8 @@ class ModeTableTests(unittest.TestCase):
         self.assertEqual({m.attr for m in start.MODES if m.dry_run}, {
             'roster', 'game_options', 'load_roster', 'defrag_hammerspace', 'patch_slot', 'clear_slot', 'rename_slot',
             'set_voice', 'set_char_voice', 'set_species_clip', 'copy_slot', 'set_stats', 'set_icon', 'apply_slots',
-            'apply_stat_edits', 'apply_gameplay', 'import_slgmodel', 'custom_cpu', 'custom_cpu_off'})
+            'apply_stat_edits', 'apply_gameplay', 'import_slgmodel', 'custom_cpu', 'custom_cpu_off',
+            'custom_cpu_picture'})
         self.assertEqual({m.attr for m in start.MODES if m.memory}, {
             'patch', 'unpatch', 'patch_slot', 'clear_slot', 'copy_slot', 'import_slgmodel', 'apply_slots',
             'load_roster', 'write_slot_blocks', 'write_slot_equipment', 'roster', 'game_options'})

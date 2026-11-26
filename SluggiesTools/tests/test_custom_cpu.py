@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from PIL import Image
+
 from SluggiesTools import gecko_compat
 from SluggiesTools.CustomCpu import behaviours, carry, engine, item_defense, menu_files, pitching, settings, view
 from SluggiesTools.CustomCpu import runner as cpu_runner
@@ -134,6 +136,13 @@ def game_dol(behaviour_sites: bool = False) -> bytes:
     for start, end in ranges:
         image.add_section('text' if start < 0x80600000 else 'data', *_section(start, end, fill))
     return image.to_bytes()
+
+
+def setUpModule():
+    """No test reads the machine's own button picture (``_gui/custom_cpu/button.png``)."""
+    patcher = mock.patch.object(menu_files, 'BUTTON_PICTURE', '')
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 def message_table(lang: str) -> bytes:
@@ -584,6 +593,38 @@ class MenuFileTests(unittest.TestCase):
         with self.assertRaisesRegex(menu_files.MenuFileError, 'rows'):
             menu_files.picture_bank(lay.to_bytes())
 
+    def test_button_picture_gets_a_page_of_its_own(self):
+        lay = layout2d.Layout(picture_bank('en'))
+        prefix = bytearray(lay.prefix[:0x24]) + bytes(0x80 - 0x24)       # one 4x4 texture, image at 0x60
+        struct.pack_into('>I', prefix, 4, 0x80)
+        struct.pack_into('>H', prefix, 0x20, 1)
+        struct.pack_into('>IIHH', prefix, 0x24, 0x60 - 0x20, 0, 4, 4)
+        prefix[0x24 + 0x17] = 0x09
+        lay.prefix = bytes(prefix)
+        lay.rows[menu_files.LEVEL4_ROW] = struct.pack('>HH4f', 0, 0, 0.0, 0.0, 1.0, 1.0)
+        stock = lay.to_bytes()
+        path = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), 'button.png')
+        self.assertIsNone(menu_files.load_picture(path))
+        Image.new('RGBA', (164, 164), (255, 255, 255, 255)).save(path)          # any size: drawn into the cell
+        picture = menu_files.load_picture(path)
+        self.assertEqual(picture.size, (menu_files.CELL, menu_files.CELL))
+        out = menu_files.picture_bank(stock, picture)
+        new = layout2d.Layout(out)
+        self.assertEqual(struct.unpack_from('>H', out, 0x20)[0], 2)
+        self.assertEqual(struct.unpack('>HH4f', new.rows[engine.ART_ROW]),
+                         (1, 0, 0.0, 0.0, menu_files.CELL / menu_files.PAGE, menu_files.CELL / menu_files.PAGE))
+        self.assertEqual(new.rows[:engine.ART_ROW], layout2d.Layout(stock).rows)
+        descriptor = out[0x24 + 0x20:0x24 + 0x40]
+        image, _pal, height, width = struct.unpack_from('>IIHH', descriptor)
+        self.assertEqual((width, height, descriptor[0x17]), (menu_files.PAGE, menu_files.PAGE, names.GX_RGB5A3))
+        texels = out[0x20 + image:0x20 + image + menu_files.PAGE * menu_files.PAGE * 2]
+        self.assertEqual(texels[:2], b'\xFF\xFF')                                # the cell: opaque white
+        self.assertEqual(texels[-2:], b'\x00\x00')                               # outside it: clear
+        with open(path, 'wb') as f:
+            f.write(b'not a picture')
+        with self.assertRaisesRegex(menu_files.MenuFileError, 'cannot be read'):
+            menu_files.load_picture(path)
+
 
 @mock.patch.object(dhs, 'BASE_SIZE', BASE)
 class DeployTests(unittest.TestCase):
@@ -722,6 +763,15 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(engine.detect(self.image()).button, 'Brutal')
         self.assertEqual(cpu_runner.main(['--off', '--output-dir', self.out, '--input-dir', self.inp]), 0)
         self.assertIsNone(engine.detect(self.image()))
+
+    def test_picture_mode_redeploys_the_deployed_level(self):
+        args = ['--output-dir', self.out, '--input-dir', self.inp]
+        self.assertEqual(cpu_runner.main(['--picture', *args]), 1)             # off: nothing to write it with
+        cpu_runner.run(self.out, self.record, input_dir=self.inp)
+        before = (self.image().to_bytes(), self.slots(menu_files.ART_DIR))
+        self.assertEqual(cpu_runner.main(['--picture', *args]), 0)
+        self.assertEqual((self.image().to_bytes(), self.slots(menu_files.ART_DIR)), before)
+        self.assertEqual(engine.detect(self.image()), self.record)
 
 
 class ViewTests(unittest.TestCase):

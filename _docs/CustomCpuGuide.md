@@ -19,9 +19,25 @@ Technical reference: `_docs/_docs_custom_cpu/CustomCpuLevel.md`.
    "Deploy patched files to game directory" ticked, the files are copied to
    the game directory afterwards.
 6. In the game: Exhibition, then pick the 5th button on the CPU Level
-   popup. It shows the All-Star picture with your caption.
+   popup. It shows the button picture (below) with your caption.
 
 To remove it again, untick **Custom CPU level** and press **Deploy**.
+
+## Button picture
+
+The 5th button shows `1_Input/_Icons/Custom_CPU_Button.png` (in the tools
+folder, beside the player icons). The tools ship one that says "Custom
+CPU". To change it:
+
+1. Edit or replace the PNG. It is 82 x 82 pixels with a transparent
+   background, like the game's own level buttons; other sizes are scaled to
+   82 x 82. Fully opaque pixels keep 5 bits per colour channel, see-through
+   ones 4 bits and 8 steps of transparency.
+2. On the **Custom CPU** tab press **Update button picture** (the level
+   must be deployed). It writes only the picture; the settings stay.
+
+A normal **Deploy** and a roster run also read the file. Without the file
+the button shows the Level 4 picture.
 
 ## How it behaves
 

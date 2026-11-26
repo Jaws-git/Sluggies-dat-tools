@@ -42,6 +42,7 @@ class CustomCpuTab:
         self.out_dol = os.path.join(root, '3_Output_Dat', 'main.dol')
         self.in_dol = os.path.join(root, '1_Input', 'main.dol')
         self.settings_dir = os.path.join(root, view.SETTINGS_DIR_REL)
+        self.picture_path = os.path.join(root, menu_files.BUTTON_PICTURE_REL)
         self.snap = view.Snapshot()
         self.draft = view.Draft()
         self.touched = False                  # the draft holds edits the user made (a re-read keeps it then)
@@ -82,8 +83,17 @@ class CustomCpuTab:
                 dpg.add_text('', tag='cc_button_note', color=_DIM)
             with dpg.tooltip('cc_button'):
                 dpg.add_text(f'The caption shown while the 5th button is highlighted, 1-{menu_files.NAME_MAX} '
-                             'characters, the same in every language. The button itself shows the Level 4 picture.',
-                             wrap=380)
+                             'characters, the same in every language.', wrap=380)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label='Update button picture', tag='cc_picture',
+                               callback=lambda: self._on_picture())
+                dpg.add_text(f'The picture on the 5th button: {menu_files.BUTTON_PICTURE_REL} in the tools folder '
+                             '(82 x 82 pixels). Edit the PNG, then press the button.', color=_DIM)
+            with dpg.tooltip('cc_picture'):
+                dpg.add_text(f'Reads {self.picture_path} again and writes it into the deployed custom level\'s '
+                             'popup; the settings stay as deployed. Other sizes are scaled to 82 x 82. Without the '
+                             'file the button shows the Level 4 picture. A normal Deploy also uses the file.',
+                             wrap=420)
             dpg.add_text('', tag='cc_source', color=_DIM, wrap=1100)
             dpg.add_text('', tag='cc_status', wrap=1100)
             with dpg.group(horizontal=True):
@@ -282,6 +292,31 @@ class CustomCpuTab:
         if not self.app.run_chain([command], on_done=done):
             self.app.toast.warn('Not deployed: another command is running. Try again when it is done.')
 
+    def _picture_blocked(self):
+        """Why the button picture cannot be written now, or None."""
+        if self._blocked():
+            return self._blocked()
+        if self.snap.deployed is None:
+            return 'The custom CPU level is not deployed.'
+        return None
+
+    def _on_picture(self):
+        """Read the button picture again and write it into the deployed level's popup (its settings stay)."""
+        if self._picture_blocked():
+            return
+
+        def done(code, _output):
+            self.refresh()
+            if code != 0:
+                self.app.log_line('[custom cpu] the button picture was not written: see the log above.', _WARN)
+                self.app.toast.error('The button picture was not updated.')
+                return
+            self.app.toast.ok('Button picture updated.')
+            if self.grid._deploying():
+                self.grid._deploy(patched=True)
+        if not self.app.run_chain([('--custom-cpu-picture',)], on_done=done):
+            self.app.toast.warn('Not updated: another command is running. Try again when it is done.')
+
     # ------------------------------------------------------------------ save / load
     def _pick(self, save):
         if self.app.busy or self.grid.action is not None:
@@ -385,6 +420,7 @@ class CustomCpuTab:
         dpg.configure_item('cc_status', color=color)
         dpg.configure_item('cc_deploy', enabled=blocked is None and pending and not bad,
                            label='Deploy' if on or not pending else 'Deploy (turn off)')
+        dpg.configure_item('cc_picture', enabled=self._picture_blocked() is None)
         dpg.configure_item('cc_discard', enabled=pending and not busy)
         dpg.configure_item('cc_reset_all', enabled=edits)
         dpg.configure_item('cc_reset_section', enabled=self.section in view.changed_sections(self.snap, self.draft))

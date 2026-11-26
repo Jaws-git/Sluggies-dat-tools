@@ -107,8 +107,22 @@ the popup picture bank.
   0xB1), then the button name. Encoding: printable ASCII as fullwidth forms
   (U+FF01-FF5E), space as 0x0020, Latin-1 letters as themselves.
 - **Picture**: dir 119 file 4, the popup picture bank. Row `0x68` (one past
-  the stock rows) is added as a copy of the Level 4 cell's row `0x37`, so
-  the 5th button shows the Level 4 picture. No new texture.
+  the stock rows) is added for the 5th button.
+  - Stock buttons: 82 x 82 cells of one 512 x 1024 C8 image that texture
+    pages 23..62 share, each page with a palette of its own (RGB5A3), so a
+    cell looks right only through its own row's page (Level 1-4: rows
+    `0x34`..`0x37`, pages 47..50). A row's four floats are top, left,
+    bottom, right as fractions of the page.
+  - With `1_Input/_Icons/Custom_CPU_Button.png` (any image; scaled to
+    82 x 82): each language copy gets one more texture page, 128 x 128
+    RGB5A3, the picture in its top left cell, and row `0x68` points at it
+    (each copy grows from 0xADAEC to 0xB5B20 bytes). Checked in Dolphin, 2026-11-26: the picture
+    sits and scales like the stock buttons.
+  - Without the file: row `0x68` is a copy of the Level 4 row `0x37`, no
+    new texture.
+  - The file is read at every deploy and roster run;
+    `--custom-cpu-picture` (the tab's "Update button picture") redeploys
+    the deployed record to pick up an edited file.
 - Both files are rebuilt from their stock copies at every deploy, written
   to DAT hammerspace and routed by their directory records. Turning the
   level off puts the `1_Input` records back and zeroes the copies. A roster
@@ -641,6 +655,7 @@ format, so files go both ways; `button` (the caption) is our own extra key.
 py start.py --custom-cpu FILE [--cpu-level 4|5|6] [--cpu-button NAME] [--dry-run]
 py start.py --custom-cpu-off [--dry-run]
 py start.py --custom-cpu-save FILE
+py start.py --custom-cpu-picture [--dry-run]  # read the button picture again
 py SluggiesTools/CustomCpu/runner.py          # status: on / off and the settings
 ```
 

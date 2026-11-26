@@ -6,6 +6,9 @@
   runner.py --off [--dry-run]
                          turn it off (stock words and popup files back)
   runner.py --save FILE  write the deployed settings into FILE
+  runner.py --picture [--dry-run]
+                         read the button picture (1_Input/_Icons/Custom_CPU_Button.png) again and
+                         write it into the deployed level's popup; the settings stay
   runner.py              say whether it is on, and its settings
 
 ``--apply`` reads one level column of the file (``settings.load``; ``--level`` 4, 5 or 6, default: the file's
@@ -152,6 +155,8 @@ def main(argv=None) -> int:
     mode.add_argument('--apply', metavar='FILE', help='turn the custom level on with this settings file (.slgcpu)')
     mode.add_argument('--off', action='store_true', help='turn the custom level off')
     mode.add_argument('--save', metavar='FILE', help='write the deployed settings into FILE')
+    mode.add_argument('--picture', action='store_true', help='read the button picture again and write it into the '
+                                                             'popup of the deployed level')
     parser.add_argument('--level', type=int, choices=settings.LEVELS, help='--apply: the file\'s level column')
     parser.add_argument('--button', help='--apply: the button name (1-25 characters)')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')
@@ -169,11 +174,16 @@ def main(argv=None) -> int:
             save(args.save, record)
             slogger.info(f'custom CPU settings saved to {args.save}', source=SOURCE)
             return 0
-        if not args.apply and not args.off:
+        if not args.apply and not args.off and not args.picture:
             for line in status(args.output_dir):
                 slogger.info(line, source=SOURCE)
             return 0
         record = None
+        if args.picture:
+            record = engine.detect(_files(args.output_dir, args.input_dir)[0])
+            if record is None:
+                raise CustomCpuRunError('the custom CPU level is off: turn it on first, the button picture is '
+                                        'written with it')
         if args.apply:
             deployed = engine.detect(_files(args.output_dir, args.input_dir)[0])
             record, notes = record_from_file(os.path.abspath(args.apply), args.level, args.button, deployed,

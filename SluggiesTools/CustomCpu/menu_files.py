@@ -7,8 +7,10 @@
   forms U+FF01-FF5E, space 0x0020, Latin-1 letters as themselves; ``encode_name``).
   The name is the caption shown for the highlighted button, the same in every language.
 * **dir 119 file 4**, the popup picture bank (``Icons/layout2d.Layout``). A button's picture is resource row
-  choice + 0x22, so ours is row 0x68, one past the 0x68 stock rows: a copy of the Level 4 cell's row (0x37),
-  so button 5 shows the Level 4 picture. No new texture page; each copy grows by one row.
+  choice + 0x22, so ours is row 0x68, one past the 0x68 stock rows. With a picture file (``BUTTON_PICTURE``,
+  ``1_Input/_Icons/Custom_CPU_Button.png``) the bank gets one more texture page (128 x 128 RGB5A3, the picture in its
+  top left 82 x 82 cell: the stock buttons' cell size) and the row points at it. Without the file the row is
+  a copy of the Level 4 cell's row (0x37): button 5 shows the Level 4 picture, and no page is added.
 
 Both files are rebuilt from their **stock** copy every time (offsets and lengths from ``1_Input/main.dol``'s
 record, bytes from the output ``dt_na.dat`` there: nothing writes below the hammerspace base), written to DAT
@@ -17,7 +19,10 @@ same code serves a first deploy, a redeploy and a roster run. Off puts the ``1_I
 our copies.
 """
 
+import os
 import struct
+
+from PIL import Image
 
 try:
     from ..Icons import layout2d
@@ -34,6 +39,12 @@ MSG_DIR, MSG_FILE = 121, 4
 ART_DIR, ART_FILE = 119, 4
 ALL_STAR = 0xB1                              # the stock level 4 caption: ours takes its colour prefix
 LEVEL4_ROW = 0x37
+CELL = 82                                    # a stock button's cell, in pixels
+PAGE = 128                                   # our texture page (power of two)
+# The button's own picture: any image PIL reads, drawn into the 82 x 82 cell. A missing file: the Level 4 copy.
+BUTTON_PICTURE_REL = os.path.join('1_Input', '_Icons', 'Custom_CPU_Button.png')     # beside the portraits
+BUTTON_PICTURE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
+                                               BUTTON_PICTURE_REL))
 NAME_MAX = 25                                # the popup's longest stock caption is 26 characters
 # Every printable ASCII character draws in the popup (Dolphin, 2026-11-25: the 22 that no stock text uses were
 # shown as button names). Latin-1: the letters of the game's own text tables (all seven dir 121 tables, three
@@ -101,12 +112,33 @@ def message_table(stock: bytes, button: str) -> bytes:
     return names.build_table(msgs + [prefix + encode_name(button)])
 
 
-def picture_bank(stock: bytes) -> bytes:
-    """A stock popup picture bank with row ``engine.ART_ROW``: a copy of the Level 4 cell's row."""
+def load_picture(path: str | None = None):
+    """The button picture as an 82 x 82 RGBA image; None when there is no file (``path``: ``BUTTON_PICTURE``)."""
+    path = BUTTON_PICTURE if path is None else path
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with Image.open(path) as img:
+            img = img.convert('RGBA')
+    except (OSError, ValueError) as exc:
+        raise MenuFileError(f'the button picture {path} cannot be read ({exc})') from exc
+    if img.size != (CELL, CELL):
+        img = img.resize((CELL, CELL), Image.LANCZOS)
+    return img
+
+
+def picture_bank(stock: bytes, picture=None) -> bytes:
+    """A stock popup picture bank with row ``engine.ART_ROW``: ``picture`` (``load_picture``) on a texture page
+    of its own, or a copy of the Level 4 cell's row."""
     lay = layout2d.Layout(stock)
     if len(lay.rows) != engine.ART_ROW:
         raise MenuFileError(f'the popup picture bank has 0x{len(lay.rows):X} rows, expected 0x{engine.ART_ROW:X}')
     page, _zero, *uv = struct.unpack('>HH4f', lay.rows[LEVEL4_ROW])
+    if picture is not None:
+        sheet = Image.new('RGBA', (PAGE, PAGE), (0, 0, 0, 0))
+        sheet.paste(picture, (0, 0))
+        page = lay.add_texture(names.rgb5a3(sheet), PAGE, PAGE, names.GX_RGB5A3, page)
+        uv = (0.0, 0.0, CELL / PAGE, CELL / PAGE)            # top, left, bottom, right
     if lay.add_row(page, tuple(uv)) != engine.ART_ROW:
         raise MenuFileError('the popup picture bank: the new row is not the button\'s row')
     return lay.to_bytes()
@@ -131,6 +163,7 @@ def apply_dat(image, dat, vanilla, button: str, reserved=(), input_dat=None) -> 
     at its flush). ``vanilla``: ``1_Input/main.dol``'s image. ``reserved``: more ranges the allocator must not
     use (a roster run's kept routes). ``input_dat``: read the stock copies there instead. Returns log lines."""
     log = []
+    picture = load_picture()
     for title, directory, file in FILES:
         record = _record(image, directory, file)
         words = dhs.read_record(image, record)
@@ -138,7 +171,7 @@ def apply_dat(image, dat, vanilla, button: str, reserved=(), input_dat=None) -> 
         for lang in dhs.LANGS:
             stock = _stock(dat, vanilla, directory, file, lang, input_dat)
             try:
-                new = message_table(stock, button) if directory == MSG_DIR else picture_bank(stock)
+                new = message_table(stock, button) if directory == MSG_DIR else picture_bank(stock, picture)
             except (names.NameConfigError, layout2d.Layout2dError) as exc:
                 raise MenuFileError(f'{title} ({lang}): the stock copy in dt_na.dat cannot be read ({exc})') from exc
             offset, length, _alloc = dhs.slot(words, lang)
@@ -154,7 +187,9 @@ def apply_dat(image, dat, vanilla, button: str, reserved=(), input_dat=None) -> 
             moved += 1
         log.append(f'custom CPU level: {title} (dir {directory} file {file}): '
                    + (f'{moved} language cop{"y" if moved == 1 else "ies"} written to DAT hammerspace' if moved
-                      else 'already in place'))
+                      else 'already in place')
+                   + ('' if directory == MSG_DIR else f'; the button shows {BUTTON_PICTURE}' if picture is not None
+                      else '; the button shows the Level 4 picture'))
     return log
 
 

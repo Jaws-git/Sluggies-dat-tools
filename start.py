@@ -530,10 +530,11 @@ def run_save_gameplay(path):
                           cwd=TOOLS_DIR).returncode == 0
 
 
-def run_custom_cpu(path=None, off=False, save=None, level=None, button=None, dry_run=False):
+def run_custom_cpu(path=None, off=False, save=None, level=None, button=None, dry_run=False, picture=False):
     """The custom CPU level (a 5th button on the exhibition CPU level popup; CustomCpu/runner.py): ``path`` turns
     it on with a settings file (.slgcpu; ``level``: the file's level column, ``button``: the button name),
-    ``off`` turns it off, ``save`` writes the deployed settings into a file. Writes main.dol and dt_na.dat in
+    ``off`` turns it off, ``save`` writes the deployed settings into a file, ``picture`` reads the button
+    picture (1_Input/_Icons/Custom_CPU_Button.png) again for the deployed level. Writes main.dol and dt_na.dat in
     3_Output_Dat; ``dry_run`` writes nothing."""
     cmd = python_script_command(CUSTOM_CPU_SCRIPT)
     if path:
@@ -546,6 +547,8 @@ def run_custom_cpu(path=None, off=False, save=None, level=None, button=None, dry
         cmd.append('--off')
     elif save:
         cmd += ['--save', os.path.abspath(save)]
+    elif picture:
+        cmd.append('--picture')
     if dry_run:
         cmd.append('--dry-run')
     return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
@@ -681,6 +684,7 @@ MODES = (
                                                 dry_run=a.dry_run), dry_run=True),
     Mode('custom_cpu_off', lambda a: run_custom_cpu(off=True, dry_run=a.dry_run), dry_run=True),
     Mode('custom_cpu_save', lambda a: run_custom_cpu(save=a.custom_cpu_save)),
+    Mode('custom_cpu_picture', lambda a: run_custom_cpu(picture=True, dry_run=a.dry_run), dry_run=True),
     Mode('export', lambda a: run_export(debug=a.debug, notex=a.notex, untangle=a.untangle, glb=a.glb,
                                         anim_glb=a.anim_glb)),
     Mode('export_icons', lambda a: run_export_icons(use_output=a.use_output)),
@@ -828,6 +832,7 @@ def parse_args():
     mode.add_argument('--custom-cpu', metavar='FILE', help="turn the custom CPU level on (a 5th button on the exhibition CPU level popup) with a settings file (.slgcpu, also the Slugout's), or replace its settings; writes main.dol and dt_na.dat in 3_Output_Dat; use with --cpu-level / --cpu-button (with --dry-run: check only)")
     mode.add_argument('--custom-cpu-off', action='store_true', help='turn the custom CPU level off: the stock popup and CPU code back')
     mode.add_argument('--custom-cpu-save', metavar='FILE', help='save the deployed custom CPU level settings into a settings file (.slgcpu)')
+    mode.add_argument('--custom-cpu-picture', action='store_true', help='read the custom CPU button picture (1_Input/_Icons/Custom_CPU_Button.png, drawn into 82x82) again and write it into the popup of the deployed level; without the file the button shows the Level 4 picture')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Assets')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets")
     mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Assets/_SOUNDS as WAV files, one folder per archive group")
