@@ -11,17 +11,22 @@ Technical reference: `_docs/_docs_custom_cpu/CustomCpuLevel.md`.
 
 1. Run the normal export first, so `3_Output_Dat` holds the game. The
    original `main.dol` must stay in `1_Input`.
-2. Open the **Custom CPU** tab and tick **Custom CPU level**.
+2. Open the **Custom CPU** tab and tick **Custom CPU level** (under the
+   Patch Game row). While it is unticked, everything below it is greyed
+   out and cannot be edited.
 3. Type a **button name** (1-25 characters). It is the caption shown when
    the 5th button is highlighted.
 4. Turn switches on and change values (below).
-5. Press **Deploy**. Nothing is written before that. With the grid's
-   "Deploy patched files to game directory" ticked, the files are copied to
-   the game directory afterwards.
+5. Press **Patch Game**. Nothing is written before that. With "Deploy
+   patched files to game directory" ticked (end of the same row; it is the
+   Character grid's setting), the button reads **Patch Game & copy files**
+   and the files are copied to the game directory afterwards. The button
+   writes the custom CPU level only: edits pending on the Character grid
+   or Gameplay tab stay pending.
 6. In the game: Exhibition, then pick the 5th button on the CPU Level
    popup. It shows the button picture (below) with your caption.
 
-To remove it again, untick **Custom CPU level** and press **Deploy**.
+To remove it again, untick **Custom CPU level** and press **Patch Game**.
 
 ## Button picture
 
@@ -36,7 +41,7 @@ CPU". To change it:
 2. On the **Custom CPU** tab press **Update button picture** (the level
    must be deployed). It writes only the picture; the settings stay.
 
-A normal **Deploy** and a roster run also read the file. Without the file
+A normal **Patch Game** and a roster run also read the file. Without the file
 the button shows the Level 4 picture.
 
 ## How it behaves
@@ -57,8 +62,8 @@ the button shows the Level 4 picture.
   from All-Star.
 - The **value table**: Setting, Custom (your value), Stock (level 4) and a
   Reset button per row. Hover a setting's name for what it does.
-- Colours: orange differs from what is deployed (Deploy will change it),
-  blue differs from All-Star, red is a problem. Deploy is refused while
+- Colours: orange differs from what is deployed (Patch Game will change
+  it), blue differs from All-Star, red is a problem. Patch Game is refused while
   there is a problem; the reasons are listed under the table.
 - **Discard pending edits** goes back to what is deployed. **Reset all**
   goes back to All-Star values.
@@ -106,7 +111,7 @@ The settings of a behaviour only act while its switch is on.
   hitter strength" on, the star usage odds are not used.
 - **Pitchers learn each batter** works out each pitcher's starting pitch mix
   from the characters' stats when you deploy, and again at every roster
-  run. After changing stats with the stat editor (Bridge), press **Deploy**
+  run. After changing stats with the stat editor (Bridge), press **Patch Game**
   again.
 - **Aims batting items**: by default a quarter of the at-bats get some
   added timing and aim error. Set "Error-free item at-bats" to 100 for

@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -128,6 +130,32 @@ def copy_release_files() -> None:
     addon_zip = find_blender_addon_zip()
     shutil.copy2(addon_zip, PACKAGE / addon_zip.name)
 
+DOWNLOAD_ATTEMPTS = 5
+DOWNLOAD_TIMEOUT = 60       # seconds, per connection and per read
+
+
+def download(url: str, destination: Path) -> None:
+    """Fetch ``url`` into ``destination``, trying again when the connection fails: the server now and then
+    resets a connection from a CI runner (WinError 10054 in the TLS handshake). The caller checks the
+    checksum, so a retry cannot let a different file in."""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response, destination.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            return
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == DOWNLOAD_ATTEMPTS:      # a missing file will not appear on a retry
+                raise
+            reason = error
+        except OSError as error:                                      # URLError, reset, timeout
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            reason = error
+        wait = 5 * 2 ** (attempt - 1)
+        print(f"Download failed ({reason}); attempt {attempt + 1} of {DOWNLOAD_ATTEMPTS} in {wait} s")
+        time.sleep(wait)
+
+
 def bundle_wiimms_tools() -> None:
     """Bundle the official, checksum-pinned Windows distribution unchanged."""
     if platform.system() != "Windows":
@@ -138,7 +166,7 @@ def bundle_wiimms_tools() -> None:
     with tempfile.TemporaryDirectory(prefix="sluggies-wiimms-") as temporary:
         archive = Path(temporary) / WIIMMS_ARCHIVE
         print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
-        urllib.request.urlretrieve(WIIMMS_URL, archive)
+        download(WIIMMS_URL, archive)
 
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         if digest != WIIMMS_SHA256:

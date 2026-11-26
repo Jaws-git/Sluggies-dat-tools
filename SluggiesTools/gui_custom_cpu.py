@@ -1,9 +1,12 @@
 """The GUI's "Custom CPU" tab: one optional custom CPU level, a 5th button on the exhibition CPU level popup
 (``CustomCpu/``; its model without Dear PyGui is ``CustomCpu/view.py``).
 
-* **Custom CPU level** is the main switch; **Deploy** writes what the tab shows into ``3_Output_Dat`` (``start.py
-  --custom-cpu`` with the tab's settings, or ``--custom-cpu-off``), then copies the files into the game directory
-  when the grid's "Deploy patched files to game directory" is ticked. Nothing is written before Deploy.
+* **Custom CPU level** is the main switch, on a row of its own under the Patch Game row; while it is off,
+  everything below it is greyed out and cannot be edited. **Patch Game** writes what the tab shows into ``3_Output_Dat``
+  (``start.py --custom-cpu`` with the tab's settings, or ``--custom-cpu-off``), then copies the files into the
+  game directory when "Deploy patched files to game directory" is ticked (the checkbox at the end of the row
+  shares the grid's value; the button then reads "Patch Game & copy files"). Nothing is written before that.
+  It writes this tab's level only; the grid's pending edits stay pending.
 * **Button name**: the caption shown for the button, 1-25 characters, checked as typed.
 * A **section list** on the left (a ``*`` marks sections with values that differ from stock level 4) and the
   section's **value table**: Setting | Custom | Stock (level 4) | Reset.
@@ -11,14 +14,15 @@
   with more than one level column asks which one to load. **Discard pending edits** goes back to the deployed
   level, **Reset all** to stock level 4.
 
-Value colours: orange differs from the deployed level (Deploy will change it), blue differs from stock level 4,
-red a problem (Deploy is refused; the lines are under the table).
+Value colours: orange differs from the deployed level (Patch Game will change it), blue differs from stock level
+4, red a problem (Patch Game is refused; the lines are under the table).
 """
 
 import os
 
 import dearpygui.dearpygui as dpg
 
+import gui_grid
 from CustomCpu import menu_files, settings, view
 
 _TEXT = (220, 220, 220, 255)
@@ -28,10 +32,13 @@ _OK = (120, 220, 140, 255)
 _ERROR = (255, 120, 110, 255)
 _EDITED = (255, 170, 70, 255)
 _CHANGED = (130, 190, 255, 255)
+_OFF = (115, 115, 115, 255)       # the page below the main switch while it is off (the disabled items' grey)
 MARK_COLORS = {view.PROBLEM: _ERROR, view.EDITED: _EDITED, view.CHANGED: _CHANGED}
 LOCK_TEXT = 'A roster pack load is pending: press "Patch Game" (or Discard it) on the Character grid tab first.'
 SECTION_W = 210
 VALUE_W = 110
+PATCH_W = 170                    # the Patch Game button; widened to its label once text sizes are known
+TURN_OFF = ' (turn off)'
 
 
 class CustomCpuTab:
@@ -57,11 +64,10 @@ class CustomCpuTab:
         with dpg.tab(label='Custom CPU', tag='custom_cpu_tab'):
             dpg.add_text('One optional custom CPU level: a 5th button on the exhibition CPU level popup. Its settings '
                          'act only at that level; levels 1-4 play as they do without it. Every value starts at the '
-                         'game\'s own level 4. Nothing is written before "Deploy".', wrap=1100)
+                         'game\'s own level 4. Nothing is written before "Patch Game".', wrap=1100)
             with dpg.group(horizontal=True):
-                dpg.add_checkbox(label='Custom CPU level', tag='cc_on', callback=lambda _s, v: self._on_switch(v))
-                dpg.add_spacer(width=8)
-                dpg.add_button(label='Deploy', tag='cc_deploy', width=150, callback=lambda: self._on_deploy())
+                dpg.add_button(label=gui_grid.PATCH_LABEL, tag='cc_deploy', width=PATCH_W,
+                               callback=lambda: self._on_deploy())
                 dpg.bind_item_theme('cc_deploy', 'primary_theme')
                 dpg.add_button(label='Discard pending edits', tag='cc_discard', callback=lambda: self._on_discard())
                 dpg.add_spacer(width=12)
@@ -71,12 +77,28 @@ class CustomCpuTab:
                 dpg.add_button(label='Reset all to stock level 4', tag='cc_reset_all',
                                callback=lambda: self._on_reset_all())
                 dpg.bind_item_theme('cc_reset_all', 'grid_warn_theme')
-            with dpg.tooltip('cc_on'):
-                dpg.add_text('On: the popup gets the 5th button and the settings below. Off: the stock popup and '
-                             'CPU code. Deploy writes the change.', wrap=380)
+                dpg.add_spacer(width=12)
+                # the grid's checkbox value (source): one setting, ticking either ticks both
+                dpg.add_checkbox(label=gui_grid.DEPLOY_LABEL, tag='cc_copy', source='grid_deploy',
+                                 callback=lambda _sender, value: self.grid._on_deploy_toggle(value))
+            with dpg.tooltip('cc_copy'):
+                dpg.add_text('After a successful Patch Game or "Update button picture", copy the game files from '
+                             '3_Output_Dat into the game directory (the same setting as on the Character grid '
+                             'tab).', wrap=420)
+            with dpg.tooltip('cc_deploy'):
+                dpg.add_text('Writes the custom CPU level this tab shows into 3_Output_Dat. Edits pending on the '
+                             'Character grid and Gameplay tabs are not written by this button.', wrap=420)
             with dpg.tooltip('cc_load'):
                 dpg.add_text('Load a .slgcpu settings file (ours or the Slugout\'s). A file with several level '
                              'columns asks which one to load.', wrap=380)
+            dpg.add_checkbox(label='Custom CPU level', tag='cc_on', callback=lambda _s, v: self._on_switch(v))
+            with dpg.tooltip('cc_on'):
+                dpg.add_text('On: the popup gets the 5th button and the settings below. Off: the stock popup and '
+                             'CPU code; everything below is greyed out. "Patch Game" writes the change.', wrap=380)
+            dpg.add_text('', tag='cc_source', color=_DIM, wrap=1100)
+            dpg.add_text('', tag='cc_status', wrap=1100)
+            dpg.add_group(tag='cc_detail')                    # everything the main switch greys out
+            dpg.push_container_stack('cc_detail')
             with dpg.group(horizontal=True):
                 dpg.add_text('Button name')
                 dpg.add_input_text(tag='cc_button', width=300, callback=lambda _s, v: self._on_button(v))
@@ -88,19 +110,18 @@ class CustomCpuTab:
                 dpg.add_button(label='Update button picture', tag='cc_picture',
                                callback=lambda: self._on_picture())
                 dpg.add_text(f'The picture on the 5th button: {menu_files.BUTTON_PICTURE_REL} in the tools folder '
-                             '(82 x 82 pixels). Edit the PNG, then press the button.', color=_DIM)
+                             '(82 x 82 pixels). Edit the PNG, then press the button.', tag='cc_picture_note',
+                             color=_DIM)
             with dpg.tooltip('cc_picture'):
                 dpg.add_text(f'Reads {self.picture_path} again and writes it into the deployed custom level\'s '
                              'popup; the settings stay as deployed. Other sizes are scaled to 82 x 82. Without the '
-                             'file the button shows the Level 4 picture. A normal Deploy also uses the file.',
+                             'file the button shows the Level 4 picture. "Patch Game" also uses the file.',
                              wrap=420)
-            dpg.add_text('', tag='cc_source', color=_DIM, wrap=1100)
-            dpg.add_text('', tag='cc_status', wrap=1100)
             with dpg.group(horizontal=True):
                 for mark, label in ((view.EDITED, 'differs from the deployed level'),
                                     (view.CHANGED, 'differs from stock level 4'), (view.PROBLEM, 'problem')):
-                    dpg.add_text('■', color=MARK_COLORS[mark])
-                    dpg.add_text(label, color=_DIM)
+                    dpg.add_text('■', tag=f'cc_legend_{mark}', color=MARK_COLORS[mark])
+                    dpg.add_text(label, tag=f'cc_legend_text_{mark}', color=_DIM)
                     dpg.add_spacer(width=8)
             with dpg.group(horizontal=True):
                 with dpg.child_window(tag='cc_sections', width=SECTION_W, height=-70, border=True):
@@ -115,6 +136,14 @@ class CustomCpuTab:
                     dpg.add_group(tag='cc_rows')
             dpg.add_text('', tag='cc_problems', color=_ERROR, wrap=1100)
             dpg.add_text('', tag='cc_warnings', color=_WARN, wrap=1100)
+            dpg.pop_container_stack()
+        with dpg.theme(tag='cc_off_theme'):                   # bound to cc_detail while the main switch is off
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_Text, _OFF)
+                dpg.add_theme_color(dpg.mvThemeCol_CheckMark, _OFF)
+                for col in (dpg.mvThemeCol_FrameBg, dpg.mvThemeCol_FrameBgHovered, dpg.mvThemeCol_FrameBgActive,
+                            dpg.mvThemeCol_Header, dpg.mvThemeCol_HeaderHovered, dpg.mvThemeCol_HeaderActive):
+                    dpg.add_theme_color(col, (45, 46, 50, 255))
         for mark, color in MARK_COLORS.items():
             with dpg.theme(tag=f'cc_mark_{mark}'):
                 with dpg.theme_component(dpg.mvAll):
@@ -160,6 +189,7 @@ class CustomCpuTab:
                        borders_outerH=True, borders_innerV=True, borders_outerV=True, row_background=True):
             for label in ('Setting', 'Custom', 'Stock (level 4)', '', ''):
                 dpg.add_table_column(label=label)
+            on = self.draft.on
             for row in view.rows(self.snap, self.draft, self.section):
                 with dpg.table_row():
                     s = row.setting
@@ -169,30 +199,31 @@ class CustomCpuTab:
                     with dpg.group(horizontal=True):
                         item = self._build_value(row)
                         if s.unit and not s.choices:
-                            dpg.add_text(s.unit, color=_DIM)
-                    dpg.add_text(view.text(s, row.stock), color=_DIM)
-                    dpg.add_button(label='Reset', small=True, user_data=s.key,
+                            dpg.add_text(s.unit, color=_DIM if on else _OFF)
+                    dpg.add_text(view.text(s, row.stock), color=_DIM if on else _OFF)
+                    dpg.add_button(label='Reset', small=True, user_data=s.key, enabled=on,
                                    callback=lambda _s, _a, key: self._on_reset(key))
-                    dpg.add_text(row.note, color=_WARN if row.note else _DIM)
+                    dpg.add_text(row.note, color=_OFF if not on else _WARN if row.note else _DIM)
                     self.cells[s.key] = item
-                    dpg.bind_item_theme(item, f'cc_mark_{row.mark}' if row.mark else 0)
+                    dpg.bind_item_theme(item, f'cc_mark_{row.mark}' if row.mark and on else 0)
 
     def _build_value(self, row):
         s = row.setting
+        free = self.draft.on and not row.locked
         if s.kind == 'switch' or s.boolean:
-            return dpg.add_checkbox(default_value=bool(row.value), enabled=not row.locked, user_data=s.key,
+            return dpg.add_checkbox(default_value=bool(row.value), enabled=free, user_data=s.key,
                                     callback=lambda _s, v, key: self._on_value(key, bool(v), rebuild=True))
         if s.choices:
             return dpg.add_combo(items=list(s.choices), default_value=s.choices[int(row.value)], width=VALUE_W + 20,
-                                 user_data=s.key, callback=lambda _s, v, key: self._on_value(
+                                 enabled=self.draft.on, user_data=s.key, callback=lambda _s, v, key: self._on_value(
                                      key, settings.BY_KEY[key].choices.index(v), rebuild=True))
         if s.integer:
             return dpg.add_input_int(default_value=int(row.value), width=VALUE_W, step=0, min_value=int(s.lo),
-                                     max_value=int(s.hi), min_clamped=True, max_clamped=True, enabled=not row.locked,
+                                     max_value=int(s.hi), min_clamped=True, max_clamped=True, enabled=free,
                                      user_data=s.key, callback=lambda _s, v, key: self._on_value(key, int(v)))
         return dpg.add_input_float(default_value=float(row.value), width=VALUE_W, step=0, format='%.3f',
                                    min_value=float(s.lo), max_value=float(s.hi), min_clamped=True, max_clamped=True,
-                                   enabled=not row.locked, user_data=s.key,
+                                   enabled=free, user_data=s.key,
                                    callback=lambda _s, v, key: self._on_value(key, round(float(v), 4)))
 
     def _update(self):
@@ -200,14 +231,14 @@ class CustomCpuTab:
         for row in view.rows(self.snap, self.draft, self.section):
             item = self.cells.get(row.setting.key)
             if item is not None:
-                dpg.bind_item_theme(item, f'cc_mark_{row.mark}' if row.mark else 0)
+                dpg.bind_item_theme(item, f'cc_mark_{row.mark}' if row.mark and self.draft.on else 0)
         changed = view.changed_sections(self.snap, self.draft)
         for n, section in enumerate(settings.SECTIONS):
             dpg.configure_item(f'cc_sec_{n}', label=section + ('  *' if section in changed else ''))
             dpg.set_value(f'cc_sec_{n}', section == self.section)
         name = menu_files.name_problem(self.draft.button)
         dpg.set_value('cc_button_note', name or f'{len(self.draft.button)} of {menu_files.NAME_MAX} characters')
-        dpg.configure_item('cc_button_note', color=_ERROR if name else _DIM)
+        dpg.configure_item('cc_button_note', color=_OFF if not self.draft.on else _ERROR if name else _DIM)
         dpg.bind_item_theme('cc_button', f'cc_mark_{view.PROBLEM}' if name and self.draft.on else 0)
         dpg.set_value('cc_problems', '\n'.join(view.problems(self.snap, self.draft)))
         dpg.set_value('cc_warnings', '\n'.join(view.warnings(self.draft)))
@@ -222,7 +253,7 @@ class CustomCpuTab:
 
     def _on_switch(self, value):
         self.draft.on = bool(value)
-        self._edited()
+        self._edited(rebuild=True)                 # the rows are built enabled or greyed out
 
     def _on_button(self, value):
         self.draft.button = value
@@ -298,6 +329,8 @@ class CustomCpuTab:
             return self._blocked()
         if self.snap.deployed is None:
             return 'The custom CPU level is not deployed.'
+        if not self.draft.on:
+            return 'The custom CPU level is switched off on this tab.'
         return None
 
     def _on_picture(self):
@@ -389,7 +422,7 @@ class CustomCpuTab:
             return
         for note in notes:
             self.app.log_line(f'[custom cpu] {note}', _DIM)
-        self.app.log_line(f'[custom cpu] loaded {os.path.basename(path)}; "Deploy" writes it.', _EDITED)
+        self.app.log_line(f'[custom cpu] loaded {os.path.basename(path)}; "Patch Game" writes it.', _EDITED)
         self.touched = True
         self._redraw()
 
@@ -402,27 +435,43 @@ class CustomCpuTab:
             self.refresh()
         pending = view.pending(self.snap, self.draft)
         shown = (self._blocked(), pending, bool(view.problems(self.snap, self.draft)), self.draft.on,
-                 bool(self.draft.edits), self.touched, self.snap.source, self.app.busy)
+                 bool(self.draft.edits), self.touched, self.snap.source, self.app.busy, self.grid._deploying())
         if shown != self._shown:
             self._shown = shown
             self._apply(shown)
 
     def _apply(self, shown):
-        blocked, pending, bad, on, edits, _touched, source, busy = shown
+        blocked, pending, bad, on, edits, _touched, source, busy, copying = shown
         dpg.set_value('cc_source', source)
         if blocked and not busy:
             status, color = blocked, _WARN
         elif bad:
-            status, color = 'Deploy is refused until the problems below are fixed.', _ERROR
+            status, color = 'Patch Game is refused until the problems below are fixed.', _ERROR
         else:
             status, color = view.pending_text(self.snap, self.draft), _EDITED if pending else _DIM
         dpg.set_value('cc_status', status)
         dpg.configure_item('cc_status', color=color)
-        dpg.configure_item('cc_deploy', enabled=blocked is None and pending and not bad,
-                           label='Deploy' if on or not pending else 'Deploy (turn off)')
+        label = (gui_grid.PATCH_DEPLOY_LABEL if copying else gui_grid.PATCH_LABEL) + (
+            '' if on or not pending else TURN_OFF)
+        size = dpg.get_text_size(label)              # None before the first frame
+        dpg.configure_item('cc_deploy', enabled=blocked is None and pending and not bad, label=label,
+                           width=max(PATCH_W, int(size[0]) + 20) if size else PATCH_W)
         dpg.configure_item('cc_picture', enabled=self._picture_blocked() is None)
+        # the main switch off: everything below it is greyed out and cannot be edited
+        dpg.bind_item_theme('cc_detail', 0 if on else 'cc_off_theme')
+        dpg.configure_item('cc_button', enabled=on)
+        dpg.configure_item('cc_picture_note', color=_DIM if on else _OFF)
+        dpg.configure_item('cc_section_title', color=_OK if on else _OFF)
+        for n in range(len(settings.SECTIONS)):
+            dpg.configure_item(f'cc_sec_{n}', enabled=on)
+        for mark, color in MARK_COLORS.items():
+            dpg.configure_item(f'cc_legend_{mark}', color=color if on else _OFF)
+            dpg.configure_item(f'cc_legend_text_{mark}', color=_DIM if on else _OFF)
+        for tag, color in (('cc_problems', _ERROR), ('cc_warnings', _WARN)):
+            dpg.configure_item(tag, color=color if on else _OFF)
         dpg.configure_item('cc_discard', enabled=pending and not busy)
         dpg.configure_item('cc_reset_all', enabled=edits)
-        dpg.configure_item('cc_reset_section', enabled=self.section in view.changed_sections(self.snap, self.draft))
+        dpg.configure_item('cc_reset_section',
+                           enabled=on and self.section in view.changed_sections(self.snap, self.draft))
         dpg.configure_item('cc_save', enabled=not busy)
         dpg.configure_item('cc_load', enabled=not busy)
