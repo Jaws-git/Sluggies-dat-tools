@@ -202,6 +202,42 @@ class GridStagingMixin:
             return False
         return True
 
+    def offer_chemistry(self, path, on_staged=None):
+        """The staging check of a chemistry file the Chemistry tab wrote (the pending edits plus this one, as a
+        new item at the end of the list). It is staged straight away when the check passes without warnings; else
+        its dialog asks (warnings) or tells (a refusal). ``on_staged`` runs once it is staged. False when the tab is
+        busy or a roster pack load is pending."""
+        if self._locked() or self.confirm is not None or self.pending.pack is not None:
+            return False
+        edit = gui_grid.chemistry_edit(path)
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging(edit))
+        except OSError as exc:
+            self.app.log_line(f'[chemistry] could not write {self.edits_path}: {exc}', _WARN)
+            return False
+        self.action = 'chemistry'
+
+        def stage(plan):
+            self._stage(plan)
+            if on_staged is not None:
+                on_staged()
+
+        def show(code, output):
+            state = self.nav.state or self.loader.state
+            plan = gui_grid.load_plan(self.plan_path)
+            dialog = gui_grid.chemistry_dialog(state, plan, code, output, edit['file'])
+            for text, kind in dialog.lines:
+                if kind == gui_grid.WARN:
+                    self.app.log_line(f'[chemistry] {text}', _WARN)
+            if dialog.can_apply and not any(k == gui_grid.WARN for _t, k in dialog.lines):
+                stage(plan)
+                return
+            self._dialog(dialog, lambda: stage(plan), ok_label='Stage')
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the chemistry changes...', show):
+            self._end_action()
+            return False
+        return True
+
     # ------------------------------------------------------------------ item and stadium models
     def _on_items(self, op):
         """The item / stadium tile (``op``): with pending models of the tile a dialog lists them (Add..., Discard);

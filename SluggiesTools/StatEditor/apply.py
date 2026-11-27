@@ -32,6 +32,18 @@ pair becomes the target's). A snapshot names values by field and ID, so it
 fits any DOL that has both characters (no hash check); IDs the roster no
 longer has are skipped.
 
+``Chemistry`` steps (``chemistry:<file>``, from the GUI's Chemistry tab, format
+``sluggies-chemistry`` v1: ``{"pairs": [["0xAA", "0xBB", value], ...]}``) set
+the chemistry of unordered pairs: both directions get the value (0 bad,
+1 neutral, 2 good). They name characters by ID only, so they fit any DOL that
+has them (no hash check): a pair with an ID the roster no longer has is
+skipped with a warning; a value outside 0-2, a character paired with itself or
+a pair listed twice refuses the item.
+
+Where a later step replaces a chemistry value an earlier step of another kind
+set, and a ``Chemistry`` step is one of the two, ``prepare`` says so in its
+warnings (last change wins, never silently).
+
 Warnings (written anyway): a value outside the editor's own input range
 (``fields.limit_problem``; not for the roster's own values a reset writes back), and a character left with both a fielding and a
 baserunning ability (the editor: "giving a character both will crash").
@@ -100,11 +112,68 @@ class Copy:
         return f'{COPY_PREFIX}{self.path}'
 
 
-def parse_item(text: str) -> 'Reset | Copy | str':
-    """A command-line item: ``reset:0xNN`` gives a ``Reset``, ``copy:<file>`` a ``Copy``, anything else is an
-    edit file's path."""
+CHEMISTRY_PREFIX = 'chemistry:'
+CHEMISTRY_FORMAT = 'sluggies-chemistry'
+CHEMISTRY_VERSION = 1
+CHEMISTRY_NAMES = {0: 'bad', 1: 'neutral', 2: 'good'}
+
+
+@dataclass(frozen=True)
+class Chemistry:
+    """A step that sets the chemistry of pairs (``chemistry:<file>``, module docstring); ``doc`` once it is read."""
+    path: str
+    doc: dict | None = None
+
+    @property
+    def item(self) -> str:
+        return f'{CHEMISTRY_PREFIX}{self.path}'
+
+
+STEPS = (Reset, Copy, Chemistry)
+
+
+def chemistry_document(pairs: dict) -> dict:
+    """The ``sluggies-chemistry`` file for ``{(a, b): value}`` (unordered pairs)."""
+    rows = sorted((min(a, b), max(a, b), value) for (a, b), value in pairs.items())
+    return {'format': CHEMISTRY_FORMAT, 'version': CHEMISTRY_VERSION,
+            'pairs': [[_hex(a), _hex(b), value] for a, b, value in rows]}
+
+
+def chemistry_pairs(doc, label: str = 'the chemistry file') -> dict[tuple[int, int], int]:
+    """``{(a, b): value}`` (``a < b``) of a ``sluggies-chemistry`` file. Raises ``EditFileError`` for a file of
+    another format, a value outside 0-2, a character paired with itself or a pair listed twice."""
+    if not isinstance(doc, dict) or doc.get('format') != CHEMISTRY_FORMAT:
+        found = doc.get('format') if isinstance(doc, dict) else None
+        raise EditFileError(f'{label} is not a chemistry file (format {found!r})')
+    if doc.get('version') != CHEMISTRY_VERSION:
+        raise EditFileError(f'{label} has format version {doc.get("version")!r}; this Sluggies Tools reads version '
+                            f'{CHEMISTRY_VERSION}: update Sluggies Tools')
+    rows = doc.get('pairs')
+    if not isinstance(rows, list):
+        raise EditFileError(f'{label}: "pairs" is not a list')
+    out = {}
+    for row in rows:
+        if not (isinstance(row, list) and len(row) == 3):
+            raise EditFileError(f'{label}: {row!r} is not an [ID, ID, value] entry')
+        a, b = _id(row[0], label), _id(row[1], label)
+        where = f'{label}, {_hex(a)} x {_hex(b)}'
+        if a == b:
+            raise EditFileError(f'{where}: the chemistry of a character with itself is not edited here')
+        value = _value(fields.CHEMISTRY, row[2], where)
+        key = (min(a, b), max(a, b))
+        if key in out:
+            raise EditFileError(f'{where}: the pair is listed twice')
+        out[key] = value
+    return out
+
+
+def parse_item(text: str) -> 'Reset | Copy | Chemistry | str':
+    """A command-line item: ``reset:0xNN`` gives a ``Reset``, ``copy:<file>`` a ``Copy``, ``chemistry:<file>`` a
+    ``Chemistry``, anything else is an edit file's path."""
     if text.lower().startswith(COPY_PREFIX):
         return Copy(text[len(COPY_PREFIX):])
+    if text.lower().startswith(CHEMISTRY_PREFIX):
+        return Chemistry(text[len(CHEMISTRY_PREFIX):])
     if not text.lower().startswith(RESET_PREFIX):
         return text
     return Reset(_id(text[len(RESET_PREFIX):], text))
@@ -116,6 +185,7 @@ class Prepared:
     same: int = 0                   # values the files give that the game holds already
     warnings: list[str] = field(default_factory=list)
     files: int = 0
+    replaced: list[str] = field(default_factory=list)   # the "replaced" lines among the warnings (module docstring)
 
     @property
     def characters(self) -> list[int]:
@@ -124,6 +194,16 @@ class Prepared:
     @property
     def global_values(self) -> int:
         return sum(1 for c in self.changes if c.who is None)
+
+
+def load_item(text: str) -> 'Reset | Copy | Chemistry | dict':
+    """``parse_item`` with the item's file read: the document ``prepare`` takes."""
+    parsed = parse_item(text)
+    if isinstance(parsed, Reset):
+        return parsed
+    if isinstance(parsed, (Copy, Chemistry)):
+        return type(parsed)(parsed.path, read_file(parsed.path))
+    return read_file(parsed)
 
 
 def read_file(path: str) -> dict:
@@ -260,6 +340,43 @@ def _parse_copy(step: Copy, placer: _Placer, label: str) -> dict[int, Change]:
     return out
 
 
+def _parse_chemistry(step: Chemistry, placer: _Placer, label: str, notes: list[str], names: dict) -> dict[int, Change]:
+    out: dict[int, Change] = {}
+    for (a, b), value in chemistry_pairs(step.doc or {}, label).items():
+        gone = [cid for cid in (a, b) if cid not in placer.present]
+        if gone:
+            notes.append(f'{label}: {_who(a, names)} x {_who(b, names)} is skipped: '
+                         f'{" and ".join(_hex(cid) for cid in gone)} {"is" if len(gone) == 1 else "are"} not in '
+                         'this roster')
+            continue
+        for x, y in ((a, b), (b, a)):
+            change = placer.chemistry_change(x, y, value)
+            out.setdefault(change.address, change)     # stock x new: one byte for both directions
+    return out
+
+
+def _origin(doc) -> str:
+    """Whose value a step's is, for the "replaced" lines."""
+    if isinstance(doc, Chemistry):
+        return 'the Chemistry tab'
+    if isinstance(doc, Reset):
+        return 'the clear'
+    if isinstance(doc, Copy):
+        return 'the paste'
+    return 'the Stat Editor'
+
+
+def _replaced(earlier: Change, earlier_doc, later: Change, later_doc, names: dict) -> tuple | None:
+    """``(pair, line)`` when ``later`` replaces the chemistry value ``earlier`` set and exactly one of the two is a
+    ``Chemistry`` step (module docstring)."""
+    if earlier.raw == later.raw or isinstance(earlier_doc, Chemistry) == isinstance(later_doc, Chemistry):
+        return None
+    a, b = sorted((later.who, int(later.key, 16)))
+    old, new = (CHEMISTRY_NAMES.get(c.after, str(c.after)) for c in (earlier, later))
+    return (a, b), (f'{_who(a, names)} x {_who(b, names)}: {_origin(earlier_doc)}\'s value {old} is replaced by '
+                    f'{_origin(later_doc)}\'s {new}')
+
+
 def _parse(doc: dict, placer: _Placer, label: str) -> dict[int, Change]:
     out: dict[int, Change] = {}
 
@@ -352,30 +469,43 @@ def prepare(image: dolfile.DolImage, documents: list, labels: list[str] | None =
     names = names or {}
     sha1 = hashlib.sha1(image.data).hexdigest()
     for doc, label in zip(documents, labels):
-        if not isinstance(doc, (Reset, Copy)):
+        if not isinstance(doc, STEPS):
             _check_header(doc, sha1, label)
     if vanilla is None and any(isinstance(doc, Reset) for doc in documents):
         raise EditFileError('clearing stat edits needs the original main.dol in 1_Input')
     placer = _Placer(image)
     planned: dict[int, Change] = {}
+    origin: dict[int, object] = {}                     # address -> the document whose value is planned there
+    notes: list[str] = []                              # skipped chemistry pairs
+    replaced: dict[tuple, str] = {}                    # pair -> its latest "replaced" line
     for doc, label in zip(documents, labels):
         try:
             if isinstance(doc, Reset):
-                planned.update(_parse_reset(doc, placer, vanilla))
+                found = _parse_reset(doc, placer, vanilla)
             elif isinstance(doc, Copy):
-                planned.update(_parse_copy(doc, placer, label))
+                found = _parse_copy(doc, placer, label)
+            elif isinstance(doc, Chemistry):
+                found = _parse_chemistry(doc, placer, label, notes, names)
             else:
-                planned.update(_parse(doc, placer, label))
+                found = _parse(doc, placer, label)
         except bridge.BridgeError as exc:
             raise EditFileError(f'{label}: {exc}') from exc
-    prepared = Prepared(files=sum(not isinstance(doc, (Reset, Copy)) for doc in documents))
+        for at, change in found.items():
+            if change.group == 'chemistry' and at in planned:
+                line = _replaced(planned[at], origin[at], change, doc, names)
+                if line is not None:
+                    replaced[line[0]] = line[1]
+            planned[at] = change
+            origin[at] = doc
+    prepared = Prepared(files=sum(not isinstance(doc, STEPS) for doc in documents))
     for at, change in sorted(planned.items()):
         if image.read(at, len(change.raw)) == change.raw:
             prepared.same += not change.reset          # a reset names every spot: only the edited ones count
         else:
             prepared.changes.append(change)
     prepared.changes.sort(key=lambda c: (c.who is None, c.who or 0, c.group, c.address))
-    prepared.warnings = _warnings(image, placer, prepared.changes, names)
+    prepared.replaced = [line for _pair, line in sorted(replaced.items())]
+    prepared.warnings = _warnings(image, placer, prepared.changes, names) + notes + prepared.replaced
     return prepared
 
 

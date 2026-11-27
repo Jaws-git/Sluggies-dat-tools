@@ -421,6 +421,26 @@ def is_collision_only(collision_enabled: bool, custom_submesh: bool, has_submesh
     return bool(collision_enabled) and not custom_submesh and not has_submesh_props
 
 
+def broken_armature_links(parent_gone: bool, modifier_targets: Iterable[Optional[bool]]) -> List[str]:
+    """What ties a mesh to an armature that is not there, in this order:
+    'parent' (its parent armature is no longer in the scene), 'modifier_gone'
+    (an Armature modifier follows such an armature) and 'modifier_empty' (an
+    Armature modifier without an object). *modifier_targets* holds, per
+    Armature modifier, None for no object, else whether its object is in the
+    scene. An object deleted from the scene stays in the file, and its
+    children and modifiers stay tied to it, until the file is saved and
+    reloaded."""
+    targets = list(modifier_targets)
+    links = []
+    if parent_gone:
+        links.append('parent')
+    if any(target is False for target in targets):
+        links.append('modifier_gone')
+    if any(target is None for target in targets):
+        links.append('modifier_empty')
+    return links
+
+
 def visible_collections(node) -> Set[str]:
     """Names of the collections shown in the viewport. *node* is the view
     layer's collection tree as ``(name, hidden, [child nodes])``; a

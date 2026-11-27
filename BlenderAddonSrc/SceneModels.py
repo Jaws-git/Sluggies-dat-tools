@@ -277,6 +277,35 @@ def _strip_donor_object_props(obj):
             del obj[prop]
 
 
+# What the add-on writes on a mesh object besides the donor properties: a
+# custom submesh's identity and the mark of a set-aside body.
+_ADDED_OBJECT_PROPS = ('SluggiesCustomSubmesh', 'CustomSubmeshId', 'TemplateSource', ModelCheckCore.BACKUP_PROP)
+
+
+def _sluggies_object_props(obj):
+    """Names of the custom properties on *obj* that make it a Sluggies mesh
+    (an imported submesh, a custom submesh, a set-aside body)."""
+    names = ModelCheckCore.REQUIRED_PROPS + ('SluggiesRigidPlacement',) + _ADDED_OBJECT_PROPS
+    return [key for key in obj.keys() if key in names or _DONOR_OBJECT_PROP_RE.match(key)]
+
+
+def _clear_sluggies_object_props(obj):
+    """Make *obj* a plain mesh again: drop every property of
+    _sluggies_object_props and put its collision settings back to their
+    defaults (off). Its materials, vertex groups, parent and modifiers stay.
+    Returns (property names removed, whether collision was on)."""
+    removed = _sluggies_object_props(obj)
+    for prop in removed:
+        del obj[prop]
+    collision = getattr(obj, 'sluggies_collision', None)
+    was_solid = collision is not None and collision.enabled
+    if collision is not None:
+        for prop in collision.bl_rna.properties:
+            if prop.identifier != 'rna_type' and not prop.is_readonly:
+                collision.property_unset(prop.identifier)
+    return removed, was_solid
+
+
 def _sluggies_armatures(context):
     return [o for o in context.view_layer.objects
             if o.type == 'ARMATURE' and 'SluggiesBoneMetadataVersion' in o.keys()]

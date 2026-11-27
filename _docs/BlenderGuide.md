@@ -136,7 +136,9 @@ A new submesh is a static (rigid) mesh that follows one bone, like a hat or a he
 6. Patch the exported `.sluggie` normally. The patcher picks the build steps it needs by itself.
 
 **Using a mesh you already have**
-Any mesh object can become a new submesh, for example one you modeled or appended from another file. It needs no Sluggies properties. **Check Models** lists such meshes while they are not part of a model yet (no Sluggies armature above them, no Sluggies properties, or weights on several bones, which only the main body may have), with a button for this tool; meshes in hidden or excluded collections are left out.
+Any mesh object can become a new submesh, for example one you modeled or appended from another file. It needs no Sluggies properties. **Check Models** lists such meshes while they are not part of a model yet (no Sluggies armature above them, no Sluggies properties, or weights on several bones, which only the main body may have), with a button for this tool; meshes in hidden or excluded collections are left out. A mesh that is still tied to an armature you deleted from the scene (Blender keeps a deleted object in the file until you save and reload), or whose Armature modifier has no armature, is listed with a **Rebind to armature** button: pick the Sluggies armature it should follow, and the mesh is parented to it when it has no parent in the scene.
+
+A mesh taken from another imported model still carries that model's Sluggies properties, so the tools treat it as an imported submesh and **Join or Replace Meshes** does not offer it. **Clear All Sluggies Properties**, the last button of the mesh box, turns the selected meshes back into plain meshes after an OK/Cancel question: it removes their Sluggies custom properties and switches ball collision off. Materials, vertex groups, parent and modifiers stay as they are.
 
 1. Make the mesh the active object (Object Mode) and click **Make Active Mesh into a Submesh**.
 2. Pick the armature (preselected: the one the mesh is parented to, else a selected one, else the nearest) and a free host bone (preselected: the free bone nearest the mesh).

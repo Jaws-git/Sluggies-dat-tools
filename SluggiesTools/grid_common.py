@@ -65,6 +65,10 @@ SLGMODEL_FILTERS = [('Character files', '*.slgmodel'), ('All files', '*.*')]
 MODEL_OPS = ('patch', 'clear', COPY, SLGMODEL)
 # A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
 STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
+# A stat edit whose "file" starts with this is the Chemistry tab's item (StatEditor/apply.CHEMISTRY_PREFIX,
+# test-pinned): pairs by character ID, no hash check
+CHEMISTRY_PREFIX = 'chemistry:'
+CHEMISTRY_STAGING_REL = os.path.join('_gui', 'chemistry')        # the staged chemistry files, the kept layout
 GAMEPLAY = 'gameplay'                  # gameplay settings (Gameplay tab): game-wide too
 ITEM = 'item'                          # an item model .sluggie (the grid's item tile): game-wide too (test-pinned)
 STADIUM = 'stadium'                    # a stadium model .sluggie (the grid's stadium tile): game-wide too (test-pinned)

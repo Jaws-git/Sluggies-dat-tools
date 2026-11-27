@@ -102,6 +102,20 @@ def _modifier_armatures(obj):
     return [m.object for m in obj.modifiers if m.type == 'ARMATURE' and m.object is not None]
 
 
+def in_scene(context, obj):
+    """Whether *obj* is still an object of the scene. One deleted there stays
+    in the file, as parent and modifier target of what followed it, until
+    the file is saved and reloaded."""
+    return context.scene.objects.get(obj.name) is obj
+
+
+def parent_is_gone(context, obj):
+    """Whether *obj*'s parent, or the armature above it, left the scene."""
+    rig = _parent_armature(obj)
+    return (obj.parent is not None and not in_scene(context, obj.parent)) \
+        or (rig is not None and not in_scene(context, rig))
+
+
 def _load_model(path, cache):
     if path not in cache:
         try:
@@ -512,6 +526,9 @@ def check_texture_reimport_hint(context, scope):
 # Checks: mesh level
 # ---------------------------------------------------------------------------
 
+# After the name of an armature deleted from the scene.
+_GONE_NOTE = " (deleted from the scene; it stays in the file until that is saved and reloaded)"
+
 # A mesh brought in without Sluggies properties.
 MAKE_SUBMESH_HINT = "Make it part of a model with Make into submesh (rigid, on one bone)"
 MERGE_HINT = "merge it into the main body (select it, then the body, and join with Ctrl+J)"
@@ -638,10 +655,13 @@ def check_armature_link(context, scope):
             # Export places a mesh by its first Armature modifier (a
             # downloaded mesh may still carry one on its own rig); a custom
             # submesh there is refused or misplaced.
+            gone = not in_scene(context, targets[0])
             yield Finding("armature_link", ERROR if _is_custom(obj) else WARNING, obj.name,
+                          "Armature modifier points to deleted armature" if gone else
                           "Armature modifier points to wrong armature",
                           f"{obj.name}: its {'first ' if len(targets) > 1 else ''}Armature modifier "
-                          f"follows {targets[0].name}, not {arm.name}. Export places the mesh by that "
+                          f"follows {targets[0].name}{_GONE_NOTE if gone else ''}, not {arm.name}. "
+                          "Export places the mesh by that "
                           "armature, so it does not follow the bones (and a rebuilt mesh can't be "
                           f"placed). The fix points it at {arm.name} and removes other Armature "
                           "modifiers.", *fix)
@@ -1255,9 +1275,40 @@ def _layer_collection_tree(layer_collection):
     return (collection.name, hidden, [_layer_collection_tree(c) for c in layer_collection.children])
 
 
+def _lost_armature_finding(context, obj, gone_rig):
+    """The finding for a mesh in no model that is still tied to an armature
+    that is not there (*gone_rig*: its parent armature when that left the
+    scene), or None. Such a mesh follows nothing; the dialog offers to
+    rebind it to an armature of the scene."""
+    modifiers = [m for m in obj.modifiers if m.type == 'ARMATURE']
+    links = core.broken_armature_links(
+        gone_rig is not None, [None if m.object is None else in_scene(context, m.object) for m in modifiers])
+    if not links:
+        return None
+    parts = []
+    if 'parent' in links:
+        parts.append(f"is parented to {gone_rig.name}{_GONE_NOTE}")
+    if 'modifier_gone' in links:
+        names = list(dict.fromkeys(m.object.name for m in modifiers
+                                   if m.object is not None and not in_scene(context, m.object)))
+        parts.append(f"has an Armature modifier that follows {', '.join(names)}"
+                     + ("" if 'parent' in links and names == [gone_rig.name] else _GONE_NOTE))
+    if 'modifier_empty' in links:
+        parts.append("has an Armature modifier without an armature")
+    text = "Armature modifier without armature" if links == ['modifier_empty'] else "Armature deleted from the scene"
+    return Finding("lost_armature", WARNING, obj.name, text,
+                   f"{obj.name} {' and '.join(parts)}, so it follows no bones and is in no model. Rebind to "
+                   "armature points its Armature modifier at a Sluggies armature of the scene that you pick "
+                   "and, when the mesh has no parent in the scene, parents it there (its world position is "
+                   "kept). Check Models then tells what else the mesh needs in that model.",
+                   action_id="rebind_armature", action_args={"object": obj.name})
+
+
 def check_stray_objects(context, scopes):
     """Meshes in no model: no Sluggies armature above them (none at all, or
-    a downloaded rig's), so export never reads them; and other geometry
+    a downloaded rig's, or one deleted from the scene), so export never reads
+    them, with the ones still tied to an armature that is not there
+    (_lost_armature_finding); and other geometry
     (curves, text, ...) on a Sluggies armature, which it never reads either.
     Objects only in hidden or excluded collections are references: skipped."""
     claimed = {obj.name for scope in scopes for obj in scope.meshes + scope.unparented + scope.colliders}
@@ -1266,13 +1317,19 @@ def check_stray_objects(context, scopes):
         if not any(c.name in visible for c in obj.users_collection):
             continue
         rig = _parent_armature(obj)
-        owner = rig if is_sluggies_armature(rig) else None
+        rig_gone = rig is not None and not in_scene(context, rig)
+        owner = rig if is_sluggies_armature(rig) and not rig_gone else None
         if obj.type == 'MESH':
             collision = getattr(obj, 'sluggies_collision', None)
             if owner is not None or obj.name in claimed or (collision is not None and collision.enabled) \
                     or obj.get(core.BACKUP_PROP):
                 continue
-            where = (f"is parented to {rig.name}, which is not an imported Sluggies armature"
+            lost = _lost_armature_finding(context, obj, rig if rig_gone else None)
+            if lost is not None:
+                yield lost
+            if rig_gone:
+                continue
+            where =(f"is parented to {rig.name}, which is not an imported Sluggies armature"
                      if rig is not None else "is not parented to a Sluggies armature")
             yield Finding("stray_mesh", WARNING, obj.name, "Not part of any model",
                           f"{obj.name} {where}, so it belongs to no model and is never exported. "

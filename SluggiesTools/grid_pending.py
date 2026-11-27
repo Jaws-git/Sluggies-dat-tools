@@ -14,8 +14,8 @@ from dataclasses import dataclass
 
 if __package__:
     from .grid_common import (
-        ANIM, COPY, COPY_LABEL, COPY_MULTIPLE, EQUIP_OPS, EXPORT_LABEL, EXPORT_PACKAGE_LABEL, GAMEPLAY,
-        GAME_OPS, GAME_OPTION, GAME_OPTION_TITLES, GAME_WIDE, ITEM, MODEL_OPS, PACKAGE_STAT_ORIGIN,
+        ANIM, CHEMISTRY_PREFIX, COPY, COPY_LABEL, COPY_MULTIPLE, EQUIP_OPS, EXPORT_LABEL, EXPORT_PACKAGE_LABEL,
+        GAMEPLAY, GAME_OPS, GAME_OPTION, GAME_OPTION_TITLES, GAME_WIDE, ITEM, MODEL_OPS, PACKAGE_STAT_ORIGIN,
         PASTE_LABEL, SLGMODEL, STADIUM, STAT_EDITS, STAT_RESET, _mb, hex_id,
     )
     from .grid_state import (
@@ -27,8 +27,8 @@ if __package__:
     )
 else:
     from grid_common import (
-        ANIM, COPY, COPY_LABEL, COPY_MULTIPLE, EQUIP_OPS, EXPORT_LABEL, EXPORT_PACKAGE_LABEL, GAMEPLAY,
-        GAME_OPS, GAME_OPTION, GAME_OPTION_TITLES, GAME_WIDE, ITEM, MODEL_OPS, PACKAGE_STAT_ORIGIN,
+        ANIM, CHEMISTRY_PREFIX, COPY, COPY_LABEL, COPY_MULTIPLE, EQUIP_OPS, EXPORT_LABEL, EXPORT_PACKAGE_LABEL,
+        GAMEPLAY, GAME_OPS, GAME_OPTION, GAME_OPTION_TITLES, GAME_WIDE, ITEM, MODEL_OPS, PACKAGE_STAT_ORIGIN,
         PASTE_LABEL, SLGMODEL, STADIUM, STAT_EDITS, STAT_RESET, _mb, hex_id,
     )
     from grid_state import (
@@ -225,9 +225,18 @@ class PendingEdits:
             self.pack = None
 
     def discard_op(self, op: str) -> None:
-        """Drop the pending edits of a game-wide ``op`` (``GAMEPLAY``, ``STAT_EDITS``)."""
+        """Drop the pending edits of a game-wide ``op`` (``GAMEPLAY``)."""
         self.edits = [e for e in self.edits if e['op'] != op]
         self.sections = [s for s in self.sections if s['action'] != op]
+
+    def discard_stat_items(self, chemistry: bool) -> None:
+        """Drop the pending ``STAT_EDITS`` edits of one tool: the Chemistry tab's items (``chemistry``), or the
+        stat edit files (the Stat Editor's, sizes, packages)."""
+        self.edits = [e for e in self.edits
+                      if not (e['op'] == STAT_EDITS and is_chemistry_item(e.get('file')) == chemistry)]
+        self.sections = [s for s in self.sections
+                         if not (s['action'] == STAT_EDITS
+                                 and is_chemistry_item((s.get('edit') or {}).get('file')) == chemistry)]
 
     def clear(self) -> None:
         self.edits, self.sections, self.pack = [], [], None
@@ -359,6 +368,8 @@ class PendingEdits:
 
 
 def _edit_title(edit: dict) -> str:
+    if edit['op'] == STAT_EDITS and is_chemistry_item(edit.get('file')):
+        return 'Pending: chemistry changes'
     if edit['op'] == STAT_EDITS:
         size = size_file(edit.get('file'))
         package = package_stat_file(edit.get('file')) if not size else None
@@ -673,8 +684,51 @@ def pending_size(pending: 'PendingEdits', cid: int) -> float | None:
 
 
 def staged_stat_files(pending: 'PendingEdits') -> list[str]:
-    """The pending stat edit files, in staging order."""
-    return [e['file'] for e in pending.edits if e['op'] == STAT_EDITS and e.get('file')]
+    """The pending stat edit files, in staging order (without the Chemistry tab's items)."""
+    return [e['file'] for e in pending.edits
+            if e['op'] == STAT_EDITS and e.get('file') and not is_chemistry_item(e['file'])]
+
+
+def is_chemistry_item(item: str | None) -> bool:
+    """A ``STAT_EDITS`` edit's ``file`` that is the Chemistry tab's item (``chemistry:<file>``)."""
+    return isinstance(item, str) and item.lower().startswith(CHEMISTRY_PREFIX)
+
+
+def chemistry_edit(path: str) -> dict:
+    """The pending edit of a chemistry file the Chemistry tab staged: a ``stat_edits`` op like the Stat Editor's
+    files (same chain step, same staging order), told apart by its item prefix."""
+    return {'op': STAT_EDITS, 'id': hex_id(GAME_WIDE), 'file': CHEMISTRY_PREFIX + path}
+
+
+def staged_chemistry_files(pending: 'PendingEdits') -> list[str]:
+    """The pending chemistry files (paths, without the item prefix), in staging order."""
+    return [e['file'][len(CHEMISTRY_PREFIX):] for e in pending.edits
+            if e['op'] == STAT_EDITS and is_chemistry_item(e.get('file'))]
+
+
+def staged_stat_items(pending: 'PendingEdits') -> list[str]:
+    """Every pending ``--apply-stat-edits`` item in staging order, as Patch Game's first stat step gets them:
+    stat edit files, chemistry items and ``reset:0xNN`` for the pending clears."""
+    out = []
+    for e in pending.edits:
+        if e['op'] == STAT_EDITS and e.get('file'):
+            out.append(e['file'])
+        elif e['op'] == STAT_RESET:
+            out.append(f'reset:{hex_id(int(e["id"], 16))}')
+    return out
+
+
+def pending_pastes(pending: 'PendingEdits') -> list[tuple[int, int]]:
+    """``(target, source)`` of the pending pastes, in staging order. A paste's stat values (its source's
+    chemistry included) are written after every other stat item."""
+    out = []
+    for e in pending.edits:
+        if e['op'] == COPY and e.get('source') is not None:
+            try:
+                out.append((int(e['id'], 16), int(e['source'], 16) if isinstance(e['source'], str) else e['source']))
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 _STAT_IDS: dict[tuple[str, float], frozenset[int]] = {}
@@ -705,7 +759,11 @@ def package_stat_file(path: str | None) -> str | None:
 
 def stat_file_ids(path: str | None) -> frozenset[int]:
     """The character IDs a stat edit file names (its ``characters`` keys; chemistry partners not counted), empty
-    when unreadable. Cached per path and modification time (the grid asks on every redraw)."""
+    when unreadable. For the Chemistry tab's item (``chemistry:<file>``): both characters of every pair. Cached per
+    path and modification time (the grid asks on every redraw)."""
+    chemistry = is_chemistry_item(path)
+    if chemistry:
+        path = path[len(CHEMISTRY_PREFIX):]
     try:
         key = (os.path.normcase(os.path.abspath(path)), os.path.getmtime(path))
     except (OSError, TypeError, ValueError):
@@ -715,7 +773,12 @@ def stat_file_ids(path: str | None) -> frozenset[int]:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 doc = json.load(f)
-            for text in (doc.get('characters') or {}) if isinstance(doc, dict) else ():
+            if chemistry:
+                rows = doc.get('pairs') if isinstance(doc, dict) else None
+                named = [text for row in rows or () if isinstance(row, list) for text in row[:2]]
+            else:
+                named = (doc.get('characters') or {}) if isinstance(doc, dict) else ()
+            for text in named:
                 try:                           # StatEditor/apply._id's rules: "0xNN", 0x00-0xFF
                     cid = int(text, 16) if text.lower().startswith('0x') else -1
                 except (AttributeError, ValueError):

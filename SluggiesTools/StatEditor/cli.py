@@ -4,7 +4,8 @@
   cli.py --apply FILE [FILE ...] [--dry-run]
                                           write the stat editor's edit files into 3_Output_Dat/main.dol;
                                           an item reset:0xNN clears that character's stat edits;
-                                          copy:FILE writes a paste's stat snapshot
+                                          copy:FILE writes a paste's stat snapshot;
+                                          chemistry:FILE the Chemistry tab's pairs
 
 ``--export`` reads ``3_Output_Dat/main.dol`` (+ ``dt_na.dat`` for names) and
 ``1_Input/main.dol`` (the baseline rows) and never writes the game files.
@@ -77,8 +78,7 @@ def check(image: dolfile.DolImage, dat, items: list[str],
     """The items checked against ``image`` (``apply.prepare``), and the names for messages. An item is an edit
     file's path, or ``reset:0xNN`` (clear that character's stat edits; reads ``input_dir/main.dol``)."""
     parsed = [apply.parse_item(item) for item in items]
-    documents = [p if isinstance(p, apply.Reset) else apply.Copy(p.path, apply.read_file(p.path))
-                 if isinstance(p, apply.Copy) else apply.read_file(p) for p in parsed]
+    documents = [apply.load_item(item) for item in items]
     vanilla = None
     if any(isinstance(p, apply.Reset) for p in parsed):
         vanilla = _read_dol(os.path.join(input_dir, 'main.dol'), 'clearing stat edits needs the original main.dol')
@@ -90,6 +90,8 @@ def check(image: dolfile.DolImage, dat, items: list[str],
             labels.append(f'clearing the stat edits of {names.get(p.cid, _hex(p.cid))} ({_hex(p.cid)})')
         elif isinstance(p, apply.Copy):
             labels.append(f'the pasted stat values ({os.path.basename(p.path)})')
+        elif isinstance(p, apply.Chemistry):
+            labels.append(f'the chemistry edits ({os.path.basename(p.path)})')
         else:
             labels.append(os.path.basename(p) if files == 1 else f'{os.path.basename(p)} (file {n})')
     return apply.prepare(image, documents, labels, names, vanilla), names
@@ -163,11 +165,19 @@ def main(argv=None) -> int:
     return 0
 
 
+def _absolute(item: str) -> str:
+    """The item with its file's path made absolute (``reset:0xNN`` has none)."""
+    if item.lower().startswith(apply.RESET_PREFIX):
+        return item
+    for prefix in (apply.COPY_PREFIX, apply.CHEMISTRY_PREFIX):
+        if item.lower().startswith(prefix):
+            return prefix + os.path.abspath(item[len(prefix):])
+    return os.path.abspath(item)
+
+
 def _main_apply(args) -> int:
     try:
-        items = [p if p.lower().startswith(apply.RESET_PREFIX)
-                 else apply.COPY_PREFIX + os.path.abspath(p[len(apply.COPY_PREFIX):])
-                 if p.lower().startswith(apply.COPY_PREFIX) else os.path.abspath(p) for p in args.apply]
+        items = [_absolute(p) for p in args.apply]
         prepared, names = apply_files(items, args.output_dir, args.dry_run, args.input_dir)
     except (RuntimeError, ValueError, OSError) as exc:          # EditFileError, BridgeError
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)

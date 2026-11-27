@@ -485,6 +485,16 @@ class Env:
         (``StatEditor/apply.py``); a refusal raises ``PlanError``."""
         raise NotImplementedError
 
+    def stat_replaced(self, items: list[str]) -> list[str]:
+        """The stat items of a chain (files, ``reset:0xNN``, ``chemistry:<file>``) checked together, in staging
+        order: one line per chemistry value that a later item of another kind replaces
+        (``StatEditor/apply.Prepared.replaced``)."""
+        return []
+
+    def chemistry_pairs(self, item: str) -> list[tuple[int, int]]:
+        """The pairs of character IDs a ``chemistry:<file>`` item sets (empty when unreadable)."""
+        return []
+
     def gameplay(self, items: list[str]) -> StatCheck:
         """The gameplay items (files, ``reset``) checked together against the game files, in order
         (``Gameplay/apply.py``); a refusal raises ``PlanError``."""
@@ -2249,20 +2259,64 @@ def _display(char: dict) -> str:
 # Batches: staged edits, one chain
 # --------------------------------------------------------------------------
 
-def plan_stat_edits(path: str, env: Env) -> Plan:
+CHEMISTRY_PREFIX = 'chemistry:'                       # StatEditor/apply.CHEMISTRY_PREFIX (test-pinned)
+
+
+def is_chemistry_item(item: str | None) -> bool:
+    return bool(item) and item.lower().startswith(CHEMISTRY_PREFIX)
+
+
+def plan_stat_edits(path: str, env: Env, after_items: bool = False) -> Plan:
     """The chain step that writes the stat edit file at ``path`` (``--apply-stat-edits``, merged by ``plan_batch``);
-    ``nothing`` when the game holds its values already."""
+    ``nothing`` when the game holds its values already. ``path`` may be a ``chemistry:<file>`` item (the Chemistry
+    tab's pairs: no hash check, both directions written); that one is kept with ``after_items`` even when the game
+    holds its values, since an earlier staged stat item may change them first (last change wins)."""
     check = env.stat_edits(path)
     plan = Plan('stat_edits', GAME_WIDE, None)
-    if check.summary is None:
+    chemistry = is_chemistry_item(path)
+    if check.summary is None and not (chemistry and after_items):
         plan.nothing = True
-        plan.notes.append(f'nothing to change: the game holds the values of {os.path.basename(path)} already')
+        plan.notes.append('nothing to change: the game holds these chemistry values already' if chemistry else
+                          f'nothing to change: the game holds the values of {os.path.basename(path)} already')
+        return plan
+    if check.summary is None:
+        plan.commands.append(('--apply-stat-edits', path))
+        plan.warnings += check.warnings
+        plan.effects['stat_edits'] = 'chemistry values (set again after the earlier stat edits)'
         return plan
     plan.commands.append(('--apply-stat-edits', path))
     plan.notes += check.lines
     plan.warnings += check.warnings
     plan.effects['stat_edits'] = check.summary
     return plan
+
+
+def _chemistry_warnings(st: dict, batch, env: Env) -> list[str]:
+    """What the chain does to the staged chemistry items beyond their own values: the values a later stat item of
+    another kind replaces (staging order decides), and the pastes that overwrite them whatever the order (a
+    paste's stat values are written after the roster rebuild, so after every other stat item)."""
+    stat_items = [c[1] for _edit, plan in batch.plans for c in plan.commands
+                  if c[0] == '--apply-stat-edits' and not c[1].startswith(COPY_PREFIX)]
+    chemistry = [item for item in stat_items if is_chemistry_item(item)]
+    if not chemistry:
+        return []
+    out = []
+    if len(stat_items) > 1:
+        out += env.stat_replaced(stat_items)
+    pairs = [pair for item in chemistry for pair in env.chemistry_pairs(item)]
+    for edit, plan in batch.plans:
+        if not any(c[0] == '--apply-stat-edits' and c[1].startswith(COPY_PREFIX) for c in plan.commands):
+            continue
+        paste = edit.op == COPY
+        source = edit.source if paste else None
+        lost = {tuple(sorted(pair)) for pair in pairs if edit.cid in pair and source not in pair}
+        if lost:
+            name = _display(_character(st, edit.cid))
+            out.append((f'Paste onto {name} replaces' if paste else f'The stat values written onto {name} replace')
+                       + f' its chemistry: {len(lost)} staged chemistry value{"s" if len(lost) != 1 else ""} of '
+                       f'{name} will not be kept. Patch {"the paste" if paste else "them"} first, then edit its '
+                       'chemistry.')
+    return out
 
 
 RESET_PREFIX = 'reset:'                               # StatEditor/apply.RESET_PREFIX (test-pinned)
@@ -2970,7 +3024,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             elif edit.op == SPECIES_CLIP:
                 plan = plan_species_clip(st, current, edit.cid, edit.moment, edit.file, env, state_file, names_text)
             elif edit.op == STAT_EDITS:
-                plan = plan_stat_edits(edit.file, env)
+                plan = plan_stat_edits(edit.file, env, after_items=any(
+                    e.op in (STAT_EDITS, STAT_RESET) for e, _p in batch.plans))
             elif edit.op == GAMEPLAY:
                 plan = plan_gameplay(edit.file, [e.file for e, _p in batch.plans if e.op == GAMEPLAY], env,
                                      after_stat_files=any(e.op == STAT_EDITS for e in merged))
@@ -3027,6 +3082,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
         batch.plans.append((edit, plan))
         batch.warnings += plan.warnings
         batch.extra_portraits.update(plan.extra_portraits)
+    if not batch.refused:
+        batch.warnings += _chemistry_warnings(st, batch, env)
     if batch.refused:
         batch.refused.sort(key=lambda r: r[0].index)
         return batch

@@ -32,6 +32,7 @@ from .SceneModels import (
     _add_material_mesh_kind,
     _any_sluggies_armature_imported,
     _bone_metadata_is_current,
+    _clear_sluggies_object_props,
     _find_target_armature,
     _high_low_pair,
     _is_donor_mesh,
@@ -153,6 +154,63 @@ class SLUGGIES_OT_select_unweighted(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _clear_props_targets(context):
+    """The meshes Clear All Sluggies Properties works on: the selected ones and the active one."""
+    objects = [o for o in context.selected_objects if o.type == 'MESH']
+    active = context.active_object
+    if active is not None and active.type == 'MESH' and active not in objects:
+        objects.insert(0, active)
+    return objects
+
+
+class SLUGGIES_OT_clear_sluggies_props(bpy.types.Operator):
+    """Turn the selected meshes back into plain meshes"""
+    bl_idname = "sluggies.clear_sluggies_props"
+    bl_label = "Clear All Sluggies Properties"
+    bl_description = ("Remove every Sluggies custom property from the selected meshes (the link to an "
+                      "imported submesh, a custom submesh's identity, the backup mark) and switch their "
+                      "ball collision off, so they are plain meshes again: Join or Replace Meshes and "
+                      "Make into Submesh take them like any other mesh. Materials, vertex groups, "
+                      "parent and modifiers stay as they are")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            cls.poll_message_set("Switch to Object Mode")
+            return False
+        if not _clear_props_targets(context):
+            cls.poll_message_set("Select a mesh")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        names = [o.name for o in _clear_props_targets(context)]
+        shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+        return context.window_manager.invoke_confirm(
+            self, event, title="Clear all Sluggies properties?",
+            message=(f"{shown}: the Sluggies custom properties are removed and ball collision is "
+                     "switched off. The mesh is no longer an imported or custom submesh and is not "
+                     "exported until it is made part of a model again."),
+            confirm_text="OK", icon='WARNING')
+
+    def execute(self, context):
+        cleared, plain = [], []
+        for obj in _clear_props_targets(context):
+            removed, was_solid = _clear_sluggies_object_props(obj)
+            (cleared if removed or was_solid else plain).append((obj.name, len(removed)))
+        _UNIFORM_BONE_CACHE.clear()
+        _DRAW_CACHE.clear()
+        if not cleared:
+            self.report({"INFO"}, "Nothing to clear: no Sluggies properties on "
+                        + ", ".join(name for name, _count in plain))
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Cleared " + ", ".join(
+            f"{name} ({count} propert{'y' if count == 1 else 'ies'})" if count else f"{name} (ball collision off)"
+            for name, count in cleared))
+        return {"FINISHED"}
+
+
 def _draw_rigid_mesh_box(layout, context):
     """The 'Rigid mesh' box (plan: renamed 'Mesh' for a custom submesh),
     showing the active object's current attachment and the Add submesh /
@@ -184,6 +242,7 @@ def _draw_rigid_mesh_box(layout, context):
     box.operator(SLUGGIES_OT_add_material.bl_idname)
     if obj is not None and obj.type == 'MESH':
         box.operator(SLUGGIES_OT_select_unweighted.bl_idname)
+        box.operator(SLUGGIES_OT_clear_sluggies_props.bl_idname)
 
 
 class SLUGGIES_OT_adapt_step(bpy.types.Operator):
@@ -483,6 +542,7 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.register_class(SLUGGIES_OT_add_material)
     bpy.utils.register_class(SLUGGIES_OT_select_unweighted)
+    bpy.utils.register_class(SLUGGIES_OT_clear_sluggies_props)
     bpy.utils.register_class(SLUGGIES_OT_scale_animations)
     bpy.utils.register_class(SLUGGIES_OT_adapt_step)
     bpy.utils.register_class(SLUGGIES_OT_adapt_cleanup)
@@ -567,6 +627,7 @@ def unregister():
     bpy.utils.unregister_class(SLUGGIES_OT_adapt_cleanup)
     bpy.utils.unregister_class(SLUGGIES_OT_adapt_step)
     bpy.utils.unregister_class(SLUGGIES_OT_scale_animations)
+    bpy.utils.unregister_class(SLUGGIES_OT_clear_sluggies_props)
     bpy.utils.unregister_class(SLUGGIES_OT_select_unweighted)
     bpy.utils.unregister_class(SLUGGIES_OT_add_material)
     bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)

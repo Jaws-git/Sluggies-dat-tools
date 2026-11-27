@@ -263,6 +263,24 @@ class TestCollisionOnly(unittest.TestCase):
         self.assertFalse(core.is_collision_only(False, False, False))   # a stray mesh still gets its findings
 
 
+class TestBrokenArmatureLinks(unittest.TestCase):
+    """An armature deleted from the scene stays in the file until it is saved
+    and reloaded; its meshes are still tied to it."""
+
+    def test_a_mesh_on_armatures_of_the_scene_has_none(self):
+        self.assertEqual(core.broken_armature_links(False, []), [])
+        self.assertEqual(core.broken_armature_links(False, [True, True]), [])
+
+    def test_parent_and_modifier_on_a_deleted_armature(self):
+        self.assertEqual(core.broken_armature_links(True, [False]), ['parent', 'modifier_gone'])
+        self.assertEqual(core.broken_armature_links(True, []), ['parent'])
+        self.assertEqual(core.broken_armature_links(False, [True, False]), ['modifier_gone'])
+
+    def test_a_modifier_without_an_object(self):
+        self.assertEqual(core.broken_armature_links(False, [None]), ['modifier_empty'])
+        self.assertEqual(core.broken_armature_links(False, [False, None]), ['modifier_gone', 'modifier_empty'])
+
+
 class TestStaysBpyFree(unittest.TestCase):
     def test_no_bpy_import(self):
         tree = ast.parse((BLENDER_ADDON_DIR / 'ModelCheckCore.py').read_text(encoding='utf-8'))
@@ -315,6 +333,33 @@ class TestWiring(unittest.TestCase):
         self.assertIn('check_stray_objects(context, scopes)', run[:run.index('return')])
         ui = (BLENDER_ADDON_DIR / 'ModelCheckUI.py').read_text(encoding='utf-8')
         self.assertIn('_run_operator("sluggies.make_submesh")', ui)
+
+    def test_a_mesh_on_a_deleted_armature_is_no_model_mesh(self):
+        # A Sluggies armature deleted from the scene owns nothing: its meshes are strays, offered a rebind.
+        source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')
+        stray = source[source.index('def check_stray_objects('):source.index('_PARTNER_MODELS = {}')]
+        self.assertIn('owner = rig if is_sluggies_armature(rig) and not rig_gone else None', stray)
+        self.assertIn('_lost_armature_finding(context, obj, rig if rig_gone else None)', stray)
+        self.assertIn('action_id="rebind_armature"', source)
+        ui = (BLENDER_ADDON_DIR / 'ModelCheckUI.py').read_text(encoding='utf-8')
+        self.assertIn('_run_operator("sluggies.rebind_armature")', ui)
+        classes = ui[ui.index('CLASSES = ('):]
+        self.assertIn('SLUGGIES_OT_rebind_armature', classes[:classes.index(')')])
+
+    def test_mesh_box_ends_with_clear_all_sluggies_properties(self):
+        source = addon_sources.PANEL.read_text(encoding='utf-8')
+        box = source[source.index('def _draw_rigid_mesh_box('):source.index('class SLUGGIES_OT_adapt_step')]
+        self.assertTrue(box.rstrip().endswith('box.operator(SLUGGIES_OT_clear_sluggies_props.bl_idname)'))
+        operator = source[source.index('class SLUGGIES_OT_clear_sluggies_props'):source.index('def _draw_rigid_mesh_box(')]
+        self.assertIn('invoke_confirm(', operator)        # asks before it clears
+        self.assertIn('bpy.utils.register_class(SLUGGIES_OT_clear_sluggies_props)', source)
+        self.assertIn('bpy.utils.unregister_class(SLUGGIES_OT_clear_sluggies_props)', source)
+        # Everything AdaptCleanup.is_sluggies_mesh reads is cleared: the mesh is addable again.
+        clear = source[source.index('def _sluggies_object_props('):source.index('def _sluggies_armatures(')]
+        for name in ('ModelCheckCore.REQUIRED_PROPS', "'SluggiesCustomSubmesh'", 'ModelCheckCore.BACKUP_PROP',
+                     'sluggies_collision'):
+            self.assertIn(name, source[source.index('_ADDED_OBJECT_PROPS = ('):source.index('def _sluggies_armatures(')])
+        self.assertIn('property_unset', clear)
 
     def test_fix_order_starts_with_the_mode_switch(self):
         source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')

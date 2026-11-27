@@ -347,7 +347,7 @@ class StatEditorTab:
         grid = self.app.grid_tab
         if grid._locked() or not gui_grid.staged_stat_files(grid.pending):
             return
-        grid.pending.discard_op(gui_grid.STAT_EDITS)
+        grid.pending.discard_stat_items(chemistry=False)     # the Chemistry tab's items stay
         grid._pending_changed()
         self.app.log_line('[stat editor] the staged stat edits were discarded.', _DIM)
 
@@ -358,7 +358,8 @@ class StatEditorTab:
         dpg.configure_item('stat_pending_head', color=_PENDING if files else _DIM)
         dpg.delete_item('stat_pending_list', children_only=True)
         for section in self.app.grid_tab.pending.sections:
-            if section['action'] == gui_grid.STAT_EDITS:
+            if (section['action'] == gui_grid.STAT_EDITS
+                    and not gui_grid.is_chemistry_item((section.get('edit') or {}).get('file'))):
                 name = os.path.basename((section.get('edit') or {}).get('file') or '?')
                 what = (section.get('effects') or {}).get(gui_grid.STAT_EDITS) or 'changed values'
                 dpg.add_text(f'  {name}: {what}', parent='stat_pending_list', color=_PENDING)

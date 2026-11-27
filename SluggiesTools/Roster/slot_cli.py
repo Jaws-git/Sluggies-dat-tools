@@ -195,6 +195,23 @@ class FileEnv(slot_plan.Env):
         return slot_plan.StatCheck(stat_apply.summary(prepared), stat_apply.describe(prepared, names),
                                    prepared.warnings)
 
+    def stat_replaced(self, items):
+        from StatEditor import apply as stat_apply, bridge as stat_bridge, cli as stat_cli
+        try:
+            prepared, _names = stat_cli.check(self.image, self.dat, list(items),
+                                              self.input_dir or stat_cli.INPUT_DIR)
+        except (stat_apply.EditFileError, stat_bridge.BridgeError) as exc:
+            raise slot_plan.PlanError(str(exc)) from exc
+        return list(prepared.replaced)
+
+    def chemistry_pairs(self, item):
+        from StatEditor import apply as stat_apply
+        try:
+            step = stat_apply.load_item(item)
+            return list(stat_apply.chemistry_pairs(step.doc)) if isinstance(step, stat_apply.Chemistry) else []
+        except stat_apply.EditFileError:
+            return []
+
     def gameplay(self, items):
         from Gameplay import apply as gameplay_apply, cli as gameplay_cli
         try:

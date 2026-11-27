@@ -500,9 +500,15 @@ def run_apply_stat_edits(paths, dry_run=False):
     """Write the stat editor's edit files (stat_edits.json, in order) into 3_Output_Dat/main.dol (StatEditor/cli.py):
     every file is checked first (made from this main.dol, known IDs and fields, storable values); ``dry_run`` lists
     the changes and writes nothing. An item ``reset:0xNN`` clears that character's stat edits at its place in the
-    order."""
-    items = [p if p.lower().startswith('reset:') else 'copy:' + os.path.abspath(p[5:])
-             if p.lower().startswith('copy:') else os.path.abspath(p) for p in paths]
+    order; ``copy:FILE`` writes a paste's stat snapshot, ``chemistry:FILE`` the Chemistry tab's pairs."""
+    def absolute(p):
+        if p.lower().startswith('reset:'):
+            return p
+        for prefix in ('copy:', 'chemistry:'):
+            if p.lower().startswith(prefix):
+                return prefix + os.path.abspath(p[len(prefix):])
+        return os.path.abspath(p)
+    items = [absolute(p) for p in paths]
     cmd = python_script_command(STAT_EDITOR_SCRIPT, '--apply', *items)
     if dry_run:
         cmd.append('--dry-run')
@@ -826,7 +832,7 @@ def parse_args():
     mode.add_argument('--export-autopicker', metavar='FILE', help="write the MSS-AutoTeam autopicker's characters.json (one name per character ID that 3_Output_Dat offers; put it next to its options.json) to FILE")
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
-    mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
+    mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order, chemistry:FILE sets the pairs of a chemistry file (with --dry-run: list the changes only)")
     mode.add_argument('--apply-gameplay', nargs='+', metavar='ITEM', help='write gameplay settings (CPU behaviour, star boosts, item odds) into 3_Output_Dat/main.dol: edit or settings files (.sluggiesgameplay) or AI Gameplay Tool files (cpu_behavior.json), in order (a later one wins); the item reset puts every gameplay value back to 1_Input (with --dry-run: check and list the changes only)')
     mode.add_argument('--save-gameplay', metavar='FILE', help='save the gameplay settings of 3_Output_Dat/main.dol (CPU behaviour, star boosts, item odds) into a settings file (.sluggiesgameplay)')
     mode.add_argument('--custom-cpu', metavar='FILE', help="turn the custom CPU level on (a 5th button on the exhibition CPU level popup) with a settings file (.slgcpu, also the Slugout's), or replace its settings; writes main.dol and dt_na.dat in 3_Output_Dat; use with --cpu-level / --cpu-button (with --dry-run: check only)")

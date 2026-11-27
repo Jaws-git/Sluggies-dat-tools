@@ -57,6 +57,7 @@ import gui_character_grid
 import gui_custom_cpu
 import gui_sounds
 import gui_effects
+import gui_chemistry
 import gui_gameplay
 import gui_music
 import gui_grid
@@ -271,6 +272,7 @@ class SluggiesGui:
         self.console_grow = 0              # px the window grew when the console was shown
         self.settings = gui_settings.Settings(os.path.join(root_dir, gui_settings.SETTINGS_REL))   # one for every tab
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
+        self.chemistry_tab = gui_chemistry.ChemistryTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
         self.gameplay_tab = gui_gameplay.GameplayTab(self)
         self.custom_cpu_tab = gui_custom_cpu.CustomCpuTab(self)
@@ -1058,7 +1060,7 @@ class SluggiesGui:
 
     def _on_tab(self, _sender, tab):
         self.grid_tab.forget_copy()
-        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab', 'gameplay_tab', 'sounds_tab')
+        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab', 'gameplay_tab', 'chemistry_tab', 'sounds_tab')
                 and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING):
             self.grid_tab.request_read(if_changed=True)    # only when the game files differ from the last read
         if dpg.get_item_alias(tab) == 'sounds_tab':
@@ -1069,6 +1071,8 @@ class SluggiesGui:
             self.music_tab.on_open()
         if dpg.get_item_alias(tab) == 'gameplay_tab':
             self.gameplay_tab.refresh()
+        if dpg.get_item_alias(tab) == 'chemistry_tab':
+            self.chemistry_tab.refresh()
         if dpg.get_item_alias(tab) == 'custom_cpu_tab':
             self.custom_cpu_tab.refresh()
 
@@ -1115,6 +1119,7 @@ class SluggiesGui:
                 self._build_export_tab()
                 self._build_roster_tab()
                 self.grid_tab.build()
+                self.chemistry_tab.build()
                 self.stat_tab.build()
                 self.gameplay_tab.build()
                 self.custom_cpu_tab.build()
@@ -1170,6 +1175,7 @@ class SluggiesGui:
                 self._guarded('A popup failed to open', self._show_prompt_request)
                 self._guarded('The stat editor failed', self.stat_tab.tick)
                 self._guarded('The gameplay tab failed', self.gameplay_tab.tick)
+                self._guarded('The chemistry tab failed', self.chemistry_tab.tick)
                 self._guarded('The custom CPU tab failed', self.custom_cpu_tab.tick)
                 self._guarded('A notification failed', self.toast.tick)
                 dpg.render_dearpygui_frame()

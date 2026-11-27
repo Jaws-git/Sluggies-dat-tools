@@ -6,10 +6,12 @@ one undo step, then reports what is left."""
 import json
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, StringProperty
 
 from . import ModelCheck
 from . import ModelCheckCore as core
+from . import SubmeshOps
+from .EnumItems import _cached_enum_items, _drop_enum_items, _set_enum_items
 
 SEVERITY_ICON = {core.ERROR: 'CANCEL', core.WARNING: 'ERROR', core.INFO: 'INFO'}
 DIALOG_MIN_WIDTH = 600
@@ -130,6 +132,78 @@ def _go_to_bones(context, arm, bones):
     _frame_selected(context)
 
 
+_REBIND_ENUM = 'check.rebind_armature'
+
+
+def _rebind_items(context):
+    """The Sluggies armatures a mesh can be rebound to: those of the view layer."""
+    names = sorted(o.name for o in context.view_layer.objects if ModelCheck.is_sluggies_armature(o))
+    return [(name, name, f"Follow {name}", index) for index, name in enumerate(names)] \
+        or [('NONE', "No Sluggies armature", "This scene has no imported Sluggies armature", 0)]
+
+
+def _rebind_armature_items(self, context):
+    return _cached_enum_items(_REBIND_ENUM, context.scene.as_pointer(), lambda: _rebind_items(context))
+
+
+class SLUGGIES_OT_rebind_armature(bpy.types.Operator):
+    """Point the active mesh's Armature modifier at a Sluggies armature of the scene, and parent the mesh to it when it has no parent in the scene"""
+    bl_idname = "sluggies.rebind_armature"
+    bl_label = "Rebind to Armature"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    armature: EnumProperty(  # type: ignore[valid-type]
+        name="Armature",
+        description="The Sluggies armature the mesh follows from now on",
+        items=_rebind_armature_items,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            cls.poll_message_set("Switch to Object Mode")
+            return False
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            cls.poll_message_set("Select a mesh")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        items = _rebind_items(context)
+        _set_enum_items(_REBIND_ENUM, context.scene.as_pointer(), items)
+        if items[0][0] == 'NONE':
+            self.report({'WARNING'}, items[0][2])
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.active_object
+        layout.label(text=f"Mesh: {obj.name}", icon='MESH_DATA')
+        layout.prop(self, "armature")
+        if obj.parent is None or ModelCheck.parent_is_gone(context, obj):
+            layout.label(text="The mesh is parented to it too; its world position is kept.", icon='INFO')
+
+    def cancel(self, context):
+        _drop_enum_items(_REBIND_ENUM)
+
+    def execute(self, context):
+        _drop_enum_items(_REBIND_ENUM)
+        obj = context.active_object
+        arm = context.view_layer.objects.get(self.armature)
+        if arm is None or not ModelCheck.is_sluggies_armature(arm):
+            self.report({'WARNING'}, f"{self.armature} is not a Sluggies armature of this scene")
+            return {'CANCELLED'}
+        reparent = obj.parent is None or ModelCheck.parent_is_gone(context, obj)
+        SubmeshOps._ensure_armature_modifier(obj, arm)
+        if reparent:
+            SubmeshOps._parent_keeping_world(obj, arm)
+        self.report({'INFO'}, f"{obj.name} now follows {arm.name}"
+                    + (" and is parented to it" if reparent else "") + ". Run Check Models again.")
+        return {'FINISHED'}
+
+
 def _run_operator(idname):
     module, name = idname.split('.')
     try:
@@ -151,6 +225,8 @@ ACTIONS = {
                       lambda context, obj: _run_operator("sluggies.manage_texture_slots")),
     "make_submesh": ("Make into submesh", 'MESH_DATA',
                      lambda context, obj: _run_operator("sluggies.make_submesh")),
+    "rebind_armature": ("Rebind to armature", 'ARMATURE_DATA',
+                        lambda context, obj: _run_operator("sluggies.rebind_armature")),
 }
 
 
@@ -171,6 +247,7 @@ class SLUGGIES_OT_check_action(bpy.types.Operator):
             "reassign_bone": "Select the mesh and open Reassign to New Bone",
             "texture_slots": "Select the mesh and open Manage texture slots",
             "make_submesh": "Select the mesh and open Make Active Mesh into a Submesh",
+            "rebind_armature": "Select the mesh and pick the Sluggies armature it follows from now on",
         }.get(properties.action_id, cls.bl_description)
 
     def execute(self, context):
@@ -339,7 +416,7 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
 
 CLASSES = (
     SluggiesCheckRow, SluggiesCheckSize, SLUGGIES_OT_check_detail, SLUGGIES_OT_check_goto,
-    SLUGGIES_OT_check_action, SLUGGIES_OT_check_hint, SLUGGIES_OT_check_models,
+    SLUGGIES_OT_rebind_armature, SLUGGIES_OT_check_action, SLUGGIES_OT_check_hint, SLUGGIES_OT_check_models,
 )
 
 

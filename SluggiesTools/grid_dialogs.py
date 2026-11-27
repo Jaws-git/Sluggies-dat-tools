@@ -29,7 +29,7 @@ if __package__:
         gameplay_item_label,
     )
     from .grid_pending import (
-        EQUIP_LABELS, MODEL_FILE_TILES, PendingEdits, STATS_REPLACED, _edit_title, _same_file, edit_who,
+        EQUIP_LABELS, MODEL_FILE_TILES, PendingEdits, STATS_REPLACED, _edit_title, _same_file, edit_who, is_chemistry_item,
         size_file, staged_item_files,
     )
 else:
@@ -45,7 +45,7 @@ else:
         gameplay_item_label,
     )
     from grid_pending import (
-        EQUIP_LABELS, MODEL_FILE_TILES, PendingEdits, STATS_REPLACED, _edit_title, _same_file, edit_who,
+        EQUIP_LABELS, MODEL_FILE_TILES, PendingEdits, STATS_REPLACED, _edit_title, _same_file, edit_who, is_chemistry_item,
         size_file, staged_item_files,
     )
 
@@ -453,6 +453,8 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
             what = (section.get('effects') or {}).get('portrait_note') or 'new portrait'
         elif section['action'] == STAT_EDITS:
             what = (section.get('effects') or {}).get(STAT_EDITS) or 'changed values'
+            if is_chemistry_item((section.get('edit') or {}).get('file')):
+                what = f'chemistry: {what}'
         elif section['action'] == GAMEPLAY:
             what = (f'{gameplay_item_label((section.get("edit") or {}).get("file"))}: '
                     + ((section.get('effects') or {}).get(GAMEPLAY) or 'changed values'))
@@ -724,6 +726,45 @@ def gameplay_dialog(state: dict | None, plan: dict | None, code: int, output: st
         return dialog
     lines.append(('Checks passed: known fields, every value fits, the cross-field checks. Nothing written yet: '
                   '"Patch Game" writes the pending edits.', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+def chemistry_dialog(state: dict | None, plan: dict | None, code: int, output: str, item: str) -> SlotDialog:
+    """The confirm dialog of a chemistry item (``chemistry:<file>``, the Chemistry tab's Stage) after its staging
+    check (the pending edits plus this one): what it changes, the warnings (skipped pairs, values another pending
+    edit replaces or that replace another's, a paste that overwrites them) and the verdict. ``can_apply`` only when
+    the whole check passed and the item is planned."""
+    dialog = SlotDialog('Stage the chemistry changes?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = 'Chemistry: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state or {}, plan, GAME_WIDE)
+            if any((r.get('edit') or {}).get('file') != item for r in plan['refused']):
+                lines.append(('A pending edit no longer fits the game files: discard it first.', TEXT))
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    section = next((s for s in reversed(plan['edits']) if s['action'] == STAT_EDITS
+                    and (s.get('edit') or {}).get('file') == item), None)
+    if section is None:
+        dialog.title = 'Chemistry: nothing to change'
+        lines.append(('The game holds these chemistry values already. Nothing was staged.', TEXT))
+        return dialog
+    lines.append((f'Changes: {(section.get("effects") or {}).get(STAT_EDITS) or "changed values"}', OK))
+    lines += [(f'- {note}', TEXT) for note in section['notes']]
+    own = {w for s in plan['edits'] for w in s.get('warnings') or []}
+    lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+    lines += [(f'Warning: {warning}', WARN) for warning in plan.get('warnings') or [] if warning not in own]
+    if code != 0:
+        lines.append((f'Check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
+    lines.append(('Checks passed: known characters, every value fits. Nothing written yet: "Patch Game" writes the '
+                  'pending edits.', OK))
     dialog.can_apply = True
     return dialog
 
