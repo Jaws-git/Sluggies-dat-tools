@@ -378,6 +378,14 @@ def cycle(snap: Snapshot, drafts: dict, a: int, b: int) -> None:
     set_draft(snap, drafts, a, b, {read.NEUTRAL: read.GOOD, read.GOOD: read.BAD}.get(now, read.NEUTRAL))
 
 
+def toggle(snap: Snapshot, drafts: dict, a: int, b: int, new: int) -> int:
+    """The edit modes' drag: the pair gets ``new`` (good or bad, replacing the other), or neutral when it shows
+    ``new`` already; the value it was given."""
+    new = read.NEUTRAL if value(snap, drafts, a, b) == new else new
+    set_draft(snap, drafts, a, b, new)
+    return new
+
+
 def export_set(path: str, snap: Snapshot, drafts: dict) -> tuple[int, int]:
     """Write the chemistry the tab shows (pending edits and drafts included) as a ``sluggies-chemistry`` file with
     every pair of the roster, neutral ones too, so that importing it gives this chemistry again. One-way pairs

@@ -381,6 +381,15 @@ class ViewTests(unittest.TestCase):
             seen.append(view.value(snap, drafts, 0x01, 0x04))
         self.assertEqual((seen, drafts), ([GOOD, BAD, NEUTRAL], {}))
 
+    def test_toggle(self):
+        snap = self.snap()
+        drafts = {}
+        seen = []
+        for new in (GOOD, BAD, BAD, GOOD, GOOD):                       # add, replace, remove, add, remove
+            self.assertEqual(view.toggle(snap, drafts, 0x04, 0x01, new), view.value(snap, drafts, 0x01, 0x04))
+            seen.append(view.value(snap, drafts, 0x01, 0x04))
+        self.assertEqual((seen, drafts), ([GOOD, BAD, NEUTRAL, GOOD, NEUTRAL], {}))
+
     def test_export_and_import_a_set(self):
         snap = self.snap()
         path = os.path.join(self.tmp, 'sets', 'mine')

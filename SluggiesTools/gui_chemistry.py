@@ -5,7 +5,12 @@ and chemistry edits on top (``Chemistry/view.py``) and shows it in two views on 
 
 * **Overview**: one node per character ID, placed by ``Chemistry/layout.py`` (groups by good chemistry, Miis around
   them). Green lines are good chemistry, red lines bad. Drag pans, the wheel zooms around the cursor. Hovering a
-  node dims everything but its own connections; a click opens it in the focus view.
+  node shows three stages: its own connections and partners bright, the connections and partners of those
+  partners ("one step more") medium, everything else dimmed; a click opens it in the focus view.
+* **Edit modes** (overview and focus): the **Add chemistry** / **Add negative chemistry** buttons in the canvas's
+  upper right corner (a click on the active one turns it off). While one is on, dragging from one character to
+  another gives the pair that chemistry (replacing the other kind), or removes it when the pair has it already.
+  A drag that starts beside a character still pans.
 * **Focus**: one character in the middle, its good partners on the left arcs, its bad ones on the right. A click on
   a partner makes that one the centre; the **Back** button above the centre returns to the view it was opened
   from.
@@ -76,6 +81,12 @@ COPY_HINT = 'Copy from...'
 FILTERS = ('All', 'Good', 'Bad', 'Neutral', 'Edited or pending')
 VALUE_LABELS = ((read.GOOD, 'Good'), (read.NEUTRAL, 'Neutral'), (read.BAD, 'Bad'))
 VALUE_THEMES = {read.GOOD: 'chem_good_theme', read.NEUTRAL: 'chem_neutral_theme', read.BAD: 'chem_bad_theme'}
+NEAR_LINE, FAR_LINE = 70, 14                   # hover: line alpha one step from the hovered node's partners, beyond
+NEAR_NODE, FAR_NODE = 150, 60                  # ... and the portraits'
+NEAR_LABEL, FAR_LABEL = 160, 70
+EDIT_BUTTONS = ((read.GOOD, 'Add chemistry', (46, 140, 64)), (read.BAD, 'Add negative chemistry', (170, 50, 50)))
+EDIT_TOGGLES = {read.GOOD: 'chem_good', read.BAD: 'chem_bad'}
+EDIT_H, EDIT_PAD = 26, 8                       # the edit mode buttons: height, distance from the canvas corner
 GROUP_HUES = ((255, 120, 120), (120, 190, 255), (255, 210, 110), (150, 230, 150), (220, 150, 255), (120, 230, 220),
               (255, 160, 90), (190, 200, 120), (255, 150, 200), (160, 160, 255), (200, 170, 140), (140, 220, 180))
 
@@ -117,6 +128,10 @@ class ChemistryTab:
         self._wheel = 0.0
         self._fitted = set()                  # the views whose camera is the automatic fit (no pan or zoom yet)
         self._drag = None                     # (mouse x, mouse y, pan x, pan y, moved) while the left button is down
+        self.edit = None                      # the edit mode: read.GOOD, read.BAD or None
+        self.overlay = {}                     # {value: canvas rect} of the edit mode buttons
+        self._over = None                     # the edit mode button under the mouse
+        self._link = None                     # (source ID, line item, start, moved, target) while a pair is drawn
         self._inputs = None                   # what the snapshot was taken with
         self._files = None
         self._shown = None                    # the button state last applied
@@ -198,6 +213,7 @@ class ChemistryTab:
                                       no_scrollbar=True, no_scroll_with_mouse=True):
                     with dpg.drawlist(width=100, height=100, tag='chem_canvas'):
                         dpg.add_draw_node(tag='chem_world')
+                        dpg.add_draw_node(tag='chem_overlay')           # canvas pixels: the edit mode buttons
                 with dpg.child_window(tag='chem_panel', border=True, width=PANEL_W, height=-36):
                     dpg.add_text('Click a character to see and edit its chemistry.', tag='chem_panel_head',
                                  wrap=PANEL_W - 30)
@@ -636,6 +652,93 @@ class ChemistryTab:
                     best, best_d = cid, d
         return best
 
+    # ------------------------------------------------------------------ edit modes
+    def _draw_overlay(self):
+        """The edit mode buttons in the canvas's upper right corner (not in the matrix view: it has no lines)."""
+        if not dpg.does_item_exist('chem_overlay'):
+            return
+        dpg.delete_item('chem_overlay', children_only=True)
+        self.overlay = {}
+        if self.mode == MATRIX or not self.snap.usable:
+            return
+        editable = self._editable()
+        right = self.canvas[0] - EDIT_PAD
+        left = right - max(self._text_width(caption) for _value, caption, _base in EDIT_BUTTONS) - 20
+        top = EDIT_PAD
+        for value, caption, base in EDIT_BUTTONS:       # one below the other, the same width
+            rect = (left, top, right, top + EDIT_H)
+            on = editable and self.edit == value
+            fill = base if on else (48, 48, 56)
+            if editable and self._over == value:
+                fill = tuple(min(255, c + 25) for c in fill)
+            dpg.draw_rectangle(rect[:2], rect[2:], color=_alpha(base if editable else (90, 90, 100), 255),
+                               fill=_alpha(fill, 235), thickness=2 if on else 1, rounding=5, parent='chem_overlay')
+            dpg.draw_text(((left + right - self._text_width(caption)) / 2, top + (EDIT_H - FONT) / 2 - 1), caption,
+                          color=_TEXT if editable else _DIM, size=FONT, parent='chem_overlay')
+            self.overlay[value] = rect
+            top += EDIT_H + 6
+        if editable and self.edit is not None:
+            hint = 'drag to draw lines'
+            dpg.draw_text(((left + right - self._text_width(hint)) / 2, top), hint, color=_DRAFT, size=FONT,
+                          parent='chem_overlay')
+
+    def _overlay_at(self, x, y):
+        """The edit mode whose button is under a canvas point, or None."""
+        for value, (left, top, right, bottom) in self.overlay.items():
+            if left <= x <= right and top <= y <= bottom:
+                return value
+        return None
+
+    def _overlay_hover(self, value):
+        if value != self._over:
+            self._over = value
+            self._draw_overlay()
+
+    def _set_edit(self, value):
+        """A click on an edit mode button: that mode on, or off when it was on."""
+        if not self._editable():
+            return
+        self.edit = None if self.edit == value else value
+        if self.edit is not None and not dpg.get_value(EDIT_TOGGLES[value]):
+            dpg.set_value(EDIT_TOGGLES[value], True)    # the lines about to be drawn must show
+            self._redraw()
+        self._draw_overlay()
+
+    def _link_text(self, source, target):
+        kind = 'good' if self.edit == read.GOOD else 'bad'
+        if target is None:
+            return f'{self.snap.label(source)}: drag to another character to add or remove {kind} chemistry'
+        now = view.value(self.snap, self.drafts, source, target)
+        what = (f'remove {kind} chemistry' if now == self.edit else f'add {kind} chemistry' if now == read.NEUTRAL
+                else f'replace by {kind} chemistry')
+        return f'{self.snap.label(source)} x {self.snap.label(target)}: {what}'
+
+    def _link_drag(self, down, hovered):
+        """An edit mode's drag from a character: the line follows the mouse; released on another character, the
+        pair is toggled (``view.toggle``). Without a move it is a click on the character."""
+        source, line, start, moved, shown = self._link
+        local = dpg.get_drawing_mouse_pos()
+        moved = moved or abs(local[0] - start[0]) + abs(local[1] - start[1]) > 4
+        target = self._node_at(*local) if hovered or down else None
+        if target == source:
+            target = None
+        if down:
+            if dpg.does_item_exist(line):
+                dpg.configure_item(line, p2=self._to_world(*local))
+            if target != shown or not moved:
+                dpg.set_value('chem_hover', self._link_text(source, target))
+            self._link = (source, line, start, moved, target)
+            return
+        self._link = None
+        if dpg.does_item_exist(line):
+            dpg.delete_item(line)
+        dpg.set_value('chem_hover', '')
+        if target is not None and hovered and self.edit is not None and self._editable():
+            view.toggle(self.snap, self.drafts, source, target, self.edit)
+            self._redraw()
+        elif not moved and hovered:
+            self._on_click(source)
+
     # ------------------------------------------------------------------ mouse
     def _on_wheel(self, _sender, delta):
         self._wheel += delta
@@ -644,11 +747,14 @@ class ChemistryTab:
         """Pan, zoom, hover and click on the canvas (polled every frame while the tab shows)."""
         wheel, self._wheel = self._wheel, 0.0
         if not self._showing():
-            self._drag = None
+            self._drag = self._link = None
             return
         hovered = bool(dpg.get_item_state('chem_canvas').get('hovered'))
         down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
         mouse = dpg.get_mouse_pos(local=False)
+        if self._link is not None:
+            self._link_drag(down, hovered)
+            return
         if self._drag is not None:
             start_x, start_y, pan_x, pan_y, moved = self._drag
             dx, dy = mouse[0] - start_x, mouse[1] - start_y
@@ -669,6 +775,7 @@ class ChemistryTab:
             return
         if not hovered or self.grid.confirm is not None:
             self._matrix_hover(None) if self.mode == MATRIX else self._set_hover(None)
+            self._overlay_hover(None)
             return
         local = dpg.get_drawing_mouse_pos()
         if wheel and self.mode in self.cameras:
@@ -677,7 +784,24 @@ class ChemistryTab:
             new = min(max(zoom * (1.15 ** wheel), low), high)
             ratio = new / zoom
             self._move_camera(new, local[0] - (local[0] - pan_x) * ratio, local[1] - (local[1] - pan_y) * ratio)
-        if dpg.is_mouse_button_clicked(dpg.mvMouseButton_Left) and self.mode in self.cameras:
+        clicked = dpg.is_mouse_button_clicked(dpg.mvMouseButton_Left)
+        over = self._overlay_at(*local)
+        self._overlay_hover(over)
+        if over is not None:
+            self._set_hover(None)
+            if clicked:
+                self._set_edit(over)
+            return
+        if clicked and self.mode in self.cameras:
+            source = None
+            if self.edit is not None and self.mode != MATRIX and self._editable() and not self._on_back(*local):
+                source = self._node_at(*local)
+            if source is not None:                      # an edit mode: draw a pair from this character
+                color = _GOOD if self.edit == read.GOOD else _BAD
+                line = dpg.draw_line(self.node_pos[source], self._to_world(*local), color=_alpha(color, 255),
+                                     thickness=3, parent='chem_world')
+                self._link = (source, line, tuple(local), False, None)
+                return
             _zoom, pan_x, pan_y = self.cameras[self.mode]
             self._drag = (mouse[0], mouse[1], pan_x, pan_y, False)
             return
@@ -695,22 +819,30 @@ class ChemistryTab:
             return
         self.hover = cid
         focus = self.mode == FOCUS
-        mine = {cid} if cid is not None else set()
+        mine = {cid} if cid is not None else set()      # the hovered node and its partners: bright
+        if cid is not None:
+            for pair in self.edge_items:
+                if cid in pair:
+                    mine.update(pair)
+        near = set()                                    # one step more, the partners' partners: medium
         for pair, (line, color, alpha, outline) in self.edge_items.items():
             own = cid is None or cid in pair
-            if cid is not None and own:
-                mine.update(pair)
+            step = not own and (pair[0] in mine or pair[1] in mine)
+            if step:
+                near.update(pair)
             if not focus:
-                dpg.configure_item(line, color=_alpha(color, (255 if cid is not None else alpha) if own else 14),
+                shade = (255 if cid is not None else alpha) if own else NEAR_LINE if step else FAR_LINE
+                dpg.configure_item(line, color=_alpha(color, shade),
                                    thickness=2 if (cid is not None and own) or outline else 1)
                 if outline:
                     dpg.configure_item(outline, show=own)
         if not focus:
             for other, (picture, tint, label) in self.node_items.items():
                 lit = cid is None or other in mine
+                step = other in near
                 if tint is not None:
-                    dpg.configure_item(picture, color=_alpha(tint, 255 if lit else 60))
-                dpg.configure_item(label, color=_alpha(_TEXT, 255 if lit else 70))
+                    dpg.configure_item(picture, color=_alpha(tint, 255 if lit else NEAR_NODE if step else FAR_NODE))
+                dpg.configure_item(label, color=_alpha(_TEXT, 255 if lit else NEAR_LABEL if step else FAR_LABEL))
         if cid is None:
             dpg.set_value('chem_hover', '')
         elif focus and self.selected is not None and cid != self.selected:
@@ -985,15 +1117,16 @@ class ChemistryTab:
         files = tuple(gui_grid.staged_chemistry_files(pending))
         shown = (self._blocked(), self.app.busy, self.grid.action is not None, len(pending), files,
                  len(self.drafts), self.snap.readonly, self.snap.error, self.snap.source, self.grid._deploying(),
-                 self.mode, self.selected, tuple(self.snap.warnings))
+                 self.mode, self.selected, tuple(self.snap.warnings), self.edit, self.canvas, self.snap.usable)
         if shown != self._shown:
             self._shown = shown
             self._apply(shown)
 
     def _apply(self, shown):
         (blocked, busy, acting, count, files, drafts, readonly, error, source, deploy, mode, selected,
-         warnings) = shown
+         warnings, _edit, _canvas, _usable) = shown
         free = not busy and not acting
+        self._draw_overlay()
         dpg.set_value('chem_source', source)
         if error:
             status, color = error, _ERROR
